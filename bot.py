@@ -2039,7 +2039,7 @@ if is_admin(user_id):
     step = context.user_data.get("admin_step")
 
     # حفظ النص الجديد
-    if step == "edit_setting_value":
+   if step == "edit_setting_value":
         key = context.user_data.get("pending_setting_key")
 
         allowed_keys = {
