@@ -656,84 +656,22 @@ async def create_order(update, context):
         )
         return
 
-    with db() as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO orders (
-                user_id, game_id, offer_id, player_id,
-                payment_method, price, status, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user.id,
-                draft["game_id"],
-                draft["offer_id"],
-                player_id,
-                draft["method"],
-                draft["price"],
-                "pending",
-                now_text(),
-            ),
-        )
-        order_id = cursor.lastrowid
-
-    context.user_data.pop("order_draft", None)
+    # حفظ معلومات الشحن مؤقتًا حتى يرسل الزبون الوصل
+    context.user_data["pending_player_id"] = player_id
+    context.user_data["awaiting_payment_receipt"] = True
     context.user_data.pop("awaiting_player_id", None)
 
     await update.message.reply_text(
-        "✅ تم تسجيل طلبك بنجاح!\n\n"
-        f"🧾 رقم الطلب: #{order_id}\n"
-        f"🎮 الخدمة: {draft['game_name']}\n"
+        "✅ تم استلام معلومات الشحن!\n\n"
+        f"🎮 اللعبة: {draft['game_name']}\n"
         f"📦 العرض: {draft['offer_name']}\n"
         f"🆔 معرف اللاعب: {player_id}\n"
         f"💳 طريقة الدفع: {draft['method']}\n"
-        f"💰 المبلغ: {draft['price']} دج\n"
-        "📌 الحالة: قيد الانتظار\n\n"
-        "ستتم مراجعة طلبك من طرف الإدارة.",
-        reply_markup=main_keyboard(user.id),
+        f"💰 المبلغ: {draft['price']} دج\n\n"
+        "📸 الآن أرسل صورة وصل الدفع لإتمام الطلب.\n\n"
+        "⚠️ تأكد أن الصورة واضحة وتظهر معلومات العملية.\n"
+        "لإلغاء العملية أرسل /cancel"
     )
-
-    if ADMIN_ID:
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "🔄 قيد التنفيذ",
-                    callback_data=f"status:{order_id}:processing",
-                ),
-                InlineKeyboardButton(
-                    "✅ مكتمل",
-                    callback_data=f"status:{order_id}:completed",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "❌ رفض الطلب",
-                    callback_data=f"status:{order_id}:rejected",
-                ),
-            ],
-        ])
-
-        try:
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=(
-                    f"🆕 طلب جديد #{order_id}\n\n"
-                    f"👤 الزبون: {user.full_name}\n"
-                    f"🆔 Telegram ID: {user.id}\n"
-                    f"🎮 الخدمة: {draft['game_name']}\n"
-                    f"📦 العرض: {draft['offer_name']}\n"
-                    f"🆔 معرف اللاعب: {player_id}\n"
-                    f"💳 الدفع: {draft['method']}\n"
-                    f"💰 السعر: {draft['price']} دج\n"
-                    f"🕒 الوقت: {now_text()}"
-                ),
-                reply_markup=keyboard,
-            )
-        except Exception:
-            logger.exception(
-                "تعذر إرسال الطلب إلى الإدارة"
-            )
 
 # =========================
 # عرض طلبات الزبون
