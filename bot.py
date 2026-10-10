@@ -1965,7 +1965,7 @@ if is_admin(user_id):
             ]),
         )
         return
-        تعديل النصوص وإرسال إشعارات للزبائن
+    # تعديل النصوص وإرسال إشعارات للزبائن
 
 if is_admin(user_id):
     step = context.user_data.get("admin_step")
