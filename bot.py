@@ -855,6 +855,10 @@ async def admin_games(query):
                 callback_data=f"game_toggle:{game['id']}",
             ),
             InlineKeyboardButton(
+                "📝 تعديل الوصف",
+                callback_data=f"game_desc:{game['id']}",
+            ),
+            InlineKeyboardButton(
                 "🗑️",
                 callback_data=f"game_delete:{game['id']}",
             ),
@@ -869,8 +873,9 @@ async def admin_games(query):
 
     await query.edit_message_text(
         "🎮 <b>إدارة الألعاب</b>\n\n"
-        "اضغط على اسم اللعبة لتفعيلها أو إيقافها.\n"
-        "زر 🗑️ لحذف اللعبة والعروض التابعة لها.",
+        "🟢 / 🔴 اضغط على اسم اللعبة لتفعيلها أو إيقافها.\n"
+        "📝 تعديل الوصف.\n"
+        "🗑️ حذف اللعبة والعروض التابعة لها.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
