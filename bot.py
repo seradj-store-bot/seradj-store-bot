@@ -1964,8 +1964,6 @@ async def text_handler(update, context):
         return
     # تعديل النصوص وإرسال إشعارات للزبائن
 
-if is_admin(user_id):
-    step = context.user_data.get("admin_step")
 
     # حفظ النص الجديد
     if step == "edit_setting_value":
