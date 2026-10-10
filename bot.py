@@ -1,269 +1,214 @@
-import os
-import logging
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
-)
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
-)
+import os, sqlite3, logging
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
+TOKEN = os.getenv("BOT_TOKEN", "").strip()
+ADMIN_TEXT = os.getenv("ADMIN_ID", "").strip()
+ADMIN_ID = int(ADMIN_TEXT) if ADMIN_TEXT.isdigit() else None
+DB_PATH = os.getenv("DB_PATH", "seradj_store.db")
+STORE = "SERADJ STORE"
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-ADMIN_ID_TEXT = os.getenv("ADMIN_ID", "").strip()
-ADMIN_ID = int(ADMIN_ID_TEXT) if ADMIN_ID_TEXT.isdigit() else None
+GAMES = ["Free Fire","PUBG Mobile","Call of Duty Mobile","eFootball","FC Mobile","Brawl Stars",
+"Roblox","One State","TikTok","Blood Strike","Snapchat+","Facebook / Instagram","WhatsApp",
+"Netflix","App Store","Azar","SoulChill","Tango","Super Live","خدمة أخرى"]
+PAYMENTS = ["BaridiMob","CCP","Flexy","أتواصل مع الإدارة لتحديد الدفع"]
+EF = [(300,750,900),(550,1300,1550),(750,1700,2050),(1040,2300,2750),
+      (2130,4600,5500),(3250,6600,7900),(5700,11500,13500),(12800,22000,25500)]
 
-STORE_NAME = "SERADJ STORE"
+def conn():
+    c=sqlite3.connect(DB_PATH); c.row_factory=sqlite3.Row; return c
 
-# eFootball prices supplied by the store owner (DA)
-EFOOTBALL_OFFERS = [
-    ("300 Coins — 750 دج (BaridiMob/CCP)", "300 Coins", 750),
-    ("550 Coins — 1300 دج (BaridiMob/CCP)", "550 Coins", 1300),
-    ("750 Coins — 1700 دج (BaridiMob/CCP)", "750 Coins", 1700),
-    ("1040 Coins — 2300 دج (BaridiMob/CCP)", "1040 Coins", 2300),
-    ("2130 Coins — 4600 دج (BaridiMob/CCP)", "2130 Coins", 4600),
-    ("3250 Coins — 6600 دج (BaridiMob/CCP)", "3250 Coins", 6600),
-    ("5700 Coins — 11500 دج (BaridiMob/CCP)", "5700 Coins", 11500),
-    ("12800 Coins — 22000 دج (BaridiMob/CCP)", "12800 Coins", 22000),
-]
+def init_db():
+    with conn() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS orders(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, order_no TEXT UNIQUE, user_id INTEGER,
+        username TEXT, full_name TEXT, game TEXT, offer TEXT, player_id TEXT,
+        payment TEXT, price INTEGER, status TEXT, created_at TEXT, proof_file_id TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS price_overrides(
+        game TEXT, offer TEXT, payment TEXT, price INTEGER,
+        UNIQUE(game,offer,payment))""")
 
-GAMES = [
-    "Free Fire", "PUBG Mobile", "Call of Duty Mobile", "eFootball",
-    "FC Mobile", "Brawl Stars", "Roblox", "One State", "TikTok",
-    "Blood Strike", "Snapchat+", "Facebook / Instagram", "WhatsApp",
-    "Netflix", "App Store", "Azar", "SoulChill", "Tango", "Super Live",
-    "خدمة أخرى"
-]
-
-PAYMENTS = ["BaridiMob", "CCP", "Flexy", "أتواصل مع الإدارة لتحديد الدفع"]
-
-def main_menu():
-    rows = []
-    for i in range(0, len(GAMES), 2):
-        row = [InlineKeyboardButton(GAMES[i], callback_data=f"game:{GAMES[i]}")]
-        if i + 1 < len(GAMES):
-            row.append(InlineKeyboardButton(GAMES[i + 1], callback_data=f"game:{GAMES[i+1]}"))
+def admin(uid): return ADMIN_ID is not None and uid == ADMIN_ID
+def menu():
+    rows=[]
+    for i in range(0,len(GAMES),2):
+        row=[InlineKeyboardButton(GAMES[i],callback_data="game:"+GAMES[i])]
+        if i+1<len(GAMES): row.append(InlineKeyboardButton(GAMES[i+1],callback_data="game:"+GAMES[i+1]))
         rows.append(row)
-    rows.append([InlineKeyboardButton("📋 طلباتي", callback_data="myorders")])
-    rows.append([InlineKeyboardButton("📞 التواصل مع الإدارة", callback_data="contact")])
+    rows += [[InlineKeyboardButton("📋 طلباتي",callback_data="myorders")],
+             [InlineKeyboardButton("📞 التواصل مع الإدارة",callback_data="contact")]]
     return InlineKeyboardMarkup(rows)
+def back(): return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ القائمة الرئيسية",callback_data="home")]])
+def payment_menu(): return InlineKeyboardMarkup([[InlineKeyboardButton(x,callback_data="pay:"+x)] for x in PAYMENTS])
+def admin_buttons(oid):
+    return InlineKeyboardMarkup([
+      [InlineKeyboardButton("💳 بانتظار الدفع",callback_data=f"status:{oid}:بانتظار الدفع"),
+       InlineKeyboardButton("✅ تم الدفع",callback_data=f"status:{oid}:مدفوع")],
+      [InlineKeyboardButton("⚙️ قيد التنفيذ",callback_data=f"status:{oid}:قيد التنفيذ"),
+       InlineKeyboardButton("🎉 مكتمل",callback_data=f"status:{oid}:مكتمل")],
+      [InlineKeyboardButton("❌ مرفوض",callback_data=f"status:{oid}:مرفوض")]])
 
-def back_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ القائمة الرئيسية", callback_data="home")]])
+def price_for(game,offer,payment):
+    with conn() as c:
+        r=c.execute("SELECT price FROM price_overrides WHERE game=? AND offer=? AND payment=?",(game,offer,payment)).fetchone()
+    if r: return r["price"]
+    if game=="eFootball":
+        try: coins=int(offer.split()[0])
+        except: return None
+        for n,b,f in EF:
+            if coins==n:
+                if payment=="Flexy": return f
+                if payment in ("BaridiMob","CCP"): return b
+    return None
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    text = (
-        f"🎮 أهلاً بك في {STORE_NAME}!\n\n"
-        "اختر اللعبة أو الخدمة التي تريد طلبها.\n"
-        "بعد إرسال الطلب، ستتواصل مع الإدارة لإتمام الدفع والشحن.\n\n"
-        "⚠️ لا ترسل كلمة مرور حسابك أبداً؛ نطلب فقط معرّف اللاعب أو المعلومات الضرورية للشحن."
-    )
-    await update.message.reply_text(text, reply_markup=main_menu())
+def order_text(r):
+    return (f"🛒 طلب {r['order_no']} — {STORE}\n\n👤 {r['full_name'] or '—'}"
+    f" (@{r['username'] or 'بدون username'})\n🆔 Telegram ID: {r['user_id']}\n"
+    f"🎮 الخدمة: {r['game']}\n💎 العرض: {r['offer']}\n🪪 معرّف الشحن: {r['player_id'] or '—'}\n"
+    f"💳 الدفع: {r['payment'] or '—'}\n💰 السعر: {str(r['price'])+' دج' if r['price'] is not None else 'يحدده المتجر'}\n"
+    f"📌 الحالة: {r['status']}\n🕒 {r['created_at']}")
 
-async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"Telegram ID الخاص بك هو:\n{update.effective_user.id}\n\n"
-        "لا ترسل Bot Token لأي شخص. إذا كنت تريد استقبال الطلبات على هذا الحساب، "
-        "ضع هذا الرقم في متغير الاستضافة ADMIN_ID."
-    )
+async def start(u:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    ctx.user_data.clear()
+    await u.message.reply_text(f"🎮 أهلاً بك في {STORE}!\nاختر اللعبة أو الخدمة.\n\n🔒 لا ترسل كلمة مرور أو رمز تحقق أبداً. نطلب فقط Player ID أو المعلومات الضرورية للشحن.",reply_markup=menu())
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("تم إلغاء الطلب. اكتب /start للبدء من جديد.", reply_markup=main_menu())
+async def myid(u:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    await u.message.reply_text(f"Telegram ID: {u.effective_user.id}\nضع الرقم في ADMIN_ID على FadeHost إذا كنت مالك المتجر.")
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
+async def cancel(u:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    ctx.user_data.clear(); await u.message.reply_text("تم إلغاء الخطوة الحالية.",reply_markup=menu())
 
-    if data == "home":
-        context.user_data.clear()
-        await query.edit_message_text(f"🎮 {STORE_NAME}\nاختر اللعبة أو الخدمة:", reply_markup=main_menu())
-        return
+async def admin_help(u:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    if not admin(u.effective_user.id): return await u.message.reply_text("هذا الأمر للإدارة فقط.")
+    await u.message.reply_text("أوامر الإدارة:\n/orders — آخر 10 طلبات\n/stats — إحصائيات\n/setprice اللعبة | العرض | الدفع | السعر\nمثال:\n/setprice Free Fire | 100 Diamonds | BaridiMob | 500")
 
-    if data == "contact":
-        if ADMIN_ID:
-            await query.edit_message_text(
-                "للتواصل بخصوص الدفع أو الطلب، أرسل طلبك أولاً وسيتواصل معك المتجر.\n"
-                "يمكنك أيضاً كتابة /start لبدء طلب جديد.",
-                reply_markup=back_keyboard()
-            )
-        else:
-            await query.edit_message_text(
-                "التواصل مع الإدارة سيكون متاحاً بعد ضبط إعدادات البوت.\nاكتب /start للعودة.",
-                reply_markup=back_keyboard()
-            )
-        return
+async def orders_cmd(u:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    if not admin(u.effective_user.id): return await u.message.reply_text("هذا الأمر للإدارة فقط.")
+    with conn() as c: rs=c.execute("SELECT * FROM orders ORDER BY id DESC LIMIT 10").fetchall()
+    if not rs: return await u.message.reply_text("لا توجد طلبات.")
+    for r in rs: await u.message.reply_text(order_text(r),reply_markup=admin_buttons(r["id"]))
 
-    if data == "myorders":
-        orders = context.user_data.get("orders", [])
-        if not orders:
-            msg = "لا توجد طلبات محفوظة في هذه الجلسة بعد."
-        else:
-            msg = "📋 طلباتك في هذه الجلسة:\n" + "\n".join(
-                f"• {o['game']} — {o['offer']} — {o['status']}" for o in orders[-10:]
-            )
-        await query.edit_message_text(msg, reply_markup=back_keyboard())
-        return
+async def stats_cmd(u:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    if not admin(u.effective_user.id): return await u.message.reply_text("هذا الأمر للإدارة فقط.")
+    with conn() as c:
+        total=c.execute("SELECT COUNT(*) n FROM orders").fetchone()["n"]
+        done=c.execute("SELECT COUNT(*) n FROM orders WHERE status='مكتمل'").fetchone()["n"]
+        pending=c.execute("SELECT COUNT(*) n FROM orders WHERE status NOT IN ('مكتمل','مرفوض')").fetchone()["n"]
+    await u.message.reply_text(f"📊 {STORE}\nكل الطلبات: {total}\nقيد المتابعة: {pending}\nمكتملة: {done}")
 
-    if data.startswith("game:"):
-        game = data.split(":", 1)[1]
-        context.user_data["order"] = {"game": game}
-        if game == "eFootball":
-            rows = []
-            for idx, (label, offer, price) in enumerate(EFOOTBALL_OFFERS):
-                rows.append([InlineKeyboardButton(label, callback_data=f"offer:{idx}")])
-            rows.append([InlineKeyboardButton("⬅️ رجوع", callback_data="home")])
-            await query.edit_message_text("⚽ اختر عرض eFootball:", reply_markup=InlineKeyboardMarkup(rows))
-        else:
-            await query.edit_message_text(
-                f"🎮 اخترت: {game}\n\n"
-                "اكتب اسم العرض أو الكمية التي تريدها (مثال: 100 جوهرة / اشتراك شهر). "
-                "يمكنك تأكيد السعر مع الإدارة قبل الدفع.",
-                reply_markup=back_keyboard()
-            )
-            context.user_data["awaiting"] = "custom_offer"
-        return
+async def setprice_cmd(u:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    if not admin(u.effective_user.id): return await u.message.reply_text("هذا الأمر للإدارة فقط.")
+    parts=[x.strip() for x in u.message.text.partition(" ")[2].split("|")]
+    if len(parts)!=4 or not parts[3].isdigit():
+        return await u.message.reply_text("الصيغة:\n/setprice اللعبة | العرض | الدفع | السعر")
+    game,offer,pay,amount=parts
+    if pay not in PAYMENTS: return await u.message.reply_text("طريقة الدفع غير صحيحة.")
+    with conn() as c:
+        c.execute("INSERT INTO price_overrides VALUES(?,?,?,?) ON CONFLICT(game,offer,payment) DO UPDATE SET price=excluded.price",(game,offer,pay,int(amount)))
+    await u.message.reply_text(f"✅ تم حفظ السعر: {game} / {offer} / {pay} = {amount} دج")
 
-    if data.startswith("offer:"):
-        idx = int(data.split(":", 1)[1])
-        label, offer, price = EFOOTBALL_OFFERS[idx]
-        context.user_data["order"]["offer"] = offer
-        context.user_data["order"]["price"] = price
-        context.user_data.pop("awaiting", None)
-        context.user_data["awaiting"] = "player_id"
-        await query.edit_message_text(
-            f"اخترت: {label}\n\nأرسل الآن معرّف اللاعب (Player ID) الخاص بك.",
-            reply_markup=back_keyboard()
-        )
-        return
+async def buttons(u:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    q=u.callback_query; await q.answer(); d=q.data
+    if d=="home":
+        ctx.user_data.clear(); return await q.edit_message_text(f"🎮 {STORE}\nاختر الخدمة:",reply_markup=menu())
+    if d=="contact": return await q.edit_message_text("📞 أرسل طلبك أولاً وستتواصل معك الإدارة. لا ترسل كلمة مرور أو رمز تحقق.",reply_markup=back())
+    if d=="myorders":
+        with conn() as c: rs=c.execute("SELECT * FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 10",(q.from_user.id,)).fetchall()
+        if not rs: return await q.edit_message_text("لا توجد طلبات لهذا الحساب بعد.",reply_markup=back())
+        msg="📋 طلباتك:\n\n"+"\n\n".join(f"{r['order_no']} — {r['game']} / {r['offer']}\n{r['price'] if r['price'] is not None else 'يحدد لاحقاً'} دج\nالحالة: {r['status']}" for r in rs)
+        return await q.edit_message_text(msg,reply_markup=back())
+    if d.startswith("status:"):
+        if not admin(q.from_user.id): return await q.answer("غير مسموح",show_alert=True)
+        _,oid,status=d.split(":",2)
+        with conn() as c:
+            r=c.execute("SELECT * FROM orders WHERE id=?",(int(oid),)).fetchone()
+            if not r: return await q.edit_message_text("الطلب غير موجود.")
+            c.execute("UPDATE orders SET status=? WHERE id=?",(status,int(oid)))
+            r=c.execute("SELECT * FROM orders WHERE id=?",(int(oid),)).fetchone()
+        try: await ctx.bot.send_message(r["user_id"],f"🔔 تحديث طلبك {r['order_no']}\nالحالة الجديدة: {status}")
+        except Exception: logging.exception("Customer notification failed")
+        return await q.edit_message_text(order_text(r),reply_markup=admin_buttons(int(oid)))
+    if d.startswith("game:"):
+        game=d.split(":",1)[1]; ctx.user_data.clear(); ctx.user_data["order"]={"game":game}
+        if game=="eFootball":
+            rows=[[InlineKeyboardButton(f"{n} Coins",callback_data=f"coins:{n}")] for n,_,_ in EF]
+            rows.append([InlineKeyboardButton("⬅️ رجوع",callback_data="home")])
+            return await q.edit_message_text("⚽ اختر باقة eFootball:",reply_markup=InlineKeyboardMarkup(rows))
+        ctx.user_data["awaiting"]="offer"
+        return await q.edit_message_text(f"اخترت {game}.\nاكتب اسم العرض أو الكمية المطلوبة. السعر النهائي يؤكده المتجر.",reply_markup=back())
+    if d.startswith("coins:"):
+        n=int(d.split(":")[1]); ctx.user_data["order"]["offer"]=f"{n} Coins"; ctx.user_data["awaiting"]="player_id"
+        return await q.edit_message_text(f"اخترت {n} Coins.\nأرسل Player ID فقط، لا ترسل كلمة المرور.",reply_markup=back())
+    if d.startswith("pay:"):
+        o=ctx.user_data.get("order")
+        if not o: return await q.edit_message_text("انتهت الجلسة. اكتب /start.")
+        o["payment"]=d.split(":",1)[1]; o["price"]=price_for(o["game"],o["offer"],o["payment"])
+        p=f"{o['price']} دج" if o["price"] is not None else "يؤكده المتجر قبل الدفع"
+        msg=f"🧾 راجع طلبك:\n\nالخدمة: {o['game']}\nالعرض: {o['offer']}\nمعرّف الشحن: {o.get('player_id','—')}\nالدفع: {o['payment']}\nالسعر: {p}\n\nلا ترسل كلمة مرور أو رمز تحقق."
+        return await q.edit_message_text(msg,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد وإرسال",callback_data="confirm")],[InlineKeyboardButton("❌ إلغاء",callback_data="home")]]))
+    if d=="confirm":
+        o=ctx.user_data.get("order")
+        if not o: return await q.edit_message_text("لا يوجد طلب قيد التأكيد. اكتب /start.")
+        user=q.from_user; no=f"SS-{datetime.utcnow().strftime('%y%m%d%H%M%S')}-{user.id%10000:04d}"
+        with conn() as c:
+            cur=c.execute("INSERT INTO orders(order_no,user_id,username,full_name,game,offer,player_id,payment,price,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (no,user.id,user.username,user.full_name,o["game"],o["offer"],o.get("player_id"),o.get("payment"),o.get("price"),"بانتظار الدفع",datetime.now().strftime("%Y-%m-%d %H:%M")))
+            oid=cur.lastrowid; r=c.execute("SELECT * FROM orders WHERE id=?",(oid,)).fetchone()
+        try:
+            if not ADMIN_ID: raise RuntimeError("ADMIN_ID missing")
+            await ctx.bot.send_message(ADMIN_ID,order_text(r),reply_markup=admin_buttons(oid))
+        except Exception:
+            logging.exception("Admin notification failed")
+            return await q.edit_message_text("⚠️ تعذر إشعار الإدارة. أخبر مالك المتجر بفحص ADMIN_ID.",reply_markup=back())
+        ctx.user_data.clear()
+        p=f"{r['price']} دج" if r["price"] is not None else "يحدده المتجر"
+        return await q.edit_message_text(f"✅ تم إرسال طلبك!\nرقم الطلب: {no}\nالسعر: {p}\nالحالة: بانتظار الدفع.\nستتواصل معك الإدارة. لا ترسل كلمة مرور أو رمز تحقق.",reply_markup=back())
 
-    if data.startswith("pay:"):
-        payment = data.split(":", 1)[1]
-        context.user_data["order"]["payment"] = payment
-        context.user_data.pop("awaiting", None)
-        await send_confirmation(query, context)
-        return
+async def text_handler(u:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    if not u.message or not u.message.text: return
+    text=u.message.text.strip(); step=ctx.user_data.get("awaiting"); o=ctx.user_data.get("order",{})
+    if step=="offer":
+        o["offer"]=text[:120]; ctx.user_data["awaiting"]="player_id"
+        return await u.message.reply_text("أرسل Player ID أو المعرّف الضروري للشحن. إن لم يلزم اكتب «لا يوجد». لا ترسل كلمة مرور أو رمز تحقق.")
+    if step=="player_id":
+        if any(x in text.lower() for x in ["password","mot de passe","كلمة السر","كلمة المرور"]):
+            return await u.message.reply_text("🔒 لا ترسل كلمة مرور. أرسل Player ID فقط أو «لا يوجد».")
+        o["player_id"]=text[:160]; ctx.user_data["awaiting"]="payment"
+        return await u.message.reply_text("اختر طريقة الدفع:",reply_markup=payment_menu())
+    await u.message.reply_text("استعمل القائمة أو اكتب /start.",reply_markup=menu())
 
-    if data == "confirm":
-        order = context.user_data.get("order")
-        if not order:
-            await query.edit_message_text("لم أجد طلباً قيد التأكيد. اكتب /start للبدء.")
-            return
+async def photo_handler(u:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    if not ADMIN_ID: return await u.message.reply_text("تعذر إرسال الوصل للإدارة حالياً.")
+    user=u.effective_user
+    with conn() as c: r=c.execute("SELECT * FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 1",(user.id,)).fetchone()
+    if not r: return await u.message.reply_text("لم أجد طلباً سابقاً. ابدأ عبر /start.")
+    try:
+        await ctx.bot.send_photo(ADMIN_ID,u.message.photo[-1].file_id,
+            caption=f"🧾 وصل دفع — الطلب {r['order_no']}\nالزبون: {user.full_name} / {user.id}\nتحقق من الوصل يدوياً قبل تأكيد الدفع.",
+            reply_markup=admin_buttons(r["id"]))
+        with conn() as c: c.execute("UPDATE orders SET proof_file_id=? WHERE id=?",(u.message.photo[-1].file_id,r["id"]))
+        await u.message.reply_text("✅ أُرسل الوصل للإدارة. هذا لا يعني أن الدفع تأكد بعد.")
+    except Exception:
+        logging.exception("Proof forwarding failed")
+        await u.message.reply_text("تعذر إرسال الوصل. حاول لاحقاً.")
 
-        user = query.from_user
-        username = f"@{user.username}" if user.username else "لا يوجد username"
-        price_text = f"{order['price']} دج" if order.get("price") else "يُحدّد مع الإدارة"
-        order_no = f"SS-{user.id}-{query.message.message_id}"
-        order["status"] = "في انتظار التواصل والدفع"
-        order["order_no"] = order_no
-        context.user_data.setdefault("orders", []).append({
-            "game": order["game"], "offer": order["offer"],
-            "status": order["status"]
-        })
-
-        admin_message = (
-            f"🛒 طلب جديد — {STORE_NAME}\n\n"
-            f"🆔 رقم الطلب: {order_no}\n"
-            f"👤 الاسم: {user.full_name}\n"
-            f"🔗 username: {username}\n"
-            f"🆔 Telegram ID للزبون: {user.id}\n"
-            f"🎮 اللعبة/الخدمة: {order['game']}\n"
-            f"💎 العرض: {order['offer']}\n"
-            f"🪪 معلومات الشحن: {order.get('player_id', 'لم تُطلب')}\n"
-            f"💳 طريقة الدفع المفضلة: {order.get('payment', 'سيحددها مع الإدارة')}\n"
-            f"💰 السعر: {price_text}\n"
-            f"📌 الحالة: {order['status']}\n\n"
-            f"للتواصل مع الزبون: tg://user?id={user.id}"
-        )
-
-        sent = False
-        if ADMIN_ID:
-            try:
-                await context.bot.send_message(chat_id=ADMIN_ID, text=admin_message)
-                sent = True
-            except Exception:
-                logging.exception("Could not send order to ADMIN_ID")
-
-        if sent:
-            await query.edit_message_text(
-                f"✅ تم إرسال طلبك بنجاح!\n\n"
-                f"🆔 رقم الطلب: {order_no}\n"
-                f"🎮 الخدمة: {order['game']}\n"
-                f"💎 العرض: {order['offer']}\n"
-                f"💰 السعر: {price_text}\n\n"
-                "ستتواصل معك الإدارة لتأكيد الدفع وإتمام الشحن.\n"
-                "لا ترسل كلمة مرور حسابك لأي شخص.",
-                reply_markup=back_keyboard()
-            )
-        else:
-            await query.edit_message_text(
-                "⚠️ لم يتم ضبط حساب الإدارة بعد، لذلك لم يُرسل الطلب إلى المسؤول.\n"
-                "أرسل /myid لمعرفة رقم Telegram ID الخاص بك، ثم اضبط ADMIN_ID في إعدادات الاستضافة.",
-                reply_markup=back_keyboard()
-            )
-        return
-
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    awaiting = context.user_data.get("awaiting")
-    text = update.message.text.strip()
-    order = context.user_data.get("order", {})
-
-    if awaiting == "custom_offer":
-        order["offer"] = text
-        context.user_data["awaiting"] = "player_id"
-        await update.message.reply_text(
-            "أرسل الآن Player ID أو معرّف الحساب المطلوب للشحن.\n"
-            "إذا كانت الخدمة لا تحتاج معرّفاً، اكتب: لا يوجد"
-        )
-        return
-
-    if awaiting == "player_id":
-        order["player_id"] = text
-        context.user_data["awaiting"] = "payment"
-        rows = [[InlineKeyboardButton(p, callback_data=f"pay:{p}")] for p in PAYMENTS]
-        await update.message.reply_text(
-            "اختر طريقة الدفع المفضلة. ستتواصل مع الإدارة لإتمام الدفع:",
-            reply_markup=InlineKeyboardMarkup(rows)
-        )
-        return
-
-    await update.message.reply_text("استخدم القائمة لاختيار خدمة، أو اكتب /start للبدء.", reply_markup=main_menu())
-
-async def send_confirmation(query, context):
-    order = context.user_data.get("order", {})
-    price_text = f"{order['price']} دج" if order.get("price") else "يُحدّد مع الإدارة"
-    summary = (
-        "🧾 راجع طلبك قبل الإرسال:\n\n"
-        f"🎮 الخدمة: {order.get('game', '-')}\n"
-        f"💎 العرض: {order.get('offer', '-')}\n"
-        f"🪪 معرّف الحساب: {order.get('player_id', '-')}\n"
-        f"💳 الدفع: {order.get('payment', '-')}\n"
-        f"💰 السعر: {price_text}\n\n"
-        "تأكد من صحة المعلومات. لا تكتب كلمة مرور حسابك."
-    )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ تأكيد وإرسال الطلب", callback_data="confirm")],
-        [InlineKeyboardButton("❌ إلغاء / القائمة", callback_data="home")]
-    ])
-    await query.edit_message_text(summary, reply_markup=keyboard)
+async def errors(update:object,ctx:ContextTypes.DEFAULT_TYPE):
+    logging.error("Unhandled bot error: %s",ctx.error)
 
 def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("Missing BOT_TOKEN environment variable.")
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("myid", myid))
-    app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    app.run_polling(drop_pending_updates=True)
+    if not TOKEN: raise RuntimeError("Missing BOT_TOKEN environment variable.")
+    init_db()
+    app=Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("myid",myid))
+    app.add_handler(CommandHandler("cancel",cancel)); app.add_handler(CommandHandler("admin",admin_help))
+    app.add_handler(CommandHandler("orders",orders_cmd)); app.add_handler(CommandHandler("stats",stats_cmd))
+    app.add_handler(CommandHandler("setprice",setprice_cmd)); app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(MessageHandler(filters.PHOTO,photo_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text_handler))
+    app.add_error_handler(errors)
+    app.run_polling(drop_pending_updates=False)
 
-if __name__ == "__main__":
-    main()
+if __name__=="__main__": main()
