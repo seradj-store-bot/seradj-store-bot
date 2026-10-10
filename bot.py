@@ -1864,11 +1864,8 @@ async def text_handler(update, context):
                 ),
             )
             return
-       # تعديل نص محفوظ في قاعدة البيانات
             
-
-if is_admin(user_id):
-    step = context.user_data.get("admin_step")
+    #تعديل نص محفوظ في قاعدة البيانات
 
     if step == "edit_setting_value":
         key = context.user_data.get("pending_setting_key")
