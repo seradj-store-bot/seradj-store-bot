@@ -1482,6 +1482,28 @@ async def callback_handler(update, context):
 
         await admin_order_details(query, order_id)
 
+    # فتح لعبة للزبون
+    elif data.startswith("game:"):
+        game_id = int(data.split(":")[1])
+        await open_game(query, game_id)
+
+    # فتح عرض للزبون
+    elif data.startswith("offer:"):
+        parts = data.split(":")
+        game_id = int(parts[1])
+        offer_id = int(parts[2])
+        await open_offer(query, game_id, offer_id)
+
+    # اختيار طريقة الدفع
+    elif data.startswith("pay:"):
+        parts = data.split(":")
+        game_id = int(parts[1])
+        offer_id = int(parts[2])
+        method = parts[3]
+        await select_payment(
+            query, context, game_id, offer_id, method
+        )
+
     # المتجر للزبائن
     elif data == "store":
         await query.edit_message_text(
