@@ -361,11 +361,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data.clear()
 
-    await update.message.reply_text(
+    welcome_text = get_setting(
+        "welcome_message",
         f"🎮 مرحباً بك في {STORE_NAME}!\n\n"
         "🛍️ شحن الألعاب والخدمات الرقمية\n"
         "💳 الدفع عبر BaridiMob / CCP أو Flexy\n\n"
         "اختر الخدمة من القائمة بالأسفل 👇",
+    )
+
+    await update.message.reply_text(
+        welcome_text,
         reply_markup=main_keyboard(user.id),
     )
 
