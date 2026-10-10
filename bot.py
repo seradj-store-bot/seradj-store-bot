@@ -1886,31 +1886,30 @@ async def text_handler(update, context):
     )
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-query = update.callback_query
-await query.answer()
+    query = update.callback_query
+    await query.answer()
 
-data = query.data or ""
+    data = query.data or ""
 
-if data.startswith("game:"):
-    game_id = int(data.split(":")[1])
-    await open_game(query, game_id)
-    return
+    if data.startswith("game:"):
+        game_id = int(data.split(":")[1])
+        await open_game(query, game_id)
+        return
 
-if data.startswith("offer:"):
-    parts = data.split(":")
-    game_id = int(parts[1])
-    offer_id = int(parts[2])
-    await open_offer(query, game_id, offer_id)
-    return
+    if data.startswith("offer:"):
+        parts = data.split(":")
+        game_id = int(parts[1])
+        offer_id = int(parts[2])
+        await open_offer(query, game_id, offer_id)
+        return
 
-if data.startswith("pay:"):
-    parts = data.split(":")
-    game_id = int(parts[1])
-    offer_id = int(parts[2])
-    method = parts[3]
-    await select_payment(query, context, game_id, offer_id, method)
-    return
-    
+    if data.startswith("pay:"):
+        parts = data.split(":")
+        game_id = int(parts[1])
+        offer_id = int(parts[2])
+        method = parts[3]
+        await select_payment(query, context, game_id, offer_id, method)
+        return
 # =========================
 # تشغيل البوت
 # =========================
