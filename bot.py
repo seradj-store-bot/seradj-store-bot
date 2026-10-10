@@ -65,12 +65,12 @@ def db():
     return conn
 
 def get_setting(key, default=""):
+def get_setting(key, default=""):
 with db() as conn:
 row = conn.execute(
 "SELECT value FROM settings WHERE key = ?",
 (key,),
 ).fetchone()
-
 return row["value"] if row else default
 
 def set_setting(key, value):
