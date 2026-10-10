@@ -2212,7 +2212,7 @@ if is_admin(user_id):
                 ]),
             )
             return
-            if text == "📝 إدارة النصوص":
+       if text == "📝 إدارة النصوص":
             await message.reply_text(
                 "📝 اختر النص الذي تريد تعديله:",
                 reply_markup=InlineKeyboardMarkup([
@@ -2258,6 +2258,7 @@ if is_admin(user_id):
                 reply_markup=main_keyboard(user_id),
             )
             return
+
 
     await message.reply_text(
         "ما فهمتش طلبك. استعمل الأزرار الموجودة أسفل الشاشة.",
