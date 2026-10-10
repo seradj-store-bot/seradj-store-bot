@@ -1421,11 +1421,9 @@ elif data.startswith("game_desc:"):
     )
     return
 
-# تعديل رسالة طلب معلومات الشحن
-elif data.startswith("game_prompt:"):
-    if not is_admin(user_id):
-        return
+#تعديل رسالة طلب معلومات الشحن
 
+elif data.startswith("game_prompt:"):
     try:
         game_id = int(data.split(":", 1)[1])
     except (ValueError, IndexError):
@@ -1452,24 +1450,27 @@ elif data.startswith("game_prompt:"):
         f"✏️ أرسل الرسالة الجديدة للزبون عند اختيار لعبة {game['name']}.\n\n"
         "يمكنك كتابة الرسالة على عدة أسطر."
     )
-    returnext(
-            "🛠️ لوحة التحكم\n\n"
-            "استعمل أزرار لوحة الإدارة الموجودة أسفل الشاشة."
-        )
+    return
 
-    elif data == "adm_games":
-        await admin_games(query)
+# العودة إلى لوحة الإدارة
+elif data == "adm_home":
+    await query.edit_message_text(
+        "🛠️ لوحة التحكم\n\n"
+        "استعمل أزرار لوحة الإدارة الموجودة أسفل الشاشة.",
+        reply_markup=ADMIN_PANEL_MENU,
+    )
 
-    elif data == "adm_offers":
-        await admin_choose_manage_game(query)
+elif data == "adm_games":
+    await admin_games(query)
 
+elif data == "adm_offers":
+    await admin_choose_manage_game(query)
 
+elif data == "adm_payment":
+    await admin_payment_settings(query)
 
-    elif data == "adm_payment":
-        await admin_payment_settings(query)
-
-    elif data == "adm_add_offer":
-        await admin_choose_offer_game(query)
+elif data == "adm_add_offer":
+    await admin_choose_offer_game(query)
 
     # عرض تفاصيل الطلب
     elif data.startswith("order_view:"):
