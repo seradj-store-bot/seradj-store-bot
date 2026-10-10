@@ -1371,115 +1371,116 @@ async def callback_handler(update, context):
         await query.answer("⛔ غير مسموح لك.", show_alert=True)
         return
 
-    
-#العودة إلى لوحة الإدارة
-
-if data == "adm_home":
-    await query.edit_message_text(
-        "⚙️ لوحة الإدارة",
-        reply_markup=ADMIN_PANEL_MENU,
-    )
-    return
-
-# عرض الطلبات
-elif data == "adm_orders":
-    await admin_all_orders(query)
-    return
-
-# الإحصائيات
-elif data == "adm_stats":
-    await show_stats(query)
-    return
-
-# تعديل وصف اللعبة
-elif data.startswith("game_desc:"):
-    try:
-        game_id = int(data.split(":", 1)[1])
-    except (ValueError, IndexError):
-        await query.message.reply_text(
-            "❌ معرّف اللعبة غير صالح."
+    # العودة إلى لوحة الإدارة
+    if data == "adm_home":
+        await query.edit_message_text(
+            "⚙️ لوحة الإدارة",
+            reply_markup=ADMIN_PANEL_MENU,
         )
-        return
 
-    with db() as conn:
-        game = conn.execute(
-            "SELECT id, name FROM games WHERE id = ?",
-            (game_id,),
-        ).fetchone()
+    # عرض الطلبات
+    elif data == "adm_orders":
+        await admin_all_orders(query)
 
-    if not game:
+    # الإحصائيات
+    elif data == "adm_stats":
+        await show_stats(query)
+
+    # إدارة الألعاب
+    elif data == "adm_games":
+        await admin_games(query)
+
+    # إدارة العروض
+    elif data == "adm_offers":
+        await admin_choose_manage_game(query)
+
+    # إعدادات الدفع
+    elif data == "adm_payment":
+        await admin_payment_settings(query)
+
+    # اختيار لعبة لإضافة عرض
+    elif data == "adm_add_offer":
+        await admin_choose_offer_game(query)
+
+    # تعديل وصف اللعبة
+    elif data.startswith("game_desc:"):
+        try:
+            game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text(
+                "❌ معرّف اللعبة غير صالح."
+            )
+            return
+
+        with db() as conn:
+            game = conn.execute(
+                "SELECT id, name FROM games WHERE id = ?",
+                (game_id,),
+            ).fetchone()
+
+        if not game:
+            await query.message.reply_text(
+                "❌ اللعبة غير موجودة."
+            )
+            return
+
+        context.user_data["editing_game_description"] = game_id
+
         await query.message.reply_text(
-            "❌ اللعبة غير موجودة."
+            f"📝 أرسل الوصف الجديد للعبة: {game['name']}\n\n"
+            "أرسل الوصف في رسالة واحدة."
         )
-        return
 
-    context.user_data["editing_game_description"] = game_id
+    # تعديل رسالة طلب معلومات الشحن
+    elif data.startswith("game_prompt:"):
+        try:
+            game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text(
+                "❌ معرّف اللعبة غير صالح."
+            )
+            return
 
-    await query.message.reply_text(
-        f"📝 أرسل الوصف الجديد للعبة: {game['name']}\n\n"
-        "أرسل الوصف في رسالة واحدة."
-    )
-    return
+        with db() as conn:
+            game = conn.execute(
+                "SELECT id, name FROM games WHERE id = ?",
+                (game_id,),
+            ).fetchone()
 
-#تعديل رسالة طلب معلومات الشحن
+        if not game:
+            await query.message.reply_text(
+                "❌ اللعبة غير موجودة."
+            )
+            return
 
-elif data.startswith("game_prompt:"):
-    try:
-        game_id = int(data.split(":", 1)[1])
-    except (ValueError, IndexError):
+        context.user_data["editing_game_prompt"] = game_id
+
         await query.message.reply_text(
-            "❌ معرّف اللعبة غير صالح."
+            f"✏️ أرسل الرسالة الجديدة للزبون عند اختيار لعبة {game['name']}.\n\n"
+            "يمكنك كتابة الرسالة على عدة أسطر."
         )
-        return
-
-    with db() as conn:
-        game = conn.execute(
-            "SELECT id, name FROM games WHERE id = ?",
-            (game_id,),
-        ).fetchone()
-
-    if not game:
-        await query.message.reply_text(
-            "❌ اللعبة غير موجودة."
-        )
-        return
-
-    context.user_data["editing_game_prompt"] = game_id
-
-    await query.message.reply_text(
-        f"✏️ أرسل الرسالة الجديدة للزبون عند اختيار لعبة {game['name']}.\n\n"
-        "يمكنك كتابة الرسالة على عدة أسطر."
-    )
-    return
-
-# العودة إلى لوحة الإدارة
-elif data == "adm_home":
-    await query.edit_message_text(
-        "🛠️ لوحة التحكم\n\n"
-        "استعمل أزرار لوحة الإدارة الموجودة أسفل الشاشة.",
-        reply_markup=ADMIN_PANEL_MENU,
-    )
-
-elif data == "adm_games":
-    await admin_games(query)
-
-elif data == "adm_offers":
-    await admin_choose_manage_game(query)
-
-elif data == "adm_payment":
-    await admin_payment_settings(query)
-
-elif data == "adm_add_offer":
-    await admin_choose_offer_game(query)
 
     # عرض تفاصيل الطلب
     elif data.startswith("order_view:"):
-        order_id = int(data.split(":")[1])
+        try:
+            order_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text(
+                "❌ رقم الطلب غير صالح."
+            )
+            return
+
         await admin_order_details(query, order_id)
 
     # تفعيل أو إيقاف لعبة
     elif data.startswith("game_toggle:"):
-        game_id = int(data.split(":")[1])
+        try:
+            game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text(
+                "❌ معرّف اللعبة غير صالح."
+            )
+            return
 
         with db() as conn:
             conn.execute(
@@ -1495,7 +1496,13 @@ elif data == "adm_add_offer":
 
     # حذف لعبة وعروضها
     elif data.startswith("game_delete:"):
-        game_id = int(data.split(":")[1])
+        try:
+            game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text(
+                "❌ معرّف اللعبة غير صالح."
+            )
+            return
 
         with db() as conn:
             conn.execute(
@@ -1511,12 +1518,25 @@ elif data == "adm_add_offer":
 
     # فتح عروض لعبة
     elif data.startswith("offers_game:"):
-        game_id = int(data.split(":")[1])
+        try:
+            game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text(
+                "❌ معرّف اللعبة غير صالح."
+            )
+            return
+
         await admin_offers(query, game_id)
 
     # تفعيل أو إيقاف عرض
     elif data.startswith("offer_toggle:"):
-        offer_id = int(data.split(":")[1])
+        try:
+            offer_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text(
+                "❌ معرّف العرض غير صالح."
+            )
+            return
 
         with db() as conn:
             conn.execute(
@@ -1536,11 +1556,19 @@ elif data == "adm_add_offer":
         if row:
             await admin_offers(query, row["game_id"])
         else:
-            await query.edit_message_text("❌ العرض غير موجود.")
+            await query.edit_message_text(
+                "❌ العرض غير موجود."
+            )
 
     # حذف عرض
     elif data.startswith("offer_delete:"):
-        offer_id = int(data.split(":")[1])
+        try:
+            offer_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text(
+                "❌ معرّف العرض غير صالح."
+            )
+            return
 
         with db() as conn:
             row = conn.execute(
@@ -1558,11 +1586,19 @@ elif data == "adm_add_offer":
         if row:
             await admin_offers(query, game_id)
         else:
-            await query.edit_message_text("❌ العرض غير موجود.")
+            await query.edit_message_text(
+                "❌ العرض غير موجود."
+            )
 
     # اختيار لعبة لإضافة عرض
     elif data.startswith("add_offer_game:"):
-        game_id = int(data.split(":")[1])
+        try:
+            game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text(
+                "❌ معرّف اللعبة غير صالح."
+            )
+            return
 
         context.user_data["admin_step"] = "add_offer_data"
         context.user_data["pending_game_id"] = game_id
@@ -1577,7 +1613,13 @@ elif data == "adm_add_offer":
 
     # اختيار عرض لتعديل أسعاره
     elif data.startswith("edit_offer:"):
-        offer_id = int(data.split(":")[1])
+        try:
+            offer_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text(
+                "❌ معرّف العرض غير صالح."
+            )
+            return
 
         with db() as conn:
             offer = conn.execute(
@@ -1586,7 +1628,9 @@ elif data == "adm_add_offer":
             ).fetchone()
 
         if not offer:
-            await query.edit_message_text("❌ العرض غير موجود.")
+            await query.edit_message_text(
+                "❌ العرض غير موجود."
+            )
             return
 
         context.user_data["admin_step"] = "edit_price_data"
@@ -1603,7 +1647,7 @@ elif data == "adm_add_offer":
 
     # اختيار طريقة الدفع لتعديل معلوماتها
     elif data.startswith("pay_settings:"):
-        method = data.split(":")[1]
+        method = data.split(":", 1)[1]
 
         if method not in ("baridi", "flexy"):
             return
@@ -1633,7 +1677,11 @@ elif data == "adm_add_offer":
         if len(parts) != 3:
             return
 
-        order_id = int(parts[1])
+        try:
+            order_id = int(parts[1])
+        except ValueError:
+            return
+
         new_status = parts[2]
 
         allowed_statuses = {
@@ -1652,7 +1700,9 @@ elif data == "adm_add_offer":
             ).fetchone()
 
             if not order:
-                await query.edit_message_text("❌ الطلب غير موجود.")
+                await query.edit_message_text(
+                    "❌ الطلب غير موجود."
+                )
                 return
 
             conn.execute(
@@ -1682,26 +1732,47 @@ elif data == "adm_add_offer":
 
     # فتح لعبة للزبون
     elif data.startswith("game:"):
-        game_id = int(data.split(":")[1])
+        try:
+            game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return
+
         await open_game(query, game_id)
 
     # فتح عرض للزبون
     elif data.startswith("offer:"):
         parts = data.split(":")
-        game_id = int(parts[1])
-        offer_id = int(parts[2])
+
+        if len(parts) != 3:
+            return
+
+        try:
+            game_id = int(parts[1])
+            offer_id = int(parts[2])
+        except ValueError:
+            return
+
         await open_offer(query, game_id, offer_id)
 
     # اختيار طريقة الدفع
     elif data.startswith("pay:"):
         parts = data.split(":")
-        game_id = int(parts[1])
-        offer_id = int(parts[2])
+
+        if len(parts) != 4:
+            return
+
+        try:
+            game_id = int(parts[1])
+            offer_id = int(parts[2])
+        except ValueError:
+            return
+
         method = parts[3]
+
         await select_payment(
             query, context, game_id, offer_id, method
         )
-        
+
     # تعديل نص من قاعدة البيانات
     elif data.startswith("text_edit:"):
         key = data.split(":", 1)[1]
@@ -1733,8 +1804,12 @@ elif data == "adm_add_offer":
 
     # تأكيد إرسال إشعار
     elif data == "notify_confirm":
-        target_id = context.user_data.get("pending_notify_user_id")
-        notify_text = context.user_data.get("pending_notify_text")
+        target_id = context.user_data.get(
+            "pending_notify_user_id"
+        )
+        notify_text = context.user_data.get(
+            "pending_notify_text"
+        )
 
         if not target_id or not notify_text:
             await query.message.reply_text(
@@ -1753,26 +1828,37 @@ elif data == "adm_add_offer":
             )
 
         except Exception:
-            logger.exception("فشل إرسال إشعار الزبون")
+            logger.exception(
+                "فشل إرسال إشعار الزبون"
+            )
 
             await query.edit_message_text(
                 "❌ تعذر إرسال الإشعار. تأكد من Telegram ID "
                 "وأن الزبون يستطيع استقبال رسائل البوت."
             )
 
-        context.user_data.pop("pending_notify_user_id", None)
-        context.user_data.pop("pending_notify_text", None)
+        context.user_data.pop(
+            "pending_notify_user_id", None
+        )
+        context.user_data.pop(
+            "pending_notify_text", None
+        )
         context.user_data.pop("admin_step", None)
 
     # إلغاء إرسال الإشعار
     elif data == "notify_cancel":
-        context.user_data.pop("pending_notify_user_id", None)
-        context.user_data.pop("pending_notify_text", None)
+        context.user_data.pop(
+            "pending_notify_user_id", None
+        )
+        context.user_data.pop(
+            "pending_notify_text", None
+        )
         context.user_data.pop("admin_step", None)
 
         await query.edit_message_text(
             "❌ تم إلغاء إرسال الإشعار."
         )
+
     # المتجر للزبائن
     elif data == "store":
         await query.edit_message_text(
@@ -1784,10 +1870,13 @@ elif data == "adm_add_offer":
         context.user_data.pop("admin_step", None)
         context.user_data.pop("pending_game_id", None)
         context.user_data.pop("pending_offer_id", None)
-        context.user_data.pop("pending_payment_method", None)
+        context.user_data.pop(
+            "pending_payment_method", None
+        )
 
-        await query.edit_message_text("تم إلغاء العملية.")
-
+        await query.edit_message_text(
+            "تم إلغاء العملية."
+        )
 
 # =========================
 # معالجة رسائل الإدارة والزبائن
