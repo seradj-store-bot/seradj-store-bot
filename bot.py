@@ -1367,25 +1367,23 @@ async def callback_handler(update, context):
 
     # العودة إلى لوحة الإدارة
     if data == "adm_home":
-        await query.edit_message_text(
-            "🛠️ لوحة التحكم\n\n"
-            "استعمل أزرار لوحة الإدارة الموجودة أسفل الشاشة."
-        )
+        await query.edit_message_telif data == "adm_orders":
+await admin_all_orders(query)
 
-    elif data == "adm_games":
-        await admin_games(query)
+elif data == "adm_stats":
+    await show_stats(query)
 
-    elif data == "adm_offers":
-        await admin_choose_manage_game(query)
-
-    elif data == "adm_ordeif data.startswith("game_desc:"):
-if not is_admin(user_id):
-return
+# تعديل وصف اللعبة
+elif data.startswith("game_desc:"):
+    if not is_admin(user_id):
+        return
 
     try:
         game_id = int(data.split(":", 1)[1])
     except (ValueError, IndexError):
-        await query.message.reply_text("❌ معرّف اللعبة غير صالح.")
+        await query.message.reply_text(
+            "❌ معرّف اللعبة غير صالح."
+        )
         return
 
     with db() as conn:
@@ -1395,7 +1393,9 @@ return
         ).fetchone()
 
     if not game:
-        await query.message.reply_text("❌ اللعبة غير موجودة.")
+        await query.message.reply_text(
+            "❌ اللعبة غير موجودة."
+        )
         return
 
     context.user_data["editing_game_description"] = game_id
@@ -1406,14 +1406,17 @@ return
     )
     return
 
-if data.startswith("game_prompt:"):
+# تعديل رسالة طلب معلومات الشحن
+elif data.startswith("game_prompt:"):
     if not is_admin(user_id):
         return
 
     try:
         game_id = int(data.split(":", 1)[1])
     except (ValueError, IndexError):
-        await query.message.reply_text("❌ معرّف اللعبة غير صالح.")
+        await query.message.reply_text(
+            "❌ معرّف اللعبة غير صالح."
+        )
         return
 
     with db() as conn:
@@ -1423,7 +1426,9 @@ if data.startswith("game_prompt:"):
         ).fetchone()
 
     if not game:
-        await query.message.reply_text("❌ اللعبة غير موجودة.")
+        await query.message.reply_text(
+            "❌ اللعبة غير موجودة."
+        )
         return
 
     context.user_data["editing_game_prompt"] = game_id
@@ -1432,14 +1437,7 @@ if data.startswith("game_prompt:"):
         f"✏️ أرسل الرسالة الجديدة للزبون عند اختيار لعبة {game['name']}.\n\n"
         "يمكنك كتابة الرسالة على عدة أسطر."
     )
-    returnrs":
-        await admin_all_orders(query)
-
-    elif data == "adm_stats":
-        await show_stats(query)
-    # العودة إلى لوحة الإدارة
-    if data == "adm_home":
-        await query.edit_message_text(
+    returnext(
             "🛠️ لوحة التحكم\n\n"
             "استعمل أزرار لوحة الإدارة الموجودة أسفل الشاشة."
         )
@@ -1450,11 +1448,7 @@ if data.startswith("game_prompt:"):
     elif data == "adm_offers":
         await admin_choose_manage_game(query)
 
-    elif data == "adm_orders":
-        await admin_all_orders(query)
 
-    elif data == "adm_stats":
-        await show_stats(query)
 
     elif data == "adm_payment":
         await admin_payment_settings(query)
