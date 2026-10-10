@@ -1292,7 +1292,33 @@ async def callback_handler(update, context):
     if data.startswith(admin_actions) and not is_admin(user_id):
         await query.answer("⛔ غير مسموح لك.", show_alert=True)
         return
+if data.startswith("game_desc:"):
+        if not is_admin(user_id):
+            return
 
+        try:
+            game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text("❌ معرّف اللعبة غير صالح.")
+            return
+
+        with db() as conn:
+            game = conn.execute(
+                "SELECT id, name FROM games WHERE id = ?",
+                (game_id,),
+            ).fetchone()
+
+        if not game:
+            await query.message.reply_text("❌ اللعبة غير موجودة.")
+            return
+
+        context.user_data["editing_game_description"] = game_id
+
+        await query.message.reply_text(
+            f"📝 أرسل الوصف الجديد للعبة: {game['name']}\n\n"
+            "أرسل الوصف في رسالة واحدة."
+        )
+        return
     # العودة إلى لوحة الإدارة
     if data == "adm_home":
         await query.edit_message_text(
