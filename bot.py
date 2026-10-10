@@ -478,10 +478,12 @@ async def open_game(query, game_id):
         return
 
     offers = get_offers(game_id)
+    description = (game["description"] or "").strip()
 
     if not offers:
         await query.edit_message_text(
             f"{game['emoji']} {game['name']}\n\n"
+            f"{description + chr(10) + chr(10) if description else ''}"
             "لا توجد عروض حالياً.\n"
             "تواصل مع الإدارة للمزيد من المعلومات."
         )
@@ -509,11 +511,11 @@ async def open_game(query, game_id):
 
     await query.edit_message_text(
         f"{game['emoji']} {game['name']}\n\n"
+        f"{description + chr(10) + chr(10) if description else ''}"
         "اختر العرض المناسب:\n"
         "💳 الأسعار المعروضة هي أسعار BaridiMob / CCP.",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
-
 
 # ====== تفاصيل العرض ======
 
