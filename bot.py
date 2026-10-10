@@ -173,47 +173,48 @@ def init_db():
             value TEXT DEFAULT ''
         );
         """)
-# تحديث قاعدة البيانات القديمة دون حذف البيانات
-        columns = {
-            row["name"]
-            for row in conn.execute(
-                "PRAGMA table_info(orders)"
-            ).fetchall()
-        }
+#تحديث قاعدة البيانات القديمة دون حذف البيانات
 
-        required_columns = {
-            "game_id": "INTEGER",
-            "offer_id": "INTEGER",
-            "player_id": "TEXT DEFAULT ''",
-            "payment_method": "TEXT DEFAULT ''",
-            "price": "INTEGER DEFAULT 0",
-            "status": "TEXT DEFAULT 'pending'",
-            "created_at": "TEXT",
-        }
+    columns = {
+        row["name"]
+        for row in conn.execute(
+            "PRAGMA table_info(orders)"
+        ).fetchall()
+    }
 
-        # إضافة وصف الألعاب إلى قاعدة البيانات القديمة
-        game_columns = {
-            row["name"]
-            for row in conn.execute(
-                "PRAGMA table_info(games)"
-            ).fetchall()
-        }
+    required_columns = {
+        "game_id": "INTEGER",
+        "offer_id": "INTEGER",
+        "player_id": "TEXT DEFAULT ''",
+        "payment_method": "TEXT DEFAULT ''",
+        "price": "INTEGER DEFAULT 0",
+        "status": "TEXT DEFAULT 'pending'",
+        "created_at": "TEXT",
+    }
 
-        if "description" not in game_columns:
-            game_columns = {
-            row["name"]
-            for row in conn.execute(
-                "PRAGMA table_info(games)"
-            ).fetchall()
-        }
-
-        if "player_prompt" not in game_columns:
+    for column_name, column_type in required_columns.items():
+        if column_name not in columns:
             conn.execute(
-                "ALTER TABLE games ADD COLUMN player_prompt TEXT DEFAULT ''"
+                f"ALTER TABLE orders ADD COLUMN {column_name} {column_type}"
             )
-            conn.execute(
-                "ALTER TABLE games ADD COLUMN description TEXT DEFAULT ''"
-            )
+
+    # التحقق من أعمدة جدول الألعاب وإضافة الناقص فقط
+    game_columns = {
+        row["name"]
+        for row in conn.execute(
+            "PRAGMA table_info(games)"
+        ).fetchall()
+    }
+
+    if "description" not in game_columns:
+        conn.execute(
+            "ALTER TABLE games ADD COLUMN description TEXT DEFAULT ''"
+        )
+
+    if "player_prompt" not in game_columns:
+        conn.execute(
+            "ALTER TABLE games ADD COLUMN player_prompt TEXT DEFAULT ''"
+        )
         default_games = [
             ("Free Fire", "🔥"),
             ("PUBG Mobile", "🎯"),
