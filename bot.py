@@ -66,24 +66,11 @@ def db():
 
 
 def get_setting(key, default=""):
-    with db() as conn:
-        row = conn.execute(
-            "SELECT value FROM settings WHERE key = ?",
-            (key,),
-        ).fetchone()
-    return row["value"] if row else default
-
-
-def set_setting(key, value):
-    with db() as conn:
-        conn.execute(
-            """
-            INSERT INTO settings (key, value)
-            VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            """,
-            (key, value),
-        )
+with db() as conn:
+row = conn.execute(
+"SELECT value FROM settings WHERE key = ?",
+(key,),
+).fetchone()
 
 return row["value"] if row else default
 
@@ -98,7 +85,8 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
 (key, value),
 )
 
-
+def is_admin(user_id):
+return user_id == ADMIN_ID and ADMIN_ID != 0
 def is_admin(user_id):
     return user_id == ADMIN_ID and ADMIN_ID != 0
 
