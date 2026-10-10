@@ -937,10 +937,10 @@ await query.edit_message_text(
 
 
 async def admin_games(query):
-with db() as conn:
-games = conn.execute(
-"SELECT id, name, emoji, active FROM games ORDER BY id"
-).fetchall()
+    with db() as conn:
+        games = conn.execute(
+            "SELECT id, name, emoji, active FROM games ORDER BY id"
+        ).fetchall()
 
 buttons = []
 
