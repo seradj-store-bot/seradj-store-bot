@@ -949,19 +949,7 @@ for game in games:
 
     buttons.append([
         InlineKeyboardButton(
-      async def admin_games(query):
-with db() as conn:
-games = conn.execute(
-"SELECT id, name, emoji, active FROM games ORDER BY id"
-).fetchall()
-
-buttons = []
-
-for game in games:
-    state = "🟢" if game["active"] else "🔴"
-
-    buttons.append([
-        InlineKeyboardButton(
+      
             f"{state} {game['emoji']} {game['name']}",
             callback_data=f"game_toggle:{game['id']}",
         ),
