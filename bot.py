@@ -2033,9 +2033,9 @@ async def text_handler(update, context):
 # =========================
 
 # تعديل النصوص وإرسال الإشعارات
-# =========================
+    # =========================
 
-if is_admin(user_id):
+    if is_admin(user_id):
         step = context.user_data.get("admin_step")
 
         if step == "edit_setting_value":
