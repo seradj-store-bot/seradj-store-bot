@@ -1747,7 +1747,7 @@ async def text_handler(update, context):
         return
 
     if text == "👤 حسابي":
-        await show_account(update, user_id)
+        await show_account(update.effective_message, update.effective_user.id)
         return
 
     if text == "📞 اتصل بالإدارة":
