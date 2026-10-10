@@ -755,10 +755,16 @@ async def photo_handler(update, context):
                 ),
                 reply_markup=keyboard,
             )
-        except Exception:
+        except Exception as e:
             logger.exception(
                 "تعذر إرسال وصل الدفع إلى الإدارة"
             )
+            await message.reply_text(
+                "❌ تعذر إرسال وصل الدفع إلى الإدارة.\n"
+                f"سبب الخطأ: {str(e)[:300]}\n\n"
+                "لم يتم تأكيد الطلب. تواصل مع الإدارة."
+            )
+            return
 
     # إنهاء حالة الطلب المؤقتة
     context.user_data.pop("order_draft", None)
