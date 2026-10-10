@@ -1346,6 +1346,7 @@ async def callback_handler(update, context):
         "game_toggle:",
         "game_delete:",
         "game_desc:",
+        "game_prompt:",
         "offers_game:",
         "offer_toggle:",
         "offer_delete:",
@@ -1363,6 +1364,38 @@ async def callback_handler(update, context):
         return
 
     if data.startswith("game_desc:"):
+    if data.startswith("game_prompt:"):
+        if not is_admin(user_id):
+            return
+
+        try:
+            game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text(
+                "❌ معرّف اللعبة غير صالح."
+            )
+            return
+
+        with db() as conn:
+            game = conn.execute(
+                "SELECT id, name FROM games WHERE id = ?",
+                (game_id,),
+            ).fetchone()
+
+        if not game:
+            await query.message.reply_text(
+                "❌ اللعبة غير موجودة."
+            )
+            return
+
+        context.user_data["editing_game_prompt"] = game_id
+
+        await query.message.reply_text(
+            f"✏️ أرسل الرسالة الجديدة التي تريد عرضها "
+            f"للزبون عند اختيار لعبة {game['name']}.\n\n"
+            "يمكنك كتابة الرسالة على عدة أسطر."
+        )
+        return
         if not is_admin(user_id):
             return
 
