@@ -1962,6 +1962,105 @@ if is_admin(user_id):
             ]),
         )
         return
+        تعديل النصوص وإرسال إشعارات للزبائن
+
+if is_admin(user_id):
+    step = context.user_data.get("admin_step")
+
+    # حفظ النص الجديد
+    if step == "edit_setting_value":
+        key = context.user_data.get("pending_setting_key")
+
+        allowed_keys = {
+            "welcome_message",
+            "store_description",
+            "no_offers_message",
+            "contact_message",
+        }
+
+        if key not in allowed_keys:
+            context.user_data.pop("admin_step", None)
+            context.user_data.pop("pending_setting_key", None)
+            await message.reply_text("❌ النص غير محدد.")
+            return
+
+        set_setting(key, text)
+
+        context.user_data.pop("admin_step", None)
+        context.user_data.pop("pending_setting_key", None)
+
+        await message.reply_text(
+            "✅ تم حفظ النص الجديد بنجاح.",
+            reply_markup=ReplyKeyboardMarkup(
+                ADMIN_PANEL_MENU,
+                resize_keyboard=True,
+            ),
+        )
+        return
+
+    # استقبال رقم الزبون
+    if step == "notify_user_id":
+        try:
+            target_id = int(text)
+            if target_id <= 0:
+                raise ValueError
+        except ValueError:
+            await message.reply_text(
+                "❌ رقم Telegram ID غير صحيح. أعد المحاولة."
+            )
+            return
+
+        with db() as conn:
+            customer = conn.execute(
+                "SELECT user_id FROM users WHERE user_id = ?",
+                (target_id,),
+            ).fetchone()
+
+        if not customer:
+            await message.reply_text(
+                "❌ هذا الزبون غير موجود في قاعدة بيانات البوت."
+            )
+            return
+
+        context.user_data["pending_notify_user_id"] = target_id
+        context.user_data["admin_step"] = "notify_message"
+
+        await message.reply_text(
+            "✉️ ابعث نص الإشعار الذي تريد إرساله.\n"
+            "ابعث /cancel للإلغاء."
+        )
+        return
+
+    # استقبال نص الإشعار وعرض المعاينة
+    if step == "notify_message":
+        target_id = context.user_data.get("pending_notify_user_id")
+
+        if not target_id:
+            context.user_data.pop("admin_step", None)
+            await message.reply_text("❌ أعد بدء عملية الإشعار.")
+            return
+
+        context.user_data["pending_notify_text"] = text
+        context.user_data["admin_step"] = "notify_confirm"
+
+        await message.reply_text(
+            f"👤 رقم الزبون: {target_id}\n\n"
+            f"📨 معاينة الإشعار:\n\n{text}\n\n"
+            "هل تريد إرسال هذه الرسالة؟",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "✅ تأكيد الإرسال",
+                        callback_data="notify_confirm",
+                    ),
+                    InlineKeyboardButton(
+                        "❌ إلغاء",
+                        callback_data="notify_cancel",
+                    ),
+                ]
+            ]),
+        )
+        return
 
     # =========================
     # إكمال طلب الزبون
