@@ -1372,20 +1372,27 @@ async def callback_handler(update, context):
         return
 
     
+#العودة إلى لوحة الإدارة
 
-    # العودة إلى لوحة الإدارة
-    if data == "adm_home":
-        await query.edit_message_telif data == "adm_orders":
-await admin_all_orders(query)
+if data == "adm_home":
+    await query.edit_message_text(
+        "⚙️ لوحة الإدارة",
+        reply_markup=ADMIN_PANEL_MENU,
+    )
+    return
 
+# عرض الطلبات
+elif data == "adm_orders":
+    await admin_all_orders(query)
+    return
+
+# الإحصائيات
 elif data == "adm_stats":
     await show_stats(query)
+    return
 
 # تعديل وصف اللعبة
 elif data.startswith("game_desc:"):
-    if not is_admin(user_id):
-        return
-
     try:
         game_id = int(data.split(":", 1)[1])
     except (ValueError, IndexError):
