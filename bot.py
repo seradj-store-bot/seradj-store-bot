@@ -1531,7 +1531,8 @@ async def callback_handler(update, context):
         await select_payment(
             query, context, game_id, offer_id, method
         )
-# تعديل نص من قاعدة البيانات
+        
+    # تعديل نص من قاعدة البيانات
     elif data.startswith("text_edit:"):
         key = data.split(":", 1)[1]
 
