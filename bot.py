@@ -23,7 +23,7 @@ TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DB_PATH = os.getenv("DB_PATH", "seradj_store.db")
 WHATSAPP_NUMBER = os.getenv("WHATSAPP_NUMBER", "213671629818")
-
+STORE_NAME = "SERADJ STORE"
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
