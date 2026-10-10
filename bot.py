@@ -1363,65 +1363,7 @@ async def callback_handler(update, context):
         await query.answer("⛔ غير مسموح لك.", show_alert=True)
         return
 
-    if data.startswith("game_desc:"):
-    if data.startswith("game_prompt:"):
-        if not is_admin(user_id):
-            return
-
-        try:
-            game_id = int(data.split(":", 1)[1])
-        except (ValueError, IndexError):
-            await query.message.reply_text(
-                "❌ معرّف اللعبة غير صالح."
-            )
-            return
-
-        with db() as conn:
-            game = conn.execute(
-                "SELECT id, name FROM games WHERE id = ?",
-                (game_id,),
-            ).fetchone()
-
-        if not game:
-            await query.message.reply_text(
-                "❌ اللعبة غير موجودة."
-            )
-            return
-
-        context.user_data["editing_game_prompt"] = game_id
-
-        await query.message.reply_text(
-            f"✏️ أرسل الرسالة الجديدة التي تريد عرضها "
-            f"للزبون عند اختيار لعبة {game['name']}.\n\n"
-            "يمكنك كتابة الرسالة على عدة أسطر."
-        )
-        return
-        if not is_admin(user_id):
-            return
-
-        try:
-            game_id = int(data.split(":", 1)[1])
-        except (ValueError, IndexError):
-            await query.message.reply_text("❌ معرّف اللعبة غير صالح.")
-            return
-
-        with db() as conn:
-            game = conn.execute(
-                "SELECT id, name FROM games WHERE id = ?",
-                (game_id,),
-            ).fetchone()
-
-        if not game:
-            await query.message.reply_text("❌ اللعبة غير موجودة.")
-            return
-
-        context.user_data["editing_game_description"] = game_id
-
-        await query.message.reply_text(
-            f"📝 أرسل الوصف الجديد للعبة: {game['name']}\n\n"
-            "أرسل الوصف في رسالة واحدة."
-        )
-        return
+    
 
     # العودة إلى لوحة الإدارة
     if data == "adm_home":
@@ -1436,7 +1378,61 @@ async def callback_handler(update, context):
     elif data == "adm_offers":
         await admin_choose_manage_game(query)
 
-    elif data == "adm_orders":
+    elif data == "adm_ordeif data.startswith("game_desc:"):
+if not is_admin(user_id):
+return
+
+    try:
+        game_id = int(data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await query.message.reply_text("❌ معرّف اللعبة غير صالح.")
+        return
+
+    with db() as conn:
+        game = conn.execute(
+            "SELECT id, name FROM games WHERE id = ?",
+            (game_id,),
+        ).fetchone()
+
+    if not game:
+        await query.message.reply_text("❌ اللعبة غير موجودة.")
+        return
+
+    context.user_data["editing_game_description"] = game_id
+
+    await query.message.reply_text(
+        f"📝 أرسل الوصف الجديد للعبة: {game['name']}\n\n"
+        "أرسل الوصف في رسالة واحدة."
+    )
+    return
+
+if data.startswith("game_prompt:"):
+    if not is_admin(user_id):
+        return
+
+    try:
+        game_id = int(data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await query.message.reply_text("❌ معرّف اللعبة غير صالح.")
+        return
+
+    with db() as conn:
+        game = conn.execute(
+            "SELECT id, name FROM games WHERE id = ?",
+            (game_id,),
+        ).fetchone()
+
+    if not game:
+        await query.message.reply_text("❌ اللعبة غير موجودة.")
+        return
+
+    context.user_data["editing_game_prompt"] = game_id
+
+    await query.message.reply_text(
+        f"✏️ أرسل الرسالة الجديدة للزبون عند اختيار لعبة {game['name']}.\n\n"
+        "يمكنك كتابة الرسالة على عدة أسطر."
+    )
+    returnrs":
         await admin_all_orders(query)
 
     elif data == "adm_stats":
