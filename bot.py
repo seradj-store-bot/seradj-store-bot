@@ -2036,38 +2036,37 @@ async def text_handler(update, context):
 # =========================
 
 if is_admin(user_id):
-    step = context.user_data.get("admin_step")
+        step = context.user_data.get("admin_step")
 
-    # حفظ النص الجديد
-   if step == "edit_setting_value":
-        key = context.user_data.get("pending_setting_key")
+        if step == "edit_setting_value":
+            key = context.user_data.get("pending_setting_key")
 
-        allowed_keys = {
-            "welcome_message",
-            "store_description",
-            "no_offers_message",
-            "contact_message",
-        }
+            allowed_keys = {
+                "welcome_message",
+                "store_description",
+                "no_offers_message",
+                "contact_message",
+            }
 
-        if key not in allowed_keys:
+            if key not in allowed_keys:
+                context.user_data.pop("admin_step", None)
+                context.user_data.pop("pending_setting_key", None)
+                await message.reply_text("❌ النص المطلوب غير محدد.")
+                return
+
+            set_setting(key, text)
+
             context.user_data.pop("admin_step", None)
             context.user_data.pop("pending_setting_key", None)
-            await message.reply_text("❌ النص المطلوب غير محدد.")
+
+            await message.reply_text(
+                "✅ تم حفظ النص الجديد بنجاح.",
+                reply_markup=ReplyKeyboardMarkup(
+                    ADMIN_PANEL_MENU,
+                    resize_keyboard=True,
+                ),
+            )
             return
-
-        set_setting(key, text)
-
-        context.user_data.pop("admin_step", None)
-        context.user_data.pop("pending_setting_key", None)
-
-        await message.reply_text(
-            "✅ تم حفظ النص الجديد بنجاح.",
-            reply_markup=ReplyKeyboardMarkup(
-                ADMIN_PANEL_MENU,
-                resize_keyboard=True,
-            ),
-        )
-        return
 
     # استقبال Telegram ID للزبون
     if step == "notify_user_id":
