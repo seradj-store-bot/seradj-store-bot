@@ -56,6 +56,7 @@ ADMIN_PANEL_MENU = [
 ]
 
 def now_text():
+def now_text():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -64,18 +65,26 @@ def db():
     conn.row_factory = sqlite3.Row
     return conn
 
-def get_setting(key, default=""):
-def db():
-conn = sqlite3.connect(DB_PATH)
-conn.row_factory = sqlite3.Row
-return conn
 
 def get_setting(key, default=""):
-with db() as conn:
-row = conn.execute(
-"SELECT value FROM settings WHERE key = ?",
-(key,),
-).fetchone()
+    with db() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            (key,),
+        ).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key, value):
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
 
 return row["value"] if row else default
 
