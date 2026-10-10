@@ -1506,6 +1506,10 @@ async def text_handler(update, context):
     message = update.effective_message
     user_id = update.effective_user.id
     text = (message.text or "").strip()
+    
+    if text in ("🛠️ لوحة التحكم", "لوحة التحكم", "الإدارة"):
+        await show_admin_panel(update, context)
+        return
 
     # إلغاء العملية الحالية
     if text in CANCEL_WORDS:
