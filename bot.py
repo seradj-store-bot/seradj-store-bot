@@ -1292,7 +1292,8 @@ async def callback_handler(update, context):
     if data.startswith(admin_actions) and not is_admin(user_id):
         await query.answer("⛔ غير مسموح لك.", show_alert=True)
         return
-if data.startswith("game_desc:"):
+
+    if data.startswith("game_desc:"):
         if not is_admin(user_id):
             return
 
@@ -1319,6 +1320,25 @@ if data.startswith("game_desc:"):
             "أرسل الوصف في رسالة واحدة."
         )
         return
+
+    # العودة إلى لوحة الإدارة
+    if data == "adm_home":
+        await query.edit_message_text(
+            "🛠️ لوحة التحكم\n\n"
+            "استعمل أزرار لوحة الإدارة الموجودة أسفل الشاشة."
+        )
+
+    elif data == "adm_games":
+        await admin_games(query)
+
+    elif data == "adm_offers":
+        await admin_choose_manage_game(query)
+
+    elif data == "adm_orders":
+        await admin_all_orders(query)
+
+    elif data == "adm_stats":
+        await show_stats(query)
     # العودة إلى لوحة الإدارة
     if data == "adm_home":
         await query.edit_message_text(
