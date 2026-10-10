@@ -65,12 +65,18 @@ def db():
     return conn
 
 def get_setting(key, default=""):
+def db():
+conn = sqlite3.connect(DB_PATH)
+conn.row_factory = sqlite3.Row
+return conn
+
 def get_setting(key, default=""):
 with db() as conn:
 row = conn.execute(
 "SELECT value FROM settings WHERE key = ?",
 (key,),
 ).fetchone()
+
 return row["value"] if row else default
 
 def set_setting(key, value):
