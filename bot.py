@@ -1701,13 +1701,34 @@ async def text_handler(update, context):
         context.user_data.pop("pending_offer_id", None)
         context.user_data.pop("pending_payment_method", None)
         context.user_data.pop("awaiting_player_id", None)
+        context.user_data.pop("editing_game_description", None)
 
         await message.reply_text(
             "❌ تم إلغاء العملية.",
             reply_markup=main_keyboard(user_id),
         )
         return
+    # تعديل وصف اللعبة
+    if is_admin(user_id):
+        game_id = context.user_data.get("editing_game_description")
 
+        if game_id is not None:
+            if not text:
+                await message.reply_text("❌ الوصف فارغ. أرسل وصف اللعبة.")
+                return
+
+            with db() as conn:
+                conn.execute(
+                    "UPDATE games SET description = ? WHERE id = ?",
+                    (text, game_id),
+                )
+
+            context.user_data.pop("editing_game_description", None)
+
+            await message.reply_text(
+                "✅ تم حفظ وصف اللعبة بنجاح."
+            )
+            return
     # =========================
     # خطوات الإدارة
     # =========================
