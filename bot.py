@@ -906,30 +906,40 @@ async def show_admin_panel(update, context):
 # =========================
 
 async def admin_choose_offer_game(query):
-    with db() as conn:
-        games = conn.execute(
-            "SELECT id, name, emoji FROM games ORDER BY id"
-        ).fetchall()
+with db() as conn:
+games = conn.execute(
+"SELECT id, name, emoji FROM games ORDER BY id"
+).fetchall()
 
-    buttons = [
-        [
-            InlineKeyboardButton(
-                f"{game['emoji']} {game['name']}",
-                callback_data=f"add_offer_game:{game['id']}",
-            )
-        ]
-        for game in games
-    ]
-
-    buttons.append([
+buttons = [
+    [
         InlineKeyboardButton(
-            "🔙 رجوع",
-            callback_data="adm_home",
+            f"{game['emoji']} {game['name']}",
+            callback_data=f"add_offer_game:{game['id']}",
         )
-    ])
+    ]
+    for game in games
+]
 
-    await query.edit_message_text(
-        "🎮async def admin_games(query):
+buttons.append([
+    InlineKeyboardButton(
+        "🔙 رجوع",
+        callback_data="adm_home",
+    )
+])
+
+await query.edit_message_text(
+    "🎮 اختار اللعبة لي حاب تزيدلها عرض:",
+    reply_markup=InlineKeyboardMarkup(buttons),
+)
+
+=========================
+
+إدارة الألعاب
+
+=========================
+
+async def admin_games(query):
 with db() as conn:
 games = conn.execute(
 "SELECT id, name, emoji, active FROM games ORDER BY id"
@@ -977,57 +987,7 @@ await query.edit_message_text(
     "🗑️ حذف اللعبة والعروض التابعة لها.",
     parse_mode="HTML",
     reply_markup=InlineKeyboardMarkup(buttons),
-)async def admin_games(query):
-with db() as conn:
-games = conn.execute(
-"SELECT id, name, emoji, active FROM games ORDER BY id"
-).fetchall()
-
-buttons = []
-
-for game in games:
-    state = "🟢" if game["active"] else "🔴"
-
-    buttons.append([
-        InlineKeyboardButton(
-            f"{state} {game['emoji']} {game['name']}",
-            callback_data=f"game_toggle:{game['id']}",
-        ),
-        InlineKeyboardButton(
-            "🗑️",
-            callback_data=f"game_delete:{game['id']}",
-        ),
-    ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            "📝 تعديل الوصف",
-            callback_data=f"game_desc:{game['id']}",
-        ),
-        InlineKeyboardButton(
-            "✏️ تعديل رسالة طلب المعلومات",
-            callback_data=f"game_prompt:{game['id']}",
-        ),
-    ])
-
-buttons.append([
-    InlineKeyboardButton(
-        "🔄 تحديث",
-        callback_data="adm_games",
-    )
-])
-
-await query.edit_message_text(
-    "🎮 <b>إدارة الألعاب</b>\n\n"
-    "🟢 / 🔴 اضغط على اسم اللعبة لتفعيلها أو إيقافها.\n"
-    "📝 تعديل وصف اللعبة.\n"
-    "✏️ تعديل رسالة طلب المعلومات.\n"
-    "🗑️ حذف اللعبة والعروض التابعة لها.",
-    parse_mode="HTML",
-    reply_markup=InlineKeyboardMarkup(buttons),
-) اختار اللعبة لي حاب تزيدلها عرض:",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
+)
 
 
 # =========================
