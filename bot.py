@@ -672,7 +672,111 @@ async def create_order(update, context):
         "⚠️ تأكد أن الصورة واضحة وتظهر معلومات العملية.\n"
         "لإلغاء العملية أرسل /cancel"
     )
+async def photo_handler(update, context):
+    user = update.effective_user
+    message = update.effective_message
 
+    if not context.user_data.get("awaiting_payment_receipt"):
+        return
+
+    draft = context.user_data.get("order_draft")
+    player_id = context.user_data.get("pending_player_id")
+
+    if not draft or player_id is None:
+        context.user_data.pop("awaiting_payment_receipt", None)
+        await message.reply_text(
+            "❌ انتهت جلسة الطلب. ابدأ طلبًا جديدًا."
+        )
+        return
+
+    # الحصول على صورة الوصل
+    photo = message.photo[-1]
+
+    # إنشاء الطلب بعد استلام صورة الوصل
+    with db() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO orders (
+                user_id, game_id, offer_id, player_id,
+                payment_method, price, status, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user.id,
+                draft["game_id"],
+                draft["offer_id"],
+                player_id,
+                draft["method"],
+                draft["price"],
+                "pending",
+                now_text(),
+            ),
+        )
+        order_id = cursor.lastrowid
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🔄 قيد التنفيذ",
+                callback_data=f"status:{order_id}:processing",
+            ),
+            InlineKeyboardButton(
+                "✅ مكتمل",
+                callback_data=f"status:{order_id}:completed",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "❌ رفض الطلب",
+                callback_data=f"status:{order_id}:rejected",
+            ),
+        ],
+    ])
+
+    # إرسال صورة الوصل مع معلومات الطلب إلى الأدمن
+    if ADMIN_ID:
+        try:
+            await context.bot.send_photo(
+                chat_id=ADMIN_ID,
+                photo=photo.file_id,
+                caption=(
+                    f"🆕 طلب جديد #{order_id}\n\n"
+                    f"👤 الزبون: {user.full_name}\n"
+                    f"🆔 Telegram ID: {user.id}\n"
+                    f"🎮 الخدمة: {draft['game_name']}\n"
+                    f"📦 العرض: {draft['offer_name']}\n"
+                    f"🆔 معرف اللاعب: {player_id}\n"
+                    f"💳 الدفع: {draft['method']}\n"
+                    f"💰 السعر: {draft['price']} دج\n"
+                    f"🧾 وصل الدفع: مرفق أعلاه\n"
+                    f"📌 الحالة: قيد الانتظار\n"
+                    f"🕒 الوقت: {now_text()}"
+                ),
+                reply_markup=keyboard,
+            )
+        except Exception:
+            logger.exception(
+                "تعذر إرسال وصل الدفع إلى الإدارة"
+            )
+
+    # إنهاء حالة الطلب المؤقتة
+    context.user_data.pop("order_draft", None)
+    context.user_data.pop("pending_player_id", None)
+    context.user_data.pop("awaiting_payment_receipt", None)
+
+    await message.reply_text(
+        "✅ تم استلام صورة وصل الدفع وتسجيل طلبك!\n\n"
+        f"🧾 رقم الطلب: #{order_id}\n"
+        f"🎮 الخدمة: {draft['game_name']}\n"
+        f"📦 العرض: {draft['offer_name']}\n"
+        f"🆔 معرف اللاعب: {player_id}\n"
+        f"💳 طريقة الدفع: {draft['method']}\n"
+        f"💰 المبلغ: {draft['price']} دج\n"
+        "📌 الحالة: قيد الانتظار\n\n"
+        "ستتحقق الإدارة من الوصل قبل معالجة طلبك.",
+        reply_markup=main_keyboard(user.id),
+    )
 # =========================
 # عرض طلبات الزبون
 # =========================
@@ -2219,6 +2323,11 @@ def main():
     # أزرار Inline
     app.add_handler(CallbackQueryHandler(callback_handler))
 
+    # استقبال صور وصل الدفع
+    app.add_handler(
+        MessageHandler(filters.PHOTO, photo_handler)
+    )
+    
     # الرسائل النصية
     app.add_handler(
         MessageHandler(
