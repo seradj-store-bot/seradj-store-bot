@@ -900,46 +900,54 @@ async def show_admin_panel(update, context):
 # =========================
 
 async def admin_games(query):
-    with db() as conn:
-        games = conn.execute(
-            "SELECT id, name, emoji, active FROM games ORDER BY id"
-        ).fetchall()
+with db() as conn:
+games = conn.execute(
+"SELECT id, name, emoji, active FROM games ORDER BY id"
+).fetchall()
 
-    buttons = []
+buttons = []
 
-    for game in games:
-        state = "🟢" if game["active"] else "🔴"
-
-        buttons.append([
-            InlineKeyboardButton(
-                f"{state} {game['emoji']} {game['name']}",
-                callback_data=f"game_toggle:{game['id']}",
-            ),
-            InlineKeyboardButton(
-                "📝 تعديل الوصف",
-                callback_data=f"game_desc:{game['id']}",
-            ),
-            InlineKeyboardButton(
-                "🗑️",
-                callback_data=f"game_delete:{game['id']}",
-            ),
-        ])
+for game in games:
+    state = "🟢" if game["active"] else "🔴"
 
     buttons.append([
         InlineKeyboardButton(
-            "🔄 تحديث",
-            callback_data="adm_games",
-        )
+            f"{state} {game['emoji']} {game['name']}",
+            callback_data=f"game_toggle:{game['id']}",
+        ),
+        InlineKeyboardButton(
+            "🗑️",
+            callback_data=f"game_delete:{game['id']}",
+        ),
     ])
 
-    await query.edit_message_text(
-        "🎮 <b>إدارة الألعاب</b>\n\n"
-        "🟢 / 🔴 اضغط على اسم اللعبة لتفعيلها أو إيقافها.\n"
-        "📝 تعديل الوصف.\n"
-        "🗑️ حذف اللعبة والعروض التابعة لها.",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons),
+    buttons.append([
+        InlineKeyboardButton(
+            "📝 تعديل الوصف",
+            callback_data=f"game_desc:{game['id']}",
+        ),
+        InlineKeyboardButton(
+            "✏️ تعديل رسالة طلب المعلومات",
+            callback_data=f"game_prompt:{game['id']}",
+        ),
+    ])
+
+buttons.append([
+    InlineKeyboardButton(
+        "🔄 تحديث",
+        callback_data="adm_games",
     )
+])
+
+await query.edit_message_text(
+    "🎮 <b>إدارة الألعاب</b>\n\n"
+    "🟢 / 🔴 تفعيل اللعبة أو إيقافها.\n"
+    "📝 تعديل وصف اللعبة.\n"
+    "✏️ تعديل الرسالة التي تظهر للزبون لطلب معلومات الشحن.\n"
+    "🗑️ حذف اللعبة والعروض التابعة لها.",
+    parse_mode="HTML",
+    reply_markup=InlineKeyboardMarkup(buttons),
+)
 
 
 # =========================
