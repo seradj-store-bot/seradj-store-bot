@@ -935,7 +935,21 @@ await query.edit_message_text(
     reply_markup=InlineKeyboardMarkup(buttons),
 )
 
+
 async def admin_games(query):
+with db() as conn:
+games = conn.execute(
+"SELECT id, name, emoji, active FROM games ORDER BY id"
+).fetchall()
+
+buttons = []
+
+for game in games:
+    state = "🟢" if game["active"] else "🔴"
+
+    buttons.append([
+        InlineKeyboardButton(
+      async def admin_games(query):
 with db() as conn:
 games = conn.execute(
 "SELECT id, name, emoji, active FROM games ORDER BY id"
@@ -983,23 +997,7 @@ await query.edit_message_text(
     "🗑️ حذف اللعبة والعروض التابعة لها.",
     parse_mode="HTML",
     reply_markup=InlineKeyboardMarkup(buttons),
-)
-
-
-async def admin_games(query):
-with db() as conn:
-games = conn.execute(
-"SELECT id, name, emoji, active FROM games ORDER BY id"
-).fetchall()
-
-buttons = []
-
-for game in games:
-    state = "🟢" if game["active"] else "🔴"
-
-    buttons.append([
-        InlineKeyboardButton(
-            f"{state} {game['emoji']} {game['name']}",
+)      f"{state} {game['emoji']} {game['name']}",
             callback_data=f"game_toggle:{game['id']}",
         ),
         InlineKeyboardButton(
