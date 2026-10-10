@@ -55,9 +55,7 @@ ADMIN_PANEL_MENU = [
 ["🔙 القائمة الرئيسية"],
 ]
 
-def now_text():
-def now_text():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def now_text():return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def db():
