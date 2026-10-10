@@ -2213,45 +2213,44 @@ if is_admin(user_id):
             )
             return
             if text == "📝 إدارة النصوص":
-await message.reply_text(
-"📝 اختر النص الذي تريد تعديله:",
-reply_markup=InlineKeyboardMarkup([
-[
-InlineKeyboardButton(
-"رسالة الترحيب",
-callback_data="text_edit:welcome_message",
-)
-],
-[
-InlineKeyboardButton(
-"وصف المتجر",
-callback_data="text_edit:store_description",
-)
-],
-[
-InlineKeyboardButton(
-"رسالة عدم وجود عروض",
-callback_data="text_edit:no_offers_message",
-)
-],
-[
-InlineKeyboardButton(
-"رسالة التواصل مع الإدارة",
-callback_data="text_edit:contact_message",
-)
-],
-]),
-)
-return
+            await message.reply_text(
+                "📝 اختر النص الذي تريد تعديله:",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "رسالة الترحيب",
+                            callback_data="text_edit:welcome_message",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "وصف المتجر",
+                            callback_data="text_edit:store_description",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "رسالة عدم وجود عروض",
+                            callback_data="text_edit:no_offers_message",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "رسالة التواصل مع الإدارة",
+                            callback_data="text_edit:contact_message",
+                        )
+                    ],
+                ]),
+            )
+            return
 
-    if text == "📨 إرسال إشعار":
-        context.user_data["admin_step"] = "notify_user_id"
-        await message.reply_text(
-            "📨 ابعث Telegram ID تاع الزبون.\n\n"
-            "الزبون يقدر يلقى الـ ID تاعه باستعمال /myid.\n\n"
-            "ابعث /cancel للإلغاء."
-        )
-        return
+        if text == "📨 إرسال إشعار":
+            context.user_data["admin_step"] = "notify_user_id"
+            await message.reply_text(
+                "📨 ابعث Telegram ID تاع الزبون.\n\n"
+                "ابعث /cancel للإلغاء."
+            )
+            return
 
         if text == "🔙 القائمة الرئيسية":
             await message.reply_text(
