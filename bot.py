@@ -1972,7 +1972,7 @@ async def text_handler(update, context):
     # =========================
 
     if context.user_data.get("awaiting_player_id"):
-        await create_order(update, context, text)
+        await create_order(update, context)
         return
 
     # =========================
