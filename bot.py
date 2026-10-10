@@ -143,7 +143,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             emoji TEXT DEFAULT '🎮',
-            active INTEGER DEFAULT 1
+            active INTEGER DEFAULT 1,
+            description TEXT DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS offers (
@@ -190,11 +191,18 @@ def init_db():
             "created_at": "TEXT",
         }
 
-        for column, definition in required_columns.items():
-            if column not in columns:
-                conn.execute(
-                    f"ALTER TABLE orders ADD COLUMN {column} {definition}"
-                )
+        # إضافة وصف الألعاب إلى قاعدة البيانات القديمة
+        game_columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(games)"
+            ).fetchall()
+        }
+
+        if "description" not in game_columns:
+            conn.execute(
+                "ALTER TABLE games ADD COLUMN description TEXT DEFAULT ''"
+            )
         default_games = [
             ("Free Fire", "🔥"),
             ("PUBG Mobile", "🎯"),
