@@ -775,7 +775,7 @@ async def show_admin_panel(update, context):
 async def admin_games(query):
     with db() as conn:
         games = conn.execute(
-            "SELECT id, name, emoji,active FROM games ORDER BY id
+            "SELECT id, name, emoji, active FROM games ORDER BY id"
         ).fetchall()
 
     buttons = []
