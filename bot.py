@@ -81,24 +81,24 @@ def main_keyboard(user_id):
 
 
 def admin_keyboard():
-    return ReplyKeyboardMarkup(
-        ADMIN_PANEL_MENU,
-        resize_keyboard=True
-    )
-    async def admin_command(update, context):
-    user_id = update.effective_user.id
+return ReplyKeyboardMarkup(
+ADMIN_PANEL_MENU,
+resize_keyboard=True
+)
 
-    if not is_admin(user_id):
-        await update.effective_message.reply_text(
-            "⛔ هذا الأمر خاص بالإدارة."
-        )
-        return
+async def admin_command(update, context):
+user_id = update.effective_user.id
 
+if not is_admin(user_id):
     await update.effective_message.reply_text(
-        "👑 لوحة تحكم SERADJ STORE",
-        reply_markup=admin_keyboard()
+        "⛔ هذا الأمر خاص بالإدارة."
     )
+    return
 
+await update.effective_message.reply_text(
+    "👑 لوحة تحكم SERADJ STORE",
+    reply_markup=admin_keyboard()
+)
 
 def cancel_keyboard():
     return ReplyKeyboardMarkup(
