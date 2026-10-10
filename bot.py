@@ -200,6 +200,17 @@ def init_db():
         }
 
         if "description" not in game_columns:
+            game_columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(games)"
+            ).fetchall()
+        }
+
+        if "player_prompt" not in game_columns:
+            conn.execute(
+                "ALTER TABLE games ADD COLUMN player_prompt TEXT DEFAULT ''"
+            )
             conn.execute(
                 "ALTER TABLE games ADD COLUMN description TEXT DEFAULT ''"
             )
