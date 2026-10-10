@@ -1717,7 +1717,7 @@ async def text_handler(update, context):
     # =========================
 
     if text == "🛍️ المتجر":
-        await show_store(update, context)
+        await show_store(update.effective_message, update.effective_user.id)
         return
 
     if text == "📦 طلباتي":
