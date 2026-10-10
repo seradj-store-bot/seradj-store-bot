@@ -908,10 +908,10 @@ async def show_admin_panel(update, context):
 #=========================
 
 async def admin_choose_offer_game(query):
-with db() as conn:
-games = conn.execute(
-"SELECT id, name, emoji FROM games ORDER BY id"
-).fetchall()
+    with db() as conn:
+        games = conn.execute(
+            "SELECT id, name, emoji FROM games ORDER BY id"
+        ).fetchall()
 
 buttons = [
     [
