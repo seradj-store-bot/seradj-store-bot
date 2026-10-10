@@ -137,7 +137,29 @@ def init_db():
             value TEXT DEFAULT ''
         );
         """)
+# تحديث قاعدة البيانات القديمة دون حذف البيانات
+        columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(orders)"
+            ).fetchall()
+        }
 
+        required_columns = {
+            "game_id": "INTEGER",
+            "offer_id": "INTEGER",
+            "player_id": "TEXT DEFAULT ''",
+            "payment_method": "TEXT DEFAULT ''",
+            "price": "INTEGER DEFAULT 0",
+            "status": "TEXT DEFAULT 'pending'",
+            "created_at": "TEXT",
+        }
+
+        for column, definition in required_columns.items():
+            if column not in columns:
+                conn.execute(
+                    f"ALTER TABLE orders ADD COLUMN {column} {definition}"
+                )
         default_games = [
             ("Free Fire", "🔥"),
             ("PUBG Mobile", "🎯"),
