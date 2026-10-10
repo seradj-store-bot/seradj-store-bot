@@ -1276,6 +1276,7 @@ async def callback_handler(update, context):
         "adm_",
         "game_toggle:",
         "game_delete:",
+        "game_desc:",
         "offers_game:",
         "offer_toggle:",
         "offer_delete:",
