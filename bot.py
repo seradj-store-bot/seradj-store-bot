@@ -1903,6 +1903,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     data = query.data or ""
+    
+    if data.startswith("game_toggle:"):
+        game_id = int(data.split(":")[1])
+
+        with db() as conn:
+            conn.execute(
+                "UPDATE games SET active = 1 - active WHERE id = ?",
+                (game_id,),
+            )
+
+        await admin_games(query)
+        return
 
     if data.startswith("game:"):
         game_id = int(data.split(":")[1])
