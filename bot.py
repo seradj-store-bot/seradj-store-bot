@@ -1906,27 +1906,7 @@ async def text_handler(update, context):
             reply_markup=main_keyboard(user_id),
         )
         return
-    # تعديل وصف اللعبة
-    if is_admin(user_id):
-        game_id = context.user_data.get("editing_game_description")
 
-        if game_id is not None:
-            if not text:
-                await message.reply_text("❌ الوصف فارغ. أرسل وصف اللعبة.")
-                return
-
-            with db() as conn:
-                conn.execute(
-                    "UPDATE games SET description = ? WHERE id = ?",
-                    (text, game_id),
-                )
-
-            context.user_data.pop("editing_game_description", None)
-
-            await message.reply_text(
-                "✅ تم حفظ وصف اللعبة بنجاح."
-            )
-            return
     # =========================
     # خطوات الإدارة
     # =========================
@@ -1939,7 +1919,39 @@ async def text_handler(update, context):
             parts = [part.strip() for part in text.split("|", 1)]
 
             if not parts[0]:
-                await message.reply_text(
+                await message.replyتعديل وصف اللعبة
+
+if is_admin(user_id):
+    game_id = context.user_data.get("editing_game_description")
+
+    if game_id is not None:
+        if not text:
+            await message.reply_text(
+                "❌ الوصف فارغ. أرسل وصف اللعبة."
+            )
+            return
+
+        try:
+            with db() as conn:
+                conn.execute(
+                    "UPDATE games SET description = ? WHERE id = ?",
+                    (text, int(game_id)),
+                )
+
+            context.user_data.pop(
+                "editing_game_description", None
+            )
+
+            await message.reply_text(
+                "✅ تم حفظ وصف اللعبة بنجاح."
+            )
+        except Exception:
+            logger.exception("فشل حفظ وصف اللعبة")
+            await message.reply_text(
+                "❌ حدث خطأ أثناء حفظ الوصف. حاول مجددًا."
+            )
+
+        return_text(
                     "❌ اكتب اسم اللعبة."
                 )
                 return
