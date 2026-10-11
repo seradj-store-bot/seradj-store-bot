@@ -1887,7 +1887,7 @@ async def text_handler(update, context):
     message = update.effective_message
     user_id = update.effective_user.id
     text = (message.text or "").strip()
-    
+
     if text in ("🛠️ لوحة التحكم", "لوحة التحكم", "الإدارة"):
         await show_admin_panel(update, context)
         return
@@ -1899,56 +1899,38 @@ async def text_handler(update, context):
         context.user_data.pop("pending_offer_id", None)
         context.user_data.pop("pending_payment_method", None)
         context.user_data.pop("awaiting_player_id", None)
-        context.user_data.pop("editiإضافة لعبة
-
-    if step == "add_game":
-        parts = [part.strip() for part in text.split("|", 1)]
-
-        if not parts[0]:
-            await message.reply_text(
-                "❌ اكتب اسم اللعبة."
-            )
-            return
-
-        game_name = parts[0]
-        emoji = parts[1] if len(parts) > 1 and parts[1] else "🎮"
-
-        with db() as conn:
-            existing = conn.execute(
-                "SELECT id FROM games WHERE name = ?",
-                (game_name,),
-            ).fetchone()
-
-            if existing:
-                await message.reply_text(
-                    "⚠️ هذه اللعبة موجودة من قبل."
-                )
-                return
-
-            conn.execute(
-                """
-                INSERT INTO games (name, emoji, active)
-                VALUES (?, ?, 1)
-                """,
-                (game_name, emoji),
-            )
-
-        context.user_data.pop("admin_step", None)
-
-        await message.reply_text(
-            f"✅ تمت إضافة اللعبة: {emoji} {game_name}",
-            reply_markup=ReplyKeyboardMarkup(
-                ADMIN_PANEL_MENU,
-                resize_keyboard=True,
-            ),
-        )
-        returnng_game_description", None)
+        context.user_data.pop("editing_game_description", None)
+        context.user_data.pop("editing_game_prompt", None)
 
         await message.reply_text(
             "❌ تم إلغاء العملية.",
             reply_markup=main_keyboard(user_id),
         )
         return
+
+    # تعديل وصف اللعبة
+    if is_admin(user_id):
+        game_id = context.user_data.get("editing_game_description")
+
+        if game_id is not None:
+            try:
+                with db() as conn:
+                    conn.execute(
+                        "UPDATE games SET description = ? WHERE id = ?",
+                        (text, int(game_id)),
+                    )
+
+                context.user_data.pop("editing_game_description", None)
+
+                await message.reply_text(
+                    "✅ تم حفظ وصف اللعبة بنجاح."
+                )
+            except Exception:
+                logger.exception("فشل حفظ وصف اللعبة")
+                await message.reply_text(
+                    "❌ حدث خطأ أثناء حفظ الوصف."
+                )
+            return
 
     #=========================
     # خطوات الإدارة
