@@ -39,15 +39,20 @@ CANCEL_WORDS = {
 MAIN_MENU = [
     ["🛍️ المتجر", "📦 طلباتي"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
+    ["🎮 الألعاب", "📱 التطبيقات"],
+    ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["💵 طلب سلفية"],
-    ["📞 اتصل بالإدارة", "🏪 طلب حساب تاجر"],
+    ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
+    ["➕ طلب لعبة غير موجودة"],
 ]
 
 ADMIN_MAIN_MENU = [
     ["🛠️ لوحة التحكم"],
     ["🛍️ المتجر", "📦 طلباتي"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
-    ["📞 اتصل بالإدارة"],
+    ["🎮 الألعاب", "📱 التطبيقات"],
+    ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
+    ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
 ]
 
 ADMIN_PANEL_MENU = [
@@ -56,6 +61,7 @@ ADMIN_PANEL_MENU = [
 ["💰 تعديل سعر عرض", "📋 كل الطلبات"],
 ["📊 الإحصائيات", "💳 إعدادات الدفع"],
 ["📝 إدارة النصوص", "📨 إرسال إشعار"],
+["🎁 إدارة متجر النقاط", "📬 طلبات الألعاب"],
 ["💬 مراسلة زبون"],
 ["👥 التحكم في الأفراد", "👥 إدارة التجار"],
     ["💳 قروض التجار"],
@@ -165,7 +171,8 @@ def init_db():
             description TEXT DEFAULT '',
             player_prompt TEXT DEFAULT '',
             recharge_method TEXT DEFAULT 'id',
-            platform_mode TEXT DEFAULT 'none'
+            platform_mode TEXT DEFAULT 'none',
+            category TEXT DEFAULT 'game'
         );
         CREATE TABLE IF NOT EXISTS offers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,6 +206,36 @@ def init_db():
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS point_offers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            points_cost INTEGER NOT NULL DEFAULT 1,
+            stock INTEGER DEFAULT -1,
+            active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS point_redemptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            offer_id INTEGER NOT NULL,
+            points_cost INTEGER NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS game_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            request_text TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS referrals (
+            referred_user_id INTEGER PRIMARY KEY,
+            referrer_user_id INTEGER NOT NULL,
+            points_awarded INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS wallet_deposits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -265,6 +302,7 @@ def init_db():
                 "player_prompt": "TEXT DEFAULT ''",
                 "recharge_method": "TEXT DEFAULT 'id'",
                 "platform_mode": "TEXT DEFAULT 'none'",
+                "category": "TEXT DEFAULT 'game'",
             },
             "offers": {
                 "price_baridi_trader": "INTEGER DEFAULT 0",
@@ -307,6 +345,12 @@ def init_db():
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('baridi_details', 'تواصل مع الإدارة لمعرفة معلومات الدفع.')")
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('flexy_details', 'تواصل مع الإدارة لمعرفة معلومات Flexy.')")
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('points_value', '1')")
+        # Classify known digital services separately; preserve any existing custom classification.
+        conn.execute("UPDATE games SET category='app' WHERE lower(name) IN ('tiktok','snapchat+','netflix','azar','app store') AND (category IS NULL OR category='game')")
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('facebook_url', '')")
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('telegram_url', '')")
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('privacy_policy', 'نحترم خصوصيتك. تُستخدم بياناتك فقط لمعالجة الطلبات والتواصل بشأنها. لا تشارك كلمات مرورك إلا عند الضرورة للخدمة المطلوبة، وتجنب إرسال معلومات لا تخص الطلب. يمكنك التواصل مع الإدارة للاستفسار أو طلب حذف بياناتك.')")
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('terms_policy', 'باستخدامك SERADJ STORE فأنت توافق على مراجعة تفاصيل العرض والسعر قبل الطلب. قد تتطلب الطلبات إثبات الدفع، وتخضع المعالجة لتوفر الخدمة وتأكيد الإدارة. لا يمكن ضمان إلغاء الطلب بعد بدء تنفيذه.')")
 
 def get_setting(key, default=""):
     with db() as conn:
@@ -508,6 +552,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
         )
 
+    # Referral payload is processed once per newly referred account.
+    payload = (context.args[0] if context.args else "")
+    if payload.startswith("ref_"):
+        try:
+            referrer_id = int(payload[4:])
+        except ValueError:
+            referrer_id = 0
+        if referrer_id and referrer_id != user.id:
+            with db() as conn:
+                existing_ref = conn.execute("SELECT referred_user_id FROM referrals WHERE referred_user_id=?", (user.id,)).fetchone()
+                referrer_exists = conn.execute("SELECT user_id FROM users WHERE user_id=?", (referrer_id,)).fetchone()
+                if not existing_ref and referrer_exists:
+                    conn.execute("INSERT INTO referrals (referred_user_id, referrer_user_id, points_awarded, created_at) VALUES (?, ?, 50, ?)", (user.id, referrer_id, now_text()))
+                    conn.execute("UPDATE users SET points=COALESCE(points,0)+50 WHERE user_id=?", (referrer_id,))
+                    try:
+                        await context.bot.send_message(referrer_id, "🎉 انضم مشترك جديد عبر رابط إحالتك! تمت إضافة 50 نقطة إلى حسابك.")
+                    except Exception:
+                        logger.info("Could not notify referrer %s", referrer_id)
+
     context.user_data.clear()
     saved = get_user_row(user.id)
     if not is_admin(user.id) and (not saved or not (saved["phone_number"] or "")):
@@ -565,31 +628,24 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ====== عرض المتجر ======
 
-async def show_store(message, user_id):
-    games = get_games(active_only=True)
-
-    if not games:
+async def show_store(message, user_id, category=None):
+    if category not in ("game", "app"):
         await message.reply_text(
-            "😕 لا توجد ألعاب متاحة حالياً.",
-            reply_markup=main_keyboard(user_id),
+            "🛍️ متجر SERADJ STORE\nاختر القسم الذي تريد تصفحه:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎮 الألعاب", callback_data="store_category:game")],
+                [InlineKeyboardButton("📱 التطبيقات", callback_data="store_category:app")],
+            ]),
         )
         return
-
-    buttons = []
-
-    for game in games:
-        buttons.append([
-            InlineKeyboardButton(
-                f"{game['emoji']} {game['name']}",
-                callback_data=f"game:{game['id']}",
-            )
-        ])
-
-    await message.reply_text(
-        "🛍️ مرحباً بك في متجر SERADJ STORE!\n\n"
-        "اختر اللعبة أو الخدمة:",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
+    with db() as conn:
+        games = conn.execute("SELECT * FROM games WHERE active=1 AND COALESCE(category,'game')=? ORDER BY id", (category,)).fetchall()
+    if not games:
+        await message.reply_text("😕 لا توجد خدمات في هذا القسم حالياً.", reply_markup=main_keyboard(user_id))
+        return
+    buttons = [[InlineKeyboardButton(f"{g['emoji']} {g['name']}", callback_data=f"game:{g['id']}")] for g in games]
+    buttons.append([InlineKeyboardButton("🔙 الأقسام", callback_data="store")])
+    await message.reply_text("🎮 قائمة الألعاب:" if category == "game" else "📱 قائمة التطبيقات:", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # ====== حساب الزبون ======
@@ -1341,6 +1397,26 @@ async def show_my_orders(update, context):
     )
 
 
+async def show_points_shop(message, user_id):
+    with db() as conn:
+        user_row = conn.execute("SELECT points FROM users WHERE user_id=?", (user_id,)).fetchone()
+        offers = conn.execute("SELECT * FROM point_offers WHERE active=1 ORDER BY id").fetchall()
+    points = int(user_row["points"] or 0) if user_row else 0
+    buttons = [[InlineKeyboardButton(f"🎁 {o['title']} — {o['points_cost']} نقطة" + (f" (المتبقي {o['stock']})" if int(o['stock'] or -1) >= 0 else ""), callback_data=f"points_buy:{o['id']}")] for o in offers if int(o['stock'] if o['stock'] is not None else -1) != 0]
+    buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="store")])
+    text = f"🎁 متجر النقاط\nرصيدك: {points} نقطة\n\n" + ("\n".join(f"• {o['title']}: {o['description']}" for o in offers) if offers else "لا توجد عروض بالنقاط حالياً.")
+    await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+def contact_admin_keyboard():
+    rows = [[InlineKeyboardButton("💬 WhatsApp", url=f"https://wa.me/{WHATSAPP_NUMBER}")]]
+    telegram_url = get_setting("telegram_url", os.getenv("TELEGRAM_URL", "https://t.me/")).strip() or "https://t.me/"
+    facebook_url = get_setting("facebook_url", os.getenv("FACEBOOK_URL", "https://www.facebook.com/")).strip() or "https://www.facebook.com/"
+    rows.append([InlineKeyboardButton("✈️ Telegram", url=telegram_url)])
+    rows.append([InlineKeyboardButton("📘 Facebook", url=facebook_url)])
+    return InlineKeyboardMarkup(rows)
+
+
 # =========================
 # زر التواصل عبر واتساب
 # =========================
@@ -1942,6 +2018,76 @@ async def callback_handler(update, context):
         if not row or not (row["phone_number"] or ""):
             await query.answer("📱 يجب مشاركة رقم الهاتف أولاً عبر /start.", show_alert=True)
             return
+
+    if data.startswith("store_category:"):
+        category = data.split(":", 1)[1]
+        if category not in ("game", "app"):
+            return
+        await query.edit_message_text("جارٍ تحميل القسم...")
+        await show_store(query.message, user_id, category)
+        return
+
+    if data == "points_shop":
+        await show_points_shop(query.message, user_id)
+        return
+    if data.startswith("points_buy:"):
+        try:
+            offer_id = int(data.split(":", 1)[1])
+        except ValueError:
+            return
+        with db() as conn:
+            offer = conn.execute("SELECT * FROM point_offers WHERE id=? AND active=1", (offer_id,)).fetchone()
+            user_row = conn.execute("SELECT points FROM users WHERE user_id=?", (user_id,)).fetchone()
+            if not offer or not user_row:
+                await query.answer("العرض غير متاح.", show_alert=True); return
+            cost = int(offer["points_cost"] or 0)
+            points = int(user_row["points"] or 0)
+            stock = int(offer["stock"] if offer["stock"] is not None else -1)
+            if points < cost:
+                await query.answer(f"نقاطك غير كافية. تحتاج {cost} نقطة.", show_alert=True); return
+            if stock == 0:
+                await query.answer("نفد المخزون.", show_alert=True); return
+            conn.execute("UPDATE users SET points=points-? WHERE user_id=?", (cost, user_id))
+            conn.execute("INSERT INTO point_redemptions (user_id,offer_id,points_cost,status,created_at) VALUES (?,?,?,'pending',?)", (user_id, offer_id, cost, now_text()))
+            if stock > 0:
+                conn.execute("UPDATE point_offers SET stock=stock-1 WHERE id=?", (offer_id,))
+            redemption_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        if ADMIN_ID:
+            try:
+                await context.bot.send_message(ADMIN_ID, f"🎁 طلب شراء بالنقاط #{redemption_id}\nالمشترك: {query.from_user.full_name}\nID: {user_id}\nالعرض: {offer['title']}\nالتكلفة: {cost} نقطة", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد التسليم", callback_data=f"point_redeem_done:{redemption_id}"), InlineKeyboardButton("❌ رفض وإرجاع النقاط", callback_data=f"point_redeem_reject:{redemption_id}")]]))
+            except Exception: logger.exception("Could not notify admin of point redemption")
+        await query.edit_message_text(f"✅ تم تسجيل طلبك #{redemption_id} للعرض «{offer['title']}» مقابل {cost} نقطة. الطلب قيد المراجعة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 متجر النقاط", callback_data="points_shop")]]))
+        return
+    if data.startswith("point_redeem_done:") or data.startswith("point_redeem_reject:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
+        redemption_id = int(data.split(":", 1)[1]); approve = data.startswith("point_redeem_done:")
+        with db() as conn:
+            red = conn.execute("SELECT * FROM point_redemptions WHERE id=? AND status='pending'", (redemption_id,)).fetchone()
+            if not red:
+                await query.answer("تمت معالجة الطلب مسبقًا.", show_alert=True); return
+            status = "completed" if approve else "rejected"
+            conn.execute("UPDATE point_redemptions SET status=? WHERE id=?", (status, redemption_id))
+            if not approve:
+                conn.execute("UPDATE users SET points=points+? WHERE user_id=?", (int(red['points_cost']), int(red['user_id'])))
+        try:
+            await context.bot.send_message(int(red['user_id']), f"{'✅ تم تأكيد تسليم' if approve else '❌ تم رفض'} طلب متجر النقاط #{redemption_id}." + ("" if approve else f" تمت إعادة {red['points_cost']} نقطة إلى حسابك."))
+        except Exception: pass
+        await query.edit_message_text(f"تمت معالجة طلب متجر النقاط #{redemption_id}.")
+        return
+    if data.startswith("game_request_status:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
+        _, req_id, status = data.split(":", 2); req_id=int(req_id)
+        if status not in ("reviewed", "added", "rejected"): return
+        with db() as conn:
+            req=conn.execute("SELECT * FROM game_requests WHERE id=?",(req_id,)).fetchone()
+            if not req: await query.answer("الطلب غير موجود.", show_alert=True); return
+            conn.execute("UPDATE game_requests SET status=? WHERE id=?",(status,req_id))
+        await query.edit_message_text(f"تم تحديث حالة طلب اللعبة #{req_id} إلى {status}.")
+        try: await context.bot.send_message(req['user_id'], f"📬 تحديث طلب اللعبة #{req_id}: {status}")
+        except Exception: pass
+        return
 
     # التحقق من صلاحيات الإدارة
     admin_actions = (
@@ -2825,7 +2971,11 @@ async def callback_handler(update, context):
     # المتجر للزبائن
     elif data == "store":
         await query.edit_message_text(
-            "🛍️ افتح المتجر من زر 🛍️ المتجر الموجود أسفل الشاشة."
+            "🛍️ متجر SERADJ STORE\nاختر القسم:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎮 الألعاب", callback_data="store_category:game")],
+                [InlineKeyboardButton("📱 التطبيقات", callback_data="store_category:app")],
+            ]),
         )
 
     # إلغاء أو رجوع عام
@@ -2904,6 +3054,7 @@ async def text_handler(update, context):
         context.user_data.pop("pending_login_email", None)
         context.user_data.pop("editing_game_description", None)
         context.user_data.pop("editing_game_prompt", None)
+        context.user_data.pop("awaiting_game_request", None)
 
         await message.reply_text(
             "❌ تم إلغاء العملية.",
@@ -3106,9 +3257,23 @@ async def text_handler(update, context):
             await message.reply_text("✅ تم حفظ إعدادات القرض.", reply_markup=admin_keyboard())
             return
 
+        if step == "point_offer_add":
+            parts=[x.strip() for x in text.split("|")]
+            if len(parts) != 4:
+                await message.reply_text("الصيغة: الاسم | الوصف | تكلفة النقاط | المخزون (-1 غير محدود)"); return
+            try:
+                cost=int(parts[2]); stock=int(parts[3])
+                if cost < 1 or stock < -1: raise ValueError
+            except ValueError:
+                await message.reply_text("التكلفة يجب أن تكون موجبة والمخزون -1 أو صفر أو أكثر."); return
+            with db() as conn:
+                conn.execute("INSERT INTO point_offers (title,description,points_cost,stock,active,created_at) VALUES (?,?,?,?,1,?)",(parts[0],parts[1],cost,stock,now_text()))
+            context.user_data.pop("admin_step",None)
+            await message.reply_text("✅ تمت إضافة العرض إلى متجر النقاط.",reply_markup=admin_keyboard()); return
+
         # إضافة لعبة
         if step == "add_game":
-            parts = [part.strip() for part in text.split("|", 1)]
+            parts = [part.strip() for part in text.split("|")]
 
             if not parts[0]:
                 await message.reply_text(
@@ -3118,6 +3283,9 @@ async def text_handler(update, context):
 
             game_name = parts[0]
             emoji = parts[1] if len(parts) > 1 and parts[1] else "🎮"
+            category = parts[2].lower() if len(parts) > 2 and parts[2] else "game"
+            if category not in ("game", "app"):
+                await message.reply_text("❌ النوع يجب أن يكون game أو app."); return
 
             with db() as conn:
                 existing = conn.execute(
@@ -3133,16 +3301,16 @@ async def text_handler(update, context):
 
                 conn.execute(
                     """
-                    INSERT INTO games (name, emoji, active)
-                    VALUES (?, ?, 1)
+                    INSERT INTO games (name, emoji, active, category)
+                    VALUES (?, ?, 1, ?)
                     """,
-                    (game_name, emoji),
+                    (game_name, emoji, category),
                 )
 
             context.user_data.pop("admin_step", None)
 
             await message.reply_text(
-                f"✅ تمت إضافة اللعبة: {emoji} {game_name}",
+                f"✅ تمت إضافة {'التطبيق' if category == 'app' else 'اللعبة'}: {emoji} {game_name}",
                 reply_markup=ReplyKeyboardMarkup(
                     ADMIN_PANEL_MENU,
                     resize_keyboard=True,
@@ -3501,9 +3669,42 @@ async def text_handler(update, context):
     # أزرار القائمة الرئيسية
     # =========================
 
-    if text == "🛍️ المتجر":
+    if text in ("🛍️ المتجر", "🛍️"):
         await show_store(update.effective_message, update.effective_user.id)
         return
+    if text == "🎮 الألعاب":
+        await show_store(message, user_id, "game"); return
+    if text == "📱 التطبيقات":
+        await show_store(message, user_id, "app"); return
+    if text == "🎁 إشتري بنقاطي":
+        await show_points_shop(message, user_id); return
+    if text == "🎯 الإحالة والنقاط":
+        bot_username = get_setting("bot_username", "").strip()
+        if not bot_username:
+            try:
+                me = await context.bot.get_me(); bot_username = me.username or ""
+                if bot_username: set_setting("bot_username", bot_username)
+            except Exception: bot_username = ""
+        user_row = get_user_row(user_id)
+        points = int(user_row["points"] or 0) if user_row else 0
+        link = f"https://t.me/{bot_username}?start=ref_{user_id}" if bot_username else "تعذر إنشاء الرابط الآن؛ حاول لاحقاً."
+        await message.reply_text(f"🎯 نظام الإحالة والمكافآت\n\nرابط الإحالة الخاص بك:\n{link}\n\n🎁 تحصل على 50 نقطة عن كل مشترك جديد يسجل عبر رابطك.\nرصيد نقاطك الحالي: {points} نقطة.")
+        return
+    if text == "🔐 السياسات والخصوصية":
+        await message.reply_text("🔐 سياسة الخصوصية\n" + get_setting("privacy_policy", "") + "\n\n📜 الشروط والأحكام\n" + get_setting("terms_policy", ""), reply_markup=main_keyboard(user_id)); return
+    if text == "➕ طلب لعبة غير موجودة":
+        context.user_data["awaiting_game_request"] = True
+        await message.reply_text("🎮 اكتب اسم اللعبة أو التطبيق الذي تريد إضافته، ويمكنك ذكر تفاصيل النسخة أو طريقة الشحن. أرسل /cancel للإلغاء.", reply_markup=cancel_keyboard()); return
+    if context.user_data.get("awaiting_game_request"):
+        if len(text) < 2:
+            await message.reply_text("اكتب اسم اللعبة أو التطبيق بشكل أوضح."); return
+        with db() as conn:
+            cur=conn.execute("INSERT INTO game_requests (user_id,request_text,status,created_at) VALUES (?,?, 'pending', ?)",(user_id,text,now_text())); request_id=cur.lastrowid
+        context.user_data.pop("awaiting_game_request",None)
+        if ADMIN_ID:
+            try: await context.bot.send_message(ADMIN_ID,f"➕ طلب لعبة/تطبيق جديد #{request_id}\nمن: {message.from_user.full_name}\nID: {user_id}\nالطلب: {text}",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👀 قيد المراجعة",callback_data=f"game_request_status:{request_id}:reviewed"),InlineKeyboardButton("✅ تمت الإضافة",callback_data=f"game_request_status:{request_id}:added"),InlineKeyboardButton("❌ مرفوض",callback_data=f"game_request_status:{request_id}:rejected")]]))
+            except Exception: logger.exception("Could not send game request")
+        await message.reply_text(f"✅ تم إرسال اقتراحك للإدارة برقم #{request_id}.",reply_markup=main_keyboard(user_id)); return
 
     if text == "📦 طلباتي":
         await show_my_orders(update, context)
@@ -3535,10 +3736,7 @@ async def text_handler(update, context):
         return
 
     if text == "📞 اتصل بالإدارة":
-        await message.reply_text(
-            "📞 تقدر تتواصل مع الإدارة عبر واتساب:",
-            reply_markup=wa_keyboard(),
-        )
+        await message.reply_text("📞 اختر وسيلة التواصل مع إدارة SERADJ STORE:", reply_markup=contact_admin_keyboard())
         return
 
     # =========================
@@ -3568,11 +3766,23 @@ async def text_handler(update, context):
             context.user_data["admin_step"] = "add_game"
 
             await message.reply_text(
-                "➕ ابعث اسم اللعبة والإيموجي بهذا الشكل:\n\n"
-                "Free Fire | 🔥\n\n"
+                "➕ ابعث الاسم | الإيموجي | النوع (game أو app):\n\n"
+                "Free Fire | 🔥 | game\nNetflix | 🎬 | app\n\n"
                 "ابعث /cancel للإلغاء."
             )
             return
+
+        if text == "🎁 إدارة متجر النقاط":
+            context.user_data["admin_step"] = "point_offer_add"
+            await message.reply_text("أرسل العرض بهذا الشكل:\nالاسم | الوصف | تكلفة النقاط | المخزون (-1 لمخزون غير محدود)\nمثال: اشتراك تجريبي | اشتراك رقمي | 200 | 10\nللإلغاء /cancel")
+            return
+        if text == "📬 طلبات الألعاب":
+            with db() as conn: rows=conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT 30").fetchall()
+            if not rows: await message.reply_text("لا توجد طلبات ألعاب."); return
+            buttons=[]
+            for r in rows:
+                buttons.append([InlineKeyboardButton(f"#{r['id']} {r['request_text'][:35]} ({r['status']})",callback_data=f"game_request_status:{r['id']}:reviewed")])
+            await message.reply_text("📬 طلبات الألعاب والتطبيقات الأخيرة:",reply_markup=InlineKeyboardMarkup(buttons)); return
 
         if text == "📦 إدارة العروض":
             await message.reply_text(
@@ -3760,30 +3970,6 @@ async def text_handler(update, context):
             )
             return
 
-
-    if text == "🏪 طلب حساب تاجر":
-        if is_admin(user_id):
-            await message.reply_text("أنت الإدارة ولديك صلاحيات كاملة.")
-            return
-        with db() as conn:
-            row = conn.execute("SELECT account_type, trader_requested FROM users WHERE user_id = ?", (user_id,)).fetchone()
-            if not row:
-                conn.execute("INSERT OR IGNORE INTO users (user_id, username, full_name, created_at) VALUES (?, ?, ?, ?)", (user_id, update.effective_user.username or "", update.effective_user.full_name or "", now_text()))
-                row = conn.execute("SELECT account_type, trader_requested FROM users WHERE user_id = ?", (user_id,)).fetchone()
-            if row["account_type"] == "trader":
-                await message.reply_text("✅ حسابك مفعّل كتاجر بالفعل.")
-                return
-            if row["trader_requested"]:
-                await message.reply_text("⏳ طلبك قيد المراجعة من الإدارة.")
-                return
-            conn.execute("UPDATE users SET trader_requested = 1 WHERE user_id = ?", (user_id,))
-        if ADMIN_ID:
-            try:
-                await context.bot.send_message(ADMIN_ID, f"🏪 طلب حساب تاجر جديد\nالاسم: {update.effective_user.full_name}\nUsername: @{update.effective_user.username or 'غير متوفر'}\nID: {user_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ قبول التاجر", callback_data=f"trader_approve:{user_id}"), InlineKeyboardButton("❌ رفض", callback_data=f"trader_reject:{user_id}")]]))
-            except Exception:
-                logger.exception("تعذر إرسال طلب التاجر للإدارة")
-        await message.reply_text("✅ أرسلنا طلبك للإدارة. سيتم تفعيل أسعار التجار بعد الموافقة.")
-        return
 
     if not is_admin(user_id):
         with db() as conn:
