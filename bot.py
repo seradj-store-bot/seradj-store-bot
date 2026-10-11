@@ -38,6 +38,7 @@ CANCEL_WORDS = {
 MAIN_MENU = [
     ["🛍️ المتجر", "📦 طلباتي"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
+    ["💵 طلب سلفية", "💳 تسديد القرض"],
     ["📞 اتصل بالإدارة", "🏪 طلب حساب تاجر"],
 ]
 
@@ -201,6 +202,14 @@ def init_db():
             amount INTEGER NOT NULL,
             payment_method TEXT DEFAULT '',
             receipt_file_id TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            created_at TEXT,
+            processed_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS trader_loan_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
             status TEXT DEFAULT 'pending',
             created_at TEXT,
             processed_at TEXT DEFAULT ''
@@ -878,6 +887,7 @@ async def create_order(update, context):
     if not draft:
         context.user_data.pop("awaiting_player_id", None)
         context.user_data.pop("awaiting_credit_repay_amount", None)
+        context.user_data.pop("awaiting_trader_loan_amount", None)
         context.user_data.pop("awaiting_credit_receipt", None)
         context.user_data.pop("credit_repay_amount", None)
         context.user_data.pop("credit_repay_method", None)
@@ -1828,7 +1838,7 @@ async def callback_handler(update, context):
         "deposit_approve:",
         "deposit_reject:",
         "chat_reply:",
-        "loan_", "customer_orders:", "creditpay_", "account_type_set:", "reset_data", "reset_confirm", "adm_archived_stats",
+        "loan_", "loanreq_", "customer_orders:", "creditpay_", "account_type_set:", "reset_data", "reset_confirm", "adm_archived_stats",
     )
 
     if data.startswith(admin_actions) and not is_admin(user_id):
@@ -1856,6 +1866,43 @@ async def callback_handler(update, context):
         except Exception:
             logger.exception("تعذر إشعار المستخدم بتغيير نوع الحساب")
         await query.edit_message_text(f"✅ تم تغيير نوع الحساب إلى {label}.\nID: {target_id}\n" + ("يمكنك الآن ضبط سقف القرض وأجل التسديد من قائمة قروض التجار." if new_type == "trader" else "تم إيقاف صلاحيات التاجر. أي دين قائم يجب تسويته قبل التحويل."))
+        return
+
+    if data.startswith("loanreq_approve:") or data.startswith("loanreq_reject:"):
+        try:
+            request_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("طلب غير صالح", show_alert=True)
+            return
+        approve = data.startswith("loanreq_approve:")
+        with db() as conn:
+            req = conn.execute("SELECT * FROM trader_loan_requests WHERE id=?", (request_id,)).fetchone()
+            if not req or req["status"] != "pending":
+                await query.answer("تمت معالجة هذا الطلب مسبقًا أو أنه غير موجود", show_alert=True)
+                return
+            trader = conn.execute("SELECT account_type, credit_debt, credit_term_days FROM users WHERE user_id=?", (req["user_id"],)).fetchone()
+            if not trader or trader["account_type"] != "trader":
+                conn.execute("UPDATE trader_loan_requests SET status='rejected', processed_at=? WHERE id=?", (now_text(), request_id))
+                approve = False
+            elif approve:
+                from datetime import datetime, timedelta
+                debt = int(trader["credit_debt"] or 0)
+                term = max(1, int(trader["credit_term_days"] or 30))
+                due = (datetime.now() + timedelta(days=term)).strftime("%Y-%m-%d %H:%M:%S") if debt == 0 else None
+                if due:
+                    conn.execute("UPDATE users SET credit_debt=credit_debt+?, credit_due_at=? WHERE user_id=?", (int(req["amount"]), due, req["user_id"]))
+                else:
+                    conn.execute("UPDATE users SET credit_debt=credit_debt+? WHERE user_id=?", (int(req["amount"]), req["user_id"]))
+                conn.execute("UPDATE trader_loan_requests SET status='approved', processed_at=? WHERE id=? AND status='pending'", (now_text(), request_id))
+            else:
+                conn.execute("UPDATE trader_loan_requests SET status='rejected', processed_at=? WHERE id=? AND status='pending'", (now_text(), request_id))
+            amount = int(req["amount"])
+            target_id = int(req["user_id"])
+        try:
+            await context.bot.send_message(target_id, f"{'✅ تمت الموافقة على' if approve else '❌ تم رفض'} طلب السلفية #{request_id}.\nالمبلغ: {amount} دج" + ("\nتمت إضافة المبلغ إلى دينك." if approve else ""), reply_markup=main_keyboard(target_id))
+        except Exception:
+            logger.exception("تعذر إشعار التاجر بنتيجة طلب السلفية")
+        await query.edit_message_text(f"{'✅ تمت الموافقة على' if approve else '❌ تم رفض'} طلب السلفية #{request_id}\nالتاجر: {target_id}\nالمبلغ: {amount} دج")
         return
 
     if data.startswith("loan_manage:"):
@@ -2626,6 +2673,34 @@ async def text_handler(update, context):
 
     if text in ("🛠️ لوحة التحكم", "لوحة التحكم", "الإدارة"):
         await show_admin_panel(update, context)
+        return
+
+    if text == "💵 طلب سلفية":
+        if not is_trader(user_id):
+            await message.reply_text("❌ طلب السلفية متاح للتجار المعتمدين فقط.", reply_markup=main_keyboard(user_id))
+            return
+        context.user_data["awaiting_trader_loan_amount"] = True
+        await message.reply_text("💵 أرسل مبلغ السلفية الذي تحتاجه بالدينار الجزائري (دج).\nمثال: 5000", reply_markup=cancel_keyboard())
+        return
+
+    if context.user_data.get("awaiting_trader_loan_amount"):
+        try:
+            amount = int(text.replace(" ", "").replace("دج", ""))
+            if amount < 1:
+                raise ValueError
+        except ValueError:
+            await message.reply_text("❌ أرسل مبلغًا صحيحًا أكبر من صفر، مثل 5000.")
+            return
+        with db() as conn:
+            cur = conn.execute("INSERT INTO trader_loan_requests (user_id, amount, status, created_at) VALUES (?, ?, 'pending', ?)", (user_id, amount, now_text()))
+            request_id = cur.lastrowid
+        context.user_data.pop("awaiting_trader_loan_amount", None)
+        if ADMIN_ID:
+            try:
+                await context.bot.send_message(ADMIN_ID, f"💵 طلب سلفية جديد #{request_id}\nالتاجر: {message.from_user.full_name}\nTelegram ID: {user_id}\nالمبلغ المطلوب: {amount} دج", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة وإضافة للدين", callback_data=f"loanreq_approve:{request_id}"), InlineKeyboardButton("❌ رفض", callback_data=f"loanreq_reject:{request_id}")]]))
+            except Exception:
+                logger.exception("تعذر إرسال طلب السلفية للإدارة")
+        await message.reply_text(f"✅ تم إرسال طلب السلفية #{request_id} بمبلغ {amount} دج. سيتم إشعارك بعد قرار الإدارة.", reply_markup=main_keyboard(user_id))
         return
 
     # إلغاء العملية الحالية
