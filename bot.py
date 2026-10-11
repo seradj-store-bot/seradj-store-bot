@@ -8,6 +8,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
+    KeyboardButton,
 )
 
 from telegram.ext import (
@@ -56,7 +57,8 @@ ADMIN_PANEL_MENU = [
 ["📊 الإحصائيات", "💳 إعدادات الدفع"],
 ["📝 إدارة النصوص", "📨 إرسال إشعار"],
 ["💬 مراسلة زبون"],
-["👥 إدارة التجار", "💳 قروض التجار"],
+["👥 التحكم في الأفراد", "👥 إدارة التجار"],
+    ["💳 قروض التجار"],
 ["🔄 تحويل نوع الحساب"],
 ["👤 طلبات حسب الزبون"],
 ["🧹 تصفير الحسابات والطلبات"],
@@ -143,6 +145,8 @@ def init_db():
             user_id INTEGER PRIMARY KEY,
             username TEXT DEFAULT '',
             full_name TEXT DEFAULT '',
+            phone_number TEXT DEFAULT '',
+            is_banned INTEGER DEFAULT 0,
             created_at TEXT,
             account_type TEXT DEFAULT 'customer',
             trader_requested INTEGER DEFAULT 0,
@@ -247,6 +251,8 @@ def init_db():
             "users": {
                 "account_type": "TEXT DEFAULT 'customer'",
                 "trader_requested": "INTEGER DEFAULT 0",
+                "phone_number": "TEXT DEFAULT ''",
+                "is_banned": "INTEGER DEFAULT 0",
                 "balance": "INTEGER DEFAULT 0",
                 "points": "INTEGER DEFAULT 0",
                 "credit_limit": "INTEGER DEFAULT 0",
@@ -406,6 +412,82 @@ def status_label(status):
     }
     return labels.get(status, status)
 
+
+def get_user_row(user_id):
+    with db() as conn:
+        return conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+
+
+def contact_request_keyboard():
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("📱 مشاركة رقمي", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+async def require_contact_message(message):
+    await message.reply_text(
+        "📱 لاستعمال SERADJ STORE، مشاركة رقم هاتفك إجبارية.\n"
+        "اضغط على زر «📱 مشاركة رقمي» أسفل الشاشة. يجب مشاركة رقمك من حساب Telegram نفسه.",
+        reply_markup=contact_request_keyboard(),
+    )
+
+
+async def admin_show_people(message, banned=False):
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT user_id, username, full_name, phone_number, is_banned "
+            "FROM users WHERE COALESCE(is_banned,0)=? ORDER BY user_id DESC LIMIT 30",
+            (1 if banned else 0,),
+        ).fetchall()
+    buttons = []
+    for row in rows:
+        label = row["full_name"] or (("@"+row["username"]) if row["username"] else str(row["user_id"]))
+        username = (" @" + row["username"]) if row["username"] else ""
+        buttons.append([InlineKeyboardButton(
+            f"{label}{username} | {row['user_id']}"[:60],
+            callback_data=f"person_view:{row['user_id']}",
+        )])
+    buttons.append([InlineKeyboardButton("🔎 البحث بالاسم أو ID", callback_data="person_search")])
+    buttons.append([InlineKeyboardButton("🚫 المحظورون" if not banned else "👥 المشتركين النشطون",
+                                          callback_data="people_banned" if not banned else "people_active")])
+    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
+    title = "🚫 قائمة المحظورين" if banned else "👥 المشتركين النشطون"
+    await message.reply_text(title + "\nاختر مشتركًا لعرض معلوماته وإدارة حسابه:",
+                             reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def admin_person_card(query, target_id):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+        orders = conn.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (target_id,)).fetchone()[0]
+    if not row:
+        await query.edit_message_text("❌ المشترك غير موجود.")
+        return
+    username = "@" + row["username"] if row["username"] else "غير متوفر"
+    phone = row["phone_number"] if "phone_number" in row.keys() and row["phone_number"] else "غير مشارك"
+    banned = int(row["is_banned"] or 0) if "is_banned" in row.keys() else 0
+    buttons = [
+        [InlineKeyboardButton("💰 إضافة رصيد", callback_data=f"person_balance:{target_id}")],
+        [InlineKeyboardButton("📉 تصفير الدين", callback_data=f"person_debtzero:{target_id}")],
+        [InlineKeyboardButton("🔓 إلغاء الحظر" if banned else "🚫 حظر المشترك",
+                              callback_data=f"person_unban:{target_id}" if banned else f"person_ban:{target_id}")],
+        [InlineKeyboardButton("🗑️ حذف الحساب", callback_data=f"person_delete_confirm:{target_id}")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="people_active" if not banned else "people_banned")],
+    ]
+    await query.edit_message_text(
+        f"👤 معلومات المشترك\n\nالاسم: {row['full_name'] or 'غير متوفر'}\n"
+        f"Username: {username}\nTelegram ID: {target_id}\nالهاتف: {phone}\n"
+        f"نوع الحساب: {'تاجر' if row['account_type']=='trader' else 'زبون'}\n"
+        f"الحالة: {'🚫 محظور' if banned else '🟢 نشط'}\n"
+        f"الرصيد: {int(row['balance'] or 0)} دج\nالدين: {int(row['credit_debt'] or 0)} دج\n"
+        f"سقف القرض: {int(row['credit_limit'] or 0)} دج\nعدد الطلبات: {orders}\n"
+        f"تاريخ التسجيل: {row['created_at'] or 'غير معروف'}",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
 # ====== أوامر البداية ======
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -427,6 +509,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     context.user_data.clear()
+    saved = get_user_row(user.id)
+    if not is_admin(user.id) and (not saved or not (saved["phone_number"] or "")):
+        await require_contact_message(update.message)
+        return
+    if not is_admin(user.id) and saved and "is_banned" in saved.keys() and int(saved["is_banned"] or 0):
+        await update.message.reply_text("🚫 حسابك محظور من استعمال البوت. تواصل مع الإدارة.")
+        return
 
     welcome_text = get_setting(
         "welcome_message",
@@ -440,6 +529,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         welcome_text,
         reply_markup=main_keyboard(user.id),
     )
+
+
+async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.effective_message
+    contact = message.contact if message else None
+    if not user or not contact:
+        return
+    if contact.user_id != user.id:
+        await message.reply_text("❌ يجب مشاركة رقمك باستخدام زر Telegram الرسمي، وليس رقم شخص آخر.",
+                                 reply_markup=contact_request_keyboard())
+        return
+    with db() as conn:
+        conn.execute("UPDATE users SET phone_number=?, username=?, full_name=? WHERE user_id=?",
+                     (contact.phone_number, user.username or "", user.full_name or "", user.id))
+    await message.reply_text("✅ تم حفظ رقم هاتفك بنجاح. يمكنك الآن استعمال البوت.",
+                             reply_markup=main_keyboard(user.id))
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -976,6 +1082,14 @@ async def document_handler(update, context):
     if not message or not message.document:
         return
     user = update.effective_user
+    if user and not is_admin(user.id):
+        row = get_user_row(user.id)
+        if row and int(row["is_banned"] or 0):
+            await message.reply_text("🚫 حسابك محظور من استعمال البوت.")
+            return
+        if not row or not (row["phone_number"] or ""):
+            await require_contact_message(message)
+            return
 
     # وصل الطلب المالي يبقى ضمن مسار الطلب؛ ملفات المحادثة العادية تُحوّل للإدارة.
     if context.user_data.get("awaiting_payment_receipt"):
@@ -989,6 +1103,14 @@ async def document_handler(update, context):
 async def photo_handler(update, context):
     user = update.effective_user
     message = update.effective_message
+    if user and not is_admin(user.id):
+        row = get_user_row(user.id)
+        if row and int(row["is_banned"] or 0):
+            await message.reply_text("🚫 حسابك محظور من استعمال البوت.")
+            return
+        if not row or not (row["phone_number"] or ""):
+            await require_contact_message(message)
+            return
 
     if context.user_data.get("awaiting_credit_receipt"):
         amount = int(context.user_data.get("credit_repay_amount", 0))
@@ -1812,6 +1934,15 @@ async def callback_handler(update, context):
     data = query.data or ""
     user_id = query.from_user.id
 
+    if not is_admin(user_id):
+        row = get_user_row(user_id)
+        if row and "is_banned" in row.keys() and int(row["is_banned"] or 0):
+            await query.answer("🚫 حسابك محظور.", show_alert=True)
+            return
+        if not row or not (row["phone_number"] or ""):
+            await query.answer("📱 يجب مشاركة رقم الهاتف أولاً عبر /start.", show_alert=True)
+            return
+
     # التحقق من صلاحيات الإدارة
     admin_actions = (
         "adm_",
@@ -1838,11 +1969,59 @@ async def callback_handler(update, context):
         "deposit_approve:",
         "deposit_reject:",
         "chat_reply:",
-        "loan_", "loanreq_", "customer_orders:", "creditpay_", "account_type_set:", "reset_data", "reset_confirm", "adm_archived_stats",
+        "loan_", "loanreq_", "customer_orders:", "creditpay_", "account_type_set:", "reset_data", "reset_confirm", "adm_archived_stats", "people_", "person_",
     )
 
     if data.startswith(admin_actions) and not is_admin(user_id):
         await query.answer("⛔ غير مسموح لك.", show_alert=True)
+        return
+
+    if data == "people_active":
+        await admin_show_people(query.message, banned=False)
+        return
+    if data == "people_banned":
+        await admin_show_people(query.message, banned=True)
+        return
+    if data == "person_search":
+        context.user_data["person_search_wait"] = True
+        await query.message.reply_text("🔎 أرسل اسم المشترك أو @username أو Telegram ID للبحث.")
+        return
+    if data.startswith("person_view:"):
+        await admin_person_card(query, int(data.split(":")[1]))
+        return
+    if data.startswith("person_ban:") or data.startswith("person_unban:"):
+        ban = data.startswith("person_ban:")
+        target = int(data.split(":")[1])
+        with db() as conn:
+            conn.execute("UPDATE users SET is_banned=? WHERE user_id=?", (1 if ban else 0, target))
+        try:
+            await context.bot.send_message(target, "🚫 تم حظر حسابك من استعمال البوت." if ban else "✅ تم إلغاء الحظر عن حسابك. أرسل /start للمتابعة.")
+        except Exception:
+            pass
+        await admin_person_card(query, target)
+        return
+    if data.startswith("person_balance:"):
+        target = int(data.split(":")[1])
+        context.user_data["person_balance_target"] = target
+        await query.message.reply_text(f"💰 أرسل المبلغ الذي تريد إضافته إلى رصيد المشترك {target} بالدينار.")
+        return
+    if data.startswith("person_debtzero:"):
+        target = int(data.split(":")[1])
+        with db() as conn:
+            conn.execute("UPDATE users SET credit_debt=0, credit_due_at='' WHERE user_id=?", (target,))
+        await admin_person_card(query, target)
+        return
+    if data.startswith("person_delete_confirm:"):
+        target = int(data.split(":")[1])
+        await query.edit_message_text(f"⚠️ هل أنت متأكد من حذف حساب {target}؟ هذا لا يحذف الطلبات أو سجلات الدفع.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ تأكيد حذف الحساب", callback_data=f"person_delete:{target}")],
+                                               [InlineKeyboardButton("إلغاء", callback_data=f"person_view:{target}")]]))
+        return
+    if data.startswith("person_delete:"):
+        target = int(data.split(":")[1])
+        with db() as conn:
+            conn.execute("DELETE FROM users WHERE user_id=?", (target,))
+        await query.edit_message_text(f"تم حذف سجل الحساب {target}. سجلات الطلبات والمدفوعات لم تُحذف.")
         return
 
     if data.startswith("account_type_set:"):
@@ -2671,6 +2850,15 @@ async def text_handler(update, context):
     user_id = update.effective_user.id
     text = (message.text or "").strip()
 
+    if not is_admin(user_id):
+        row = get_user_row(user_id)
+        if row and "is_banned" in row.keys() and int(row["is_banned"] or 0):
+            await message.reply_text("🚫 حسابك محظور من استعمال البوت. تواصل مع الإدارة.")
+            return
+        if not row or not (row["phone_number"] or ""):
+            await require_contact_message(message)
+            return
+
     if text in ("🛠️ لوحة التحكم", "لوحة التحكم", "الإدارة"):
         await show_admin_panel(update, context)
         return
@@ -2797,6 +2985,34 @@ async def text_handler(update, context):
             f"💳 طريقة الدفع: {draft['method']}\n💰 المبلغ: {draft['price']} دج\n\n"
             "📸 الآن أرسل صورة وصل الدفع لإتمام الطلب.\nلإلغاء العملية أرسل /cancel"
         )
+        return
+
+    if is_admin(user_id) and context.user_data.get("person_search_wait"):
+        context.user_data.pop("person_search_wait", None)
+        term = text.strip().lstrip("@")
+        with db() as conn:
+            if term.isdigit():
+                rows = conn.execute("SELECT user_id, username, full_name, is_banned FROM users WHERE user_id=? LIMIT 20", (int(term),)).fetchall()
+            else:
+                rows = conn.execute("SELECT user_id, username, full_name, is_banned FROM users WHERE full_name LIKE ? OR username LIKE ? ORDER BY user_id DESC LIMIT 20", (f"%{term}%", f"%{term}%")).fetchall()
+        buttons = [[InlineKeyboardButton(f"{r['full_name'] or r['username'] or r['user_id']} | {r['user_id']}"[:60], callback_data=f"person_view:{r['user_id']}")] for r in rows]
+        buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="people_active")])
+        await message.reply_text("نتائج البحث:" if rows else "لم يتم العثور على مشترك.", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if is_admin(user_id) and context.user_data.get("person_balance_target"):
+        target = int(context.user_data.pop("person_balance_target"))
+        try:
+            amount = int(text.replace(" ", "").replace("دج", ""))
+            if amount < 1:
+                raise ValueError
+        except ValueError:
+            context.user_data["person_balance_target"] = target
+            await message.reply_text("أرسل مبلغًا صحيحًا أكبر من صفر.")
+            return
+        with db() as conn:
+            conn.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, target))
+        await message.reply_text(f"✅ تمت إضافة {amount} دج إلى رصيد المشترك {target}.")
         return
 
     # تعديل وصف اللعبة
@@ -3478,6 +3694,10 @@ async def text_handler(update, context):
             await message.reply_text("أرسل Telegram ID للحساب الذي تريد تغيير نوعه.\nللإلغاء أرسل /cancel")
             return
 
+        if text == "👥 التحكم في الأفراد":
+            await admin_show_people(message, banned=False)
+            return
+
         if text == "💳 قروض التجار":
             with db() as conn:
                 rows = conn.execute("SELECT user_id, username, full_name, credit_limit, credit_debt, credit_term_days, credit_due_at FROM users WHERE account_type = 'trader' ORDER BY full_name, user_id").fetchall()
@@ -3613,6 +3833,9 @@ def main():
 
     # أزرار Inline
     app.add_handler(CallbackQueryHandler(callback_handler))
+
+    # مشاركة رقم الهاتف الإلزامية
+    app.add_handler(MessageHandler(filters.CONTACT, contact_handler))
 
     # استقبال صور وصل الدفع
     app.add_handler(
