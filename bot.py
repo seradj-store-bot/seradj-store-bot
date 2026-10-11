@@ -554,6 +554,7 @@ async def admin_person_card(query, target_id):
         f"نوع الحساب: {'تاجر' if row['account_type']=='trader' else 'زبون'}\n"
         f"الحالة: {'🚫 محظور' if banned else '🟢 نشط'}\n"
         f"الرصيد: {int(row['balance'] or 0)} دج\nالدين: {int(row['credit_debt'] or 0)} دج\n"
+        f"🎁 نقاط المكافآت: {int(row['points'] or 0)} نقطة\n"
         f"سقف القرض: {int(row['credit_limit'] or 0)} دج\nعدد الطلبات: {orders}\n"
         f"تاريخ التسجيل: {row['created_at'] or 'غير معروف'}",
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -2833,9 +2834,17 @@ async def callback_handler(update, context):
         if new_status not in allowed_statuses:
             return
 
+        reward_points_granted = 0
         with db() as conn:
             order = conn.execute(
-                "SELECT user_id, offer_id, status, points_awarded, points_used, wallet_charged, wallet_refunded, credit_charged, credit_refunded, price FROM orders WHERE id = ?",
+                """SELECT o.user_id, o.game_id, o.offer_id, o.player_id, o.payment_method,
+                          o.status, o.points_awarded, o.points_used, o.wallet_charged,
+                          o.wallet_refunded, o.credit_charged, o.credit_refunded, o.price,
+                          g.name AS game_name, f.name AS offer_name
+                   FROM orders o
+                   LEFT JOIN games g ON g.id = o.game_id
+                   LEFT JOIN offers f ON f.id = o.offer_id
+                   WHERE o.id = ?""",
                 (order_id,),
             ).fetchone()
 
@@ -2851,6 +2860,7 @@ async def callback_handler(update, context):
                 reward = conn.execute("SELECT reward_points FROM offers WHERE id = ?", (order["offer_id"],)).fetchone()
                 reward_points = int(reward["reward_points"] or 0) if reward else 0
                 if reward_points:
+                    reward_points_granted = reward_points
                     conn.execute("UPDATE users SET points = points + ? WHERE user_id = ?", (reward_points, customer_id))
                 conn.execute("UPDATE orders SET points_awarded = 1 WHERE id = ?", (order_id,))
             # Refund wallet balance and redeemed points if an order is rejected.
@@ -2870,21 +2880,81 @@ async def callback_handler(update, context):
             conn.execute("UPDATE orders SET status = ? WHERE id = ?", (new_status, order_id))
 
         status_text = status_label(new_status)
+        order_ref = f"REQ{order_id:06d}"
+        game_name = order["game_name"] or "غير محددة"
+        offer_name = order["offer_name"] or "غير محدد"
+        payment_method = order["payment_method"] or "غير محددة"
+        raw_player_id = str(order["player_id"] or "").strip()
+        # Never include login credentials in customer notifications.
+        player_text = (
+            "شحن بالحساب"
+            if raw_player_id.startswith("LOGIN EMAIL:") or "[تم حذف بيانات الدخول" in raw_player_id
+            else (raw_player_id or "لا يتطلب")
+        )
+
+        if new_status == "completed":
+            customer_notice = (
+                f"🎉 تم إكمال طلبك بنجاح!\n\n"
+                f"🔢 رقم الطلب: {order_ref}\n"
+                f"🎮 اللعبة: {game_name}\n"
+                f"📦 العرض: {offer_name}\n"
+                f"👤 بيانات اللاعب: {player_text}\n"
+                f"💰 المبلغ: {int(order['price'] or 0):,} دج\n"
+                f"💳 طريقة الدفع: {payment_method}\n\n"
+                "✅ تم إتمام طلبك بنجاح.\n"
+                + (f"🎁 تمت إضافة {reward_points_granted} نقطة مكافأة إلى حسابك.\n" if reward_points_granted else "")
+                + "❤️ شكراً لثقتك بـ SERADJ STORE!"
+            )
+        elif new_status == "rejected":
+            customer_notice = (
+                f"❌ تم إلغاء/رفض طلبك\n\n"
+                f"🔢 رقم الطلب: {order_ref}\n"
+                f"🎮 اللعبة: {game_name}\n"
+                f"📦 العرض: {offer_name}\n"
+                f"💰 المبلغ: {int(order['price'] or 0):,} دج\n"
+                f"💳 طريقة الدفع: {payment_method}\n\n"
+                "📌 تمت معالجة الطلب على أنه مرفوض. "
+                "إذا كان لديك استفسار، يرجى التواصل مع الإدارة.\n"
+                + ("💰 تمت إعادة الرصيد/النقاط المستحقة إلى حسابك إذا كان الدفع من المحفظة.\n" if int(order["wallet_charged"] or 0) or int(order["points_used"] or 0) else "")
+                + "❤️ شكراً لتفهمك — SERADJ STORE"
+            )
+        else:
+            customer_notice = (
+                f"🔄 طلبك قيد التنفيذ\n\n"
+                f"🔢 رقم الطلب: {order_ref}\n"
+                f"🎮 اللعبة: {game_name}\n"
+                f"📦 العرض: {offer_name}\n"
+                f"📌 الحالة: {status_text}\n\n"
+                "سنرسل لك إشعاراً عند إتمام الطلب. ❤️"
+            )
 
         try:
             await context.bot.send_message(
                 chat_id=customer_id,
-                text=(
-                    f"📦 تحديث الطلب #{order_id}\n\n"
-                    f"📌 الحالة الجديدة: {status_text}"
-                    + (f"\n🎁 تمت إضافة نقاط المكافأة إلى حسابك." if new_status == "completed" else f"\n💰 تم إرجاع المبلغ والنقاط إلى محفظتك إذا كان الطلب مدفوعًا منها." if new_status == "rejected" else "")
-                ),
+                text=customer_notice,
                 reply_markup=main_keyboard(customer_id),
             )
         except Exception:
-            logger.exception(
-                "تعذر إرسال تحديث الطلب إلى الزبون"
-            )
+            logger.exception("تعذر إرسال تحديث الطلب إلى الزبون (ID=%s)", customer_id)
+
+        # Also notify the store owner/admin about every status change.
+        if ADMIN_ID and int(ADMIN_ID) != int(customer_id):
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        f"📣 تحديث حالة طلب\n\n"
+                        f"🔢 رقم الطلب: {order_ref}\n"
+                        f"👤 Telegram ID للزبون: {customer_id}\n"
+                        f"🎮 اللعبة: {game_name}\n"
+                        f"📦 العرض: {offer_name}\n"
+                        f"💰 المبلغ: {int(order['price'] or 0):,} دج\n"
+                        f"💳 الدفع: {payment_method}\n"
+                        f"📌 الحالة الجديدة: {status_text}"
+                    ),
+                )
+            except Exception:
+                logger.exception("تعذر إرسال إشعار تحديث الطلب إلى الإدارة")
 
         await admin_order_details(query, order_id)
 
