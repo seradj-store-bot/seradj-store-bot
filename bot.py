@@ -38,7 +38,7 @@ CANCEL_WORDS = {
 MAIN_MENU = [
     ["🛍️ المتجر", "📦 طلباتي"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
-    ["💵 طلب سلفية", "💳 تسديد القرض"],
+    ["💵 طلب سلفية"],
     ["📞 اتصل بالإدارة", "🏪 طلب حساب تاجر"],
 ]
 
@@ -1890,9 +1890,9 @@ async def callback_handler(update, context):
                 term = max(1, int(trader["credit_term_days"] or 30))
                 due = (datetime.now() + timedelta(days=term)).strftime("%Y-%m-%d %H:%M:%S") if debt == 0 else None
                 if due:
-                    conn.execute("UPDATE users SET credit_debt=credit_debt+?, credit_due_at=? WHERE user_id=?", (int(req["amount"]), due, req["user_id"]))
+                    conn.execute("UPDATE users SET credit_debt=credit_debt+?, balance=balance+?, credit_due_at=? WHERE user_id=?", (int(req["amount"]), int(req["amount"]), due, req["user_id"]))
                 else:
-                    conn.execute("UPDATE users SET credit_debt=credit_debt+? WHERE user_id=?", (int(req["amount"]), req["user_id"]))
+                    conn.execute("UPDATE users SET credit_debt=credit_debt+?, balance=balance+? WHERE user_id=?", (int(req["amount"]), int(req["amount"]), req["user_id"]))
                 conn.execute("UPDATE trader_loan_requests SET status='approved', processed_at=? WHERE id=? AND status='pending'", (now_text(), request_id))
             else:
                 conn.execute("UPDATE trader_loan_requests SET status='rejected', processed_at=? WHERE id=? AND status='pending'", (now_text(), request_id))
