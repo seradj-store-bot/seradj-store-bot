@@ -25,6 +25,8 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DB_PATH = os.getenv("DB_PATH", "seradj_store.db")
 WHATSAPP_NUMBER = os.getenv("WHATSAPP_NUMBER", "213671629818")
 STORE_NAME = "SERADJ STORE"
+STORE_BENEFITS_TEXT = '✨ مزايا متجرنا ✨\n\n🎮 شحن ألعابك بسهولة\nشحن بالـID، بالحساب ، مع خيارات متعددة للألعاب والعروض.\n\n⚡ سرعة وسهولة\nخطوات بسيطة لطلب الشحن ومتابعة طلباتك من داخل المتجر.\n\n🔐 خدمة آمنة ومنظمة\nطلباتك، محفظتك ونقاطك مرتبطة بحسابك داخل المتجر.\n\n⭐ نظام النقاط\nمع عملياتك داخل المتجر تقدر تجمع نقاط، وبعد بلوغ الحد المطلوب تقدر تحولها وتستفيد منها.\n🔥 كلما تستعمل المتجر أكثر، عندك فرصة تجمع نقاط أكثر!\n\n👥 نظام الإحالة\nشارك رابطك مع أصدقائك، وكلما استخدموا المتجر وحققوا شروط الإحالة، تحصل على نقاط ومكافآت.\n💡 يعني تقدر تجمع نقاط حتى وأنت مرتاح، وأصدقاؤك هم اللي يستعملوا المتجر!\n\n👑 نظام VIP — مع ازدياد نشاطك وشحناتك، تقترب من مزايا VIP وخصوماته. 🚀\n\n💰 المحفظة\nاشحن محفظتك واستعمل رصيدك في طلباتك بسهولة، مع إمكانية الاستفادة من عروض وبونص الإيداع عند توفرها.\n\n🎁 مكافآت وعروض\nتابع المتجر باستمرار لأن العروض والمكافآت الجديدة تكون متاحة من وقت لآخر.\n\n🚀 الخلاصة: تشحن لعبتك، تجمع نقاط، تستفيد من VIP، وتشارك رابطك مع أصحابك لتزيد فرصك في المكافآت.\n\n❤️ استعمل المتجر… وكل عملية ممكن تكون بداية لمكافأة جديدة!'
+TERMS_PRIVACY_TEXT = '📜 الشروط والأحكام وسياسة الخصوصية — SERADJ STORE \n\n1. الاستخدام\nباستخدامك للبوت، فإنك توافق على الالتزام بالشروط والأحكام وسياسة الخصوصية الخاصة بالمتجر.\n\n2. معلومات المستخدم\nقد يتم حفظ معرف Telegram، اسم المستخدم، الاسم الظاهر، معلومات الطلبات، معلومات الشحن التي ترسلها، ومعلومات المحفظة والنقاط والمعاملات المرتبطة بها.\n\n3. استخدام المعلومات\nتُستخدم هذه المعلومات لتقديم خدمات المتجر، معالجة الطلبات والدفع والشحن، تقديم الدعم الفني وتحسين الخدمة.\n\n4. عمليات الدفع\nأنت مسؤول عن التأكد من صحة بيانات الدفع والبيانات التي تقدمها قبل إرسال الطلب. لا ترسل كلمات المرور أو المعلومات الحساسة إلا عند الضرورة الفعلية للخدمة.\n\n5. الطلبات\nتأكد من صحة بيانات اللعبة والحساب قبل تأكيد الطلب، وقد تبدأ المعالجة بعد إرسال الطلب.\n\n6. المحفظة والنقاط\nأرصدة المحفظة والنقاط مرتبطة بحساب Telegram، ويمنع استغلال النظام أو إجراء عمليات وهمية أو متكررة للحصول على رصيد أو نقاط بشكل غير مشروع.\n\n7. الإحالات والمكافآت\nيمنع استخدام الحسابات الوهمية أو أي وسيلة للتحايل على نظام الإحالات والمكافآت. رابط الإحالة يُحتسب للمستخدم الجديد عند أول تشغيل فقط، ولا يمكن تغيير المحيل بعد ذلك.\n\n8. الدعم الفني\nيُستخدم الدعم للاستفسارات والمشاكل المتعلقة بالخدمة، ويمنع استخدامه للإزعاج أو إرسال طلبات متكررة أو غير متعلقة بالخدمة.\n\n9. إيقاف الخدمة\nيحتفظ المتجر بحق رفض أو إيقاف أي طلب يخالف الشروط أو يشتبه في وجود تلاعب أو إساءة استخدام.\n\n10. الخصوصية\nنحترم خصوصيتك ولا نستخدم المعلومات التي يتم جمعها إلا للأغراض المرتبطة بتقديم خدمات المتجر وإدارة الطلبات والدعم.\n\n11. الموافقة\nباستخدامك للبوت وإتمام أي عملية، فإنك تؤكد أنك قرأت هذه الشروط وسياسة الخصوصية ووافقت عليها.'
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -37,7 +39,8 @@ CANCEL_WORDS = {
 }
 
 MAIN_MENU = [
-    ["🛍️ المتجر", "📦 طلباتي"],
+    ["📦 طلباتي"],
+    ["✨ مزايا متجرنا"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
     ["🎮 الألعاب", "📱 التطبيقات"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
@@ -48,7 +51,8 @@ MAIN_MENU = [
 
 ADMIN_MAIN_MENU = [
     ["🛠️ لوحة التحكم"],
-    ["🛍️ المتجر", "📦 طلباتي"],
+    ["📦 طلباتي"],
+    ["✨ مزايا متجرنا"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
     ["🎮 الألعاب", "📱 التطبيقات"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
@@ -61,6 +65,7 @@ ADMIN_PANEL_MENU = [
 ["💰 تعديل سعر عرض", "📋 كل الطلبات"],
 ["📊 الإحصائيات", "💳 إعدادات الدفع"],
 ["📝 إدارة النصوص", "📨 إرسال إشعار"],
+["📇 إعدادات التواصل"],
 ["🎁 إدارة متجر النقاط", "📬 طلبات الألعاب"],
 ["💬 مراسلة زبون"],
 ["👥 التحكم في الأفراد", "👥 إدارة التجار"],
@@ -174,9 +179,18 @@ def init_db():
             platform_mode TEXT DEFAULT 'none',
             category TEXT DEFAULT 'game'
         );
+        CREATE TABLE IF NOT EXISTS recharge_methods (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            method_type TEXT NOT NULL DEFAULT 'id',
+            prompt TEXT DEFAULT '',
+            active INTEGER DEFAULT 1
+        );
         CREATE TABLE IF NOT EXISTS offers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             game_id INTEGER NOT NULL,
+            recharge_method_id INTEGER,
             name TEXT NOT NULL,
             price_baridi INTEGER DEFAULT 0,
             price_flexy INTEGER DEFAULT 0,
@@ -305,6 +319,7 @@ def init_db():
                 "category": "TEXT DEFAULT 'game'",
             },
             "offers": {
+                "recharge_method_id": "INTEGER",
                 "price_baridi_trader": "INTEGER DEFAULT 0",
                 "price_flexy_trader": "INTEGER DEFAULT 0",
                 "reward_points": "INTEGER DEFAULT 0",
@@ -349,8 +364,21 @@ def init_db():
         conn.execute("UPDATE games SET category='app' WHERE lower(name) IN ('tiktok','snapchat+','netflix','azar','app store') AND (category IS NULL OR category='game')")
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('facebook_url', '')")
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('telegram_url', '')")
-        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('privacy_policy', 'نحترم خصوصيتك. تُستخدم بياناتك فقط لمعالجة الطلبات والتواصل بشأنها. لا تشارك كلمات مرورك إلا عند الضرورة للخدمة المطلوبة، وتجنب إرسال معلومات لا تخص الطلب. يمكنك التواصل مع الإدارة للاستفسار أو طلب حذف بياناتك.')")
-        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('terms_policy', 'باستخدامك SERADJ STORE فأنت توافق على مراجعة تفاصيل العرض والسعر قبل الطلب. قد تتطلب الطلبات إثبات الدفع، وتخضع المعالجة لتوفر الخدمة وتأكيد الإدارة. لا يمكن ضمان إلغاء الطلب بعد بدء تنفيذه.')")
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", ("privacy_policy", TERMS_PRIVACY_TEXT))
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", ("terms_policy", TERMS_PRIVACY_TEXT))
+        # Replace only the earlier built-in placeholder texts, preserving any admin-customized values.
+        conn.execute("UPDATE settings SET value=? WHERE key='privacy_policy' AND value=?", (TERMS_PRIVACY_TEXT, 'نحترم خصوصيتك. تُستخدم بياناتك فقط لمعالجة الطلبات والتواصل بشأنها. لا تشارك كلمات مرورك إلا عند الضرورة للخدمة المطلوبة، وتجنب إرسال معلومات لا تخص الطلب. يمكنك التواصل مع الإدارة للاستفسار أو طلب حذف بياناتك.'))
+        conn.execute("UPDATE settings SET value=? WHERE key='terms_policy' AND value=?", (TERMS_PRIVACY_TEXT, 'باستخدامك SERADJ STORE فأنت توافق على مراجعة تفاصيل العرض والسعر قبل الطلب. قد تتطلب الطلبات إثبات الدفع، وتخضع المعالجة لتوفر الخدمة وتأكيد الإدارة. لا يمكن ضمان إلغاء الطلب بعد بدء تنفيذه.'))
+        # Create one legacy recharge method per existing game and attach old offers to it.
+        for g in conn.execute("SELECT id, name, recharge_method, player_prompt FROM games").fetchall():
+            exists = conn.execute("SELECT id FROM recharge_methods WHERE game_id=? LIMIT 1", (g["id"],)).fetchone()
+            if not exists:
+                old_type = g["recharge_method"] if g["recharge_method"] in ("id", "login", "none") else "id"
+                title = {"id": "الشحن بالـ ID", "login": "الشحن بتسجيل الدخول", "none": "اشتراك بدون معلومات"}.get(old_type, "الشحن بالـ ID")
+                cur = conn.execute("INSERT INTO recharge_methods (game_id,title,method_type,prompt,active) VALUES (?,?,?,?,1)", (g["id"], title, old_type, g["player_prompt"] or ""))
+                conn.execute("UPDATE offers SET recharge_method_id=? WHERE game_id=? AND recharge_method_id IS NULL", (cur.lastrowid, g["id"]))
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('whatsapp_number', ?)", (WHATSAPP_NUMBER,))
+
 
 def get_setting(key, default=""):
     with db() as conn:
@@ -630,13 +658,7 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_store(message, user_id, category=None):
     if category not in ("game", "app"):
-        await message.reply_text(
-            "🛍️ متجر SERADJ STORE\nاختر القسم الذي تريد تصفحه:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎮 الألعاب", callback_data="store_category:game")],
-                [InlineKeyboardButton("📱 التطبيقات", callback_data="store_category:app")],
-            ]),
-        )
+        await message.reply_text("اختر زر 🎮 الألعاب أو 📱 التطبيقات من القائمة الرئيسية.", reply_markup=main_keyboard(user_id))
         return
     with db() as conn:
         games = conn.execute("SELECT * FROM games WHERE active=1 AND COALESCE(category,'game')=? ORDER BY id", (category,)).fetchall()
@@ -644,7 +666,7 @@ async def show_store(message, user_id, category=None):
         await message.reply_text("😕 لا توجد خدمات في هذا القسم حالياً.", reply_markup=main_keyboard(user_id))
         return
     buttons = [[InlineKeyboardButton(f"{g['emoji']} {g['name']}", callback_data=f"game:{g['id']}")] for g in games]
-    buttons.append([InlineKeyboardButton("🔙 الأقسام", callback_data="store")])
+    buttons.append([InlineKeyboardButton("🔙 الأقسام", callback_data="back_main")])
     await message.reply_text("🎮 قائمة الألعاب:" if category == "game" else "📱 قائمة التطبيقات:", reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -692,7 +714,7 @@ async def show_account(message, user_id):
 
 # ====== عرض عروض اللعبة ======
 
-async def open_game(query, game_id, platform=None):
+async def open_game(query, game_id, platform=None, recharge_method_id=None):
     user_id = query.from_user.id
     game = get_game(game_id)
 
@@ -709,7 +731,7 @@ async def open_game(query, game_id, platform=None):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🤖 Android", callback_data=f"platform:{game_id}:android")],
                 [InlineKeyboardButton("🍎 iPhone (iOS)", callback_data=f"platform:{game_id}:ios")],
-                [InlineKeyboardButton("🔙 رجوع", callback_data="store")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="back_main")],
             ]),
         )
         return
@@ -718,7 +740,18 @@ async def open_game(query, game_id, platform=None):
     if mode == "none":
         platform = None
 
-    offers = get_offers(game_id)
+    with db() as conn:
+        methods = conn.execute("SELECT * FROM recharge_methods WHERE game_id=? AND active=1 ORDER BY id", (game_id,)).fetchall()
+    if recharge_method_id is None and methods:
+        buttons = [[InlineKeyboardButton(f"🔀 {m['title']}", callback_data=f"recharge_select:{game_id}:{m['id']}:{platform or 'none'}")] for m in methods]
+        buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
+        await query.edit_message_text(f"{game['emoji']} {game['name']}\n\nاختر طريقة الشحن:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+    selected_method = next((m for m in methods if int(m["id"]) == int(recharge_method_id)), None) if recharge_method_id is not None else (methods[0] if methods else None)
+    if not selected_method:
+        await query.edit_message_text("لا توجد طريقة شحن مفعلة لهذه الخدمة."); return
+    context_method_id = int(selected_method["id"])
+    offers = [o for o in get_offers(game_id) if o["recharge_method_id"] is not None and int(o["recharge_method_id"]) == context_method_id]
     if platform == "android":
         offers = [o for o in offers if int(o["android_active"] or 0)]
     elif platform == "ios":
@@ -750,7 +783,7 @@ async def open_game(query, game_id, platform=None):
     buttons.append([
         InlineKeyboardButton(
             "🔙 رجوع للمتجر",
-            callback_data="store",
+            callback_data="back_main",
         )
     ])
 
@@ -928,8 +961,10 @@ async def select_payment(
         "platform": context.user_data.get("selected_platform", ""),
     }
 
-    custom_prompt = (game["player_prompt"] or "").strip()
-    recharge_method = game["recharge_method"] if "recharge_method" in game.keys() else "id"
+    with db() as conn:
+        selected_method = conn.execute("SELECT * FROM recharge_methods WHERE id=?", (offer["recharge_method_id"],)).fetchone() if "recharge_method_id" in offer.keys() and offer["recharge_method_id"] else None
+    custom_prompt = ((selected_method["prompt"] if selected_method else game["player_prompt"]) or "").strip()
+    recharge_method = selected_method["method_type"] if selected_method else (game["recharge_method"] if "recharge_method" in game.keys() else "id")
     if recharge_method == "login":
         context.user_data["awaiting_login_email"] = True
         prompt = "🔐 أرسل إيميل الحساب المراد شحنه.\nبعدها سيطلب منك كلمة السر.\n\n⚠️ أدخل بيانات الحساب المطلوب شحنه فقط، ولا ترسل بيانات حسابات أخرى."
@@ -953,6 +988,7 @@ async def select_payment(
         "✅ اخترت العرض بنجاح!\n\n"
         f"🎮 اللعبة: {game['name']}\n"
         f"📦 العرض: {offer['name']}\n"
+        f"🔀 طريقة الشحن: {selected_method['title'] if selected_method else 'الطريقة الافتراضية'}\n"
         f"💳 الدفع: {method_name}\n"
         f"💰 السعر: {price} دج\n\n"
         f"💳 معلومات الدفع:\n{details}\n\n"
@@ -1403,17 +1439,24 @@ async def show_points_shop(message, user_id):
         offers = conn.execute("SELECT * FROM point_offers WHERE active=1 ORDER BY id").fetchall()
     points = int(user_row["points"] or 0) if user_row else 0
     buttons = [[InlineKeyboardButton(f"🎁 {o['title']} — {o['points_cost']} نقطة" + (f" (المتبقي {o['stock']})" if int(o['stock'] or -1) >= 0 else ""), callback_data=f"points_buy:{o['id']}")] for o in offers if int(o['stock'] if o['stock'] is not None else -1) != 0]
-    buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="store")])
+    buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back_main")])
     text = f"🎁 متجر النقاط\nرصيدك: {points} نقطة\n\n" + ("\n".join(f"• {o['title']}: {o['description']}" for o in offers) if offers else "لا توجد عروض بالنقاط حالياً.")
     await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 
 def contact_admin_keyboard():
-    rows = [[InlineKeyboardButton("💬 WhatsApp", url=f"https://wa.me/{WHATSAPP_NUMBER}")]]
-    telegram_url = get_setting("telegram_url", os.getenv("TELEGRAM_URL", "https://t.me/")).strip() or "https://t.me/"
-    facebook_url = get_setting("facebook_url", os.getenv("FACEBOOK_URL", "https://www.facebook.com/")).strip() or "https://www.facebook.com/"
-    rows.append([InlineKeyboardButton("✈️ Telegram", url=telegram_url)])
-    rows.append([InlineKeyboardButton("📘 Facebook", url=facebook_url)])
+    rows = []
+    wa = get_setting("whatsapp_number", WHATSAPP_NUMBER).strip().replace("+", "").replace(" ", "")
+    tg = get_setting("telegram_url", os.getenv("TELEGRAM_URL", "")).strip()
+    fb = get_setting("facebook_url", os.getenv("FACEBOOK_URL", "")).strip()
+    if wa:
+        rows.append([InlineKeyboardButton("💬 WhatsApp", url=f"https://wa.me/{wa}")])
+    if tg.startswith(("https://t.me/", "https://telegram.me/")):
+        rows.append([InlineKeyboardButton("✈️ Telegram", url=tg)])
+    if fb.startswith("https://"):
+        rows.append([InlineKeyboardButton("📘 Facebook", url=fb)])
+    if not rows:
+        rows.append([InlineKeyboardButton("⚠️ حسابات التواصل غير مضبوطة", callback_data="contact_unset")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1426,7 +1469,7 @@ def wa_keyboard():
         [
             InlineKeyboardButton(
                 "💬 التواصل عبر WhatsApp",
-                url=f"https://wa.me/{WHATSAPP_NUMBER}",
+                url=f"https://wa.me/{get_setting('whatsapp_number', WHATSAPP_NUMBER).replace('+', '').replace(' ', '')}",
             )
         ]
     ])
@@ -1527,14 +1570,11 @@ async def admin_games(query):
         method_label = {"id": "ID اللاعب", "login": "إيميل وكلمة سر", "none": "بدون معلومات شحن"}.get(method, "ID اللاعب")
         buttons.append([
             InlineKeyboardButton(
-                f"🔑 طريقة الشحن: {method_label} (تغيير)",
-                callback_data=f"game_method:{game['id']}",
-            ),
-            InlineKeyboardButton(
                 f"📱 الأجهزة: {game['platform_mode'] if 'platform_mode' in game.keys() else 'none'} (تغيير)",
                 callback_data=f"game_platform:{game['id']}",
             ),
         ])
+        buttons.append([InlineKeyboardButton("🔀 طرق الشحن والأسعار", callback_data=f"game_methods:{game['id']}")])
         buttons.append([
             InlineKeyboardButton(
                 "📝 تعديل الوصف",
@@ -1578,9 +1618,9 @@ async def admin_offers(query, game_id):
 
         offers = conn.execute(
             """
-            SELECT id, name, price_baridi, price_flexy, active, android_active, ios_active, reward_points
-            FROM offers
-            WHERE game_id = ?
+            SELECT offers.id, offers.name, offers.price_baridi, offers.price_flexy, offers.active, offers.android_active, offers.ios_active, offers.reward_points, recharge_methods.title AS method_title
+            FROM offers LEFT JOIN recharge_methods ON recharge_methods.id=offers.recharge_method_id
+            WHERE offers.game_id = ?
             ORDER BY id
             """,
             (game_id,),
@@ -1597,7 +1637,7 @@ async def admin_offers(query, game_id):
 
         buttons.append([
             InlineKeyboardButton(
-                f"{state} {offer['name']}",
+                f"{state} {offer['name']} — {offer['method_title'] or 'طريقة قديمة'}",
                 callback_data=f"offer_toggle:{offer['id']}",
             ),
             InlineKeyboardButton(
@@ -2027,6 +2067,10 @@ async def callback_handler(update, context):
         await show_store(query.message, user_id, category)
         return
 
+    if data == "contact_unset":
+        await query.answer("اطلب من الإدارة ضبط روابط التواصل.", show_alert=True)
+        return
+
     if data == "points_shop":
         await show_points_shop(query.message, user_id)
         return
@@ -2101,6 +2145,10 @@ async def callback_handler(update, context):
         "offer_toggle:",
         "offer_delete:",
         "add_offer_game:",
+        "add_offer_method:",
+        "game_methods:",
+        "recharge_method_add:",
+        "recharge_method_toggle:",
         "edit_offer:",
         "order_view:",
         "status:",
@@ -2379,6 +2427,42 @@ async def callback_handler(update, context):
     elif data == "adm_stats":
         await show_stats(query)
 
+    # إدارة طرق الشحن لكل لعبة أو تطبيق
+    elif data.startswith("game_methods:"):
+        game_id = int(data.split(":", 1)[1])
+        with db() as conn:
+            game = conn.execute("SELECT name FROM games WHERE id=?", (game_id,)).fetchone()
+            methods = conn.execute("SELECT * FROM recharge_methods WHERE game_id=? ORDER BY id", (game_id,)).fetchall()
+        if not game:
+            await query.edit_message_text("الخدمة غير موجودة."); return
+        buttons = [[InlineKeyboardButton(("🟢 " if m["active"] else "🔴 ")+m["title"]+f" ({ {'id':'ID','login':'تسجيل دخول','none':'بدون معلومات'}.get(m['method_type'],'ID') })", callback_data=f"recharge_method_toggle:{m['id']}")] for m in methods]
+        buttons.append([InlineKeyboardButton("➕ إضافة طريقة شحن", callback_data=f"recharge_method_add:{game_id}")])
+        buttons.append([InlineKeyboardButton("🔙 إدارة الألعاب", callback_data="adm_games")])
+        await query.edit_message_text(f"🔀 طرق الشحن لـ {game['name']}\nاختر طريقة لتفعيلها/إيقافها أو أضف طريقة جديدة. كل طريقة لها عروض وأسعار مستقلة.", reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif data.startswith("recharge_method_add:"):
+        game_id = int(data.split(":", 1)[1])
+        context.user_data["admin_step"] = "recharge_method_add"
+        context.user_data["pending_method_game_id"] = game_id
+        await query.message.reply_text("أرسل الطريقة بهذا الشكل:\nاسم الطريقة | id أو login أو none | رسالة طلب المعلومات (اختياري)\n\nمثال: Player ID | id | أرسل ID اللاعب\nمثال: تسجيل دخول | login |\nمثال: بدون معلومات | none |\n\nأرسل /cancel للإلغاء.")
+
+    elif data.startswith("recharge_method_toggle:"):
+        method_id = int(data.split(":", 1)[1])
+        with db() as conn:
+            row = conn.execute("SELECT game_id FROM recharge_methods WHERE id=?", (method_id,)).fetchone()
+            if not row: return
+            conn.execute("UPDATE recharge_methods SET active=CASE WHEN active=1 THEN 0 ELSE 1 END WHERE id=?", (method_id,))
+            game_id = row["game_id"]
+        await query.answer("تم تحديث حالة طريقة الشحن")
+        await admin_games(query)
+
+    elif data.startswith("add_offer_method:"):
+        _, game_id, method_id = data.split(":", 2)
+        context.user_data["admin_step"] = "add_offer_data"
+        context.user_data["pending_game_id"] = int(game_id)
+        context.user_data["pending_recharge_method_id"] = int(method_id)
+        await query.message.reply_text("➕ أرسل بيانات العرض والأسعار لهذه الطريقة فقط:\nاسم العرض | سعر BaridiMob/CCP للزبون | سعر Flexy للزبون | سعر BaridiMob/CCP للتاجر | سعر Flexy للتاجر | نقاط المكافأة (اختياري)\n\nمثال: 100 Coins | 250 | 300 | 220 | 270 | 5\nيمكنك إرسال 3 خانات فقط أيضاً. أرسل /cancel للإلغاء.")
+
     # إدارة الألعاب
     elif data == "adm_games":
         await admin_games(query)
@@ -2644,16 +2728,14 @@ async def callback_handler(update, context):
             )
             return
 
-        context.user_data["admin_step"] = "add_offer_data"
-        context.user_data["pending_game_id"] = game_id
-
-        await query.message.reply_text(
-            "➕ ابعث معلومات العرض بهذا الشكل:\n\n"
-            "اسم العرض | سعر BaridiMob/CCP | سعر Flexy\n\n"
-            "مثال:\n"
-            "100 Coins | 250 | 300\n\n"
-            "ابعث /cancel للإلغاء."
-        )
+        with db() as conn:
+            methods = conn.execute("SELECT id,title FROM recharge_methods WHERE game_id=? AND active=1 ORDER BY id", (game_id,)).fetchall()
+        if not methods:
+            await query.message.reply_text("لا توجد طريقة شحن. أضف طريقة من إدارة الألعاب ← طرق الشحن والأسعار أولاً.")
+            return
+        buttons = [[InlineKeyboardButton(m["title"], callback_data=f"add_offer_method:{game_id}:{m['id']}")] for m in methods]
+        buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_add_offer")])
+        await query.edit_message_text("اختر طريقة الشحن التي سيخصّص لها هذا العرض وأسعاره:", reply_markup=InlineKeyboardMarkup(buttons))
 
     elif data.startswith("edit_reward:"):
         try:
@@ -2818,6 +2900,13 @@ async def callback_handler(update, context):
         context.user_data["selected_platform"] = parts[2]
         await open_game(query, game_id, parts[2])
 
+    elif data.startswith("recharge_select:"):
+        parts = data.split(":")
+        if len(parts) != 4: return
+        game_id, method_id = int(parts[1]), int(parts[2])
+        platform = parts[3] if parts[3] in ("android", "ios") else None
+        await open_game(query, game_id, platform, method_id)
+
     # فتح لعبة للزبون
     elif data.startswith("game:"):
         try:
@@ -2970,13 +3059,9 @@ async def callback_handler(update, context):
 
     # المتجر للزبائن
     elif data == "store":
-        await query.edit_message_text(
-            "🛍️ متجر SERADJ STORE\nاختر القسم:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎮 الألعاب", callback_data="store_category:game")],
-                [InlineKeyboardButton("📱 التطبيقات", callback_data="store_category:app")],
-            ]),
-        )
+        await query.edit_message_text("اختر من القائمة الرئيسية: الألعاب أو التطبيقات.")
+    elif data == "back_main":
+        await query.message.reply_text("القائمة الرئيسية:", reply_markup=main_keyboard(user_id))
 
     # إلغاء أو رجوع عام
     elif data == "cancel":
@@ -3257,6 +3342,44 @@ async def text_handler(update, context):
             await message.reply_text("✅ تم حفظ إعدادات القرض.", reply_markup=admin_keyboard())
             return
 
+        if step == "contact_settings":
+            parts = [x.strip() for x in text.split("|")]
+            if len(parts) != 3:
+                await message.reply_text("الصيغة: رقم واتساب | رابط تيليغرام | رابط فيسبوك")
+                return
+            wa, tg, fb = parts
+            if wa:
+                wa = wa.replace("+", "").replace(" ", "").replace("-", "")
+                if not wa.isdigit():
+                    await message.reply_text("رقم واتساب غير صحيح. أرسله بالأرقام الدولية دون +.")
+                    return
+                set_setting("whatsapp_number", wa)
+            if tg:
+                if not tg.startswith(("https://t.me/", "https://telegram.me/")):
+                    await message.reply_text("رابط تيليغرام يجب أن يبدأ بـ https://t.me/")
+                    return
+                set_setting("telegram_url", tg)
+            if fb:
+                if not fb.startswith("https://"):
+                    await message.reply_text("رابط فيسبوك يجب أن يبدأ بـ https://")
+                    return
+                set_setting("facebook_url", fb)
+            context.user_data.pop("admin_step", None)
+            await message.reply_text("✅ تم حفظ حسابات التواصل.", reply_markup=admin_keyboard())
+            return
+
+        if step == "recharge_method_add":
+            parts = [x.strip() for x in text.split("|", 2)]
+            if len(parts) < 2 or not parts[0] or parts[1] not in ("id", "login", "none"):
+                await message.reply_text("الصيغة: اسم الطريقة | id أو login أو none | رسالة طلب المعلومات (اختياري)")
+                return
+            game_id = int(context.user_data.get("pending_method_game_id", 0))
+            with db() as conn:
+                conn.execute("INSERT INTO recharge_methods (game_id,title,method_type,prompt,active) VALUES (?,?,?,?,1)", (game_id, parts[0], parts[1], parts[2] if len(parts)>2 else ""))
+            context.user_data.pop("admin_step", None); context.user_data.pop("pending_method_game_id", None)
+            await message.reply_text("✅ تمت إضافة طريقة الشحن. أضف عروضها من لوحة الإدارة ← إضافة عرض.", reply_markup=admin_keyboard())
+            return
+
         if step == "point_offer_add":
             parts=[x.strip() for x in text.split("|")]
             if len(parts) != 4:
@@ -3337,7 +3460,7 @@ async def text_handler(update, context):
             try:
                 price_baridi = int(parts[1])
                 price_flexy = int(parts[2])
-                price_baridi_trader = int(parts[3]) if len(parts) == 5 else price_baridi
+                price_baridi_trader = int(parts[3]) if len(parts) >= 5 else price_baridi
                 price_flexy_trader = int(parts[4]) if len(parts) >= 5 else price_flexy
                 reward_points = int(parts[5]) if len(parts) == 6 else 0
 
@@ -3376,11 +3499,12 @@ async def text_handler(update, context):
                 conn.execute(
                     """
                     INSERT INTO offers
-                    (game_id, name, price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, reward_points, active)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                    (game_id, recharge_method_id, name, price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, reward_points, active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
                     """,
                     (
                         game_id,
+                        context.user_data.get("pending_recharge_method_id"),
                         offer_name,
                         price_baridi,
                         price_flexy,
@@ -3392,6 +3516,7 @@ async def text_handler(update, context):
 
             context.user_data.pop("admin_step", None)
             context.user_data.pop("pending_game_id", None)
+            context.user_data.pop("pending_recharge_method_id", None)
 
             await message.reply_text(
                 f"✅ تمت إضافة العرض: {offer_name}\n\n"
@@ -3669,9 +3794,6 @@ async def text_handler(update, context):
     # أزرار القائمة الرئيسية
     # =========================
 
-    if text in ("🛍️ المتجر", "🛍️"):
-        await show_store(update.effective_message, update.effective_user.id)
-        return
     if text == "🎮 الألعاب":
         await show_store(message, user_id, "game"); return
     if text == "📱 التطبيقات":
@@ -3690,8 +3812,11 @@ async def text_handler(update, context):
         link = f"https://t.me/{bot_username}?start=ref_{user_id}" if bot_username else "تعذر إنشاء الرابط الآن؛ حاول لاحقاً."
         await message.reply_text(f"🎯 نظام الإحالة والمكافآت\n\nرابط الإحالة الخاص بك:\n{link}\n\n🎁 تحصل على 50 نقطة عن كل مشترك جديد يسجل عبر رابطك.\nرصيد نقاطك الحالي: {points} نقطة.")
         return
+    if text == "✨ مزايا متجرنا":
+        await message.reply_text(STORE_BENEFITS_TEXT, reply_markup=main_keyboard(user_id)); return
     if text == "🔐 السياسات والخصوصية":
-        await message.reply_text("🔐 سياسة الخصوصية\n" + get_setting("privacy_policy", "") + "\n\n📜 الشروط والأحكام\n" + get_setting("terms_policy", ""), reply_markup=main_keyboard(user_id)); return
+        policy_text = get_setting("terms_policy", TERMS_PRIVACY_TEXT)
+        await message.reply_text(policy_text, reply_markup=main_keyboard(user_id)); return
     if text == "➕ طلب لعبة غير موجودة":
         context.user_data["awaiting_game_request"] = True
         await message.reply_text("🎮 اكتب اسم اللعبة أو التطبيق الذي تريد إضافته، ويمكنك ذكر تفاصيل النسخة أو طريقة الشحن. أرسل /cancel للإلغاء.", reply_markup=cancel_keyboard()); return
@@ -3737,6 +3862,11 @@ async def text_handler(update, context):
 
     if text == "📞 اتصل بالإدارة":
         await message.reply_text("📞 اختر وسيلة التواصل مع إدارة SERADJ STORE:", reply_markup=contact_admin_keyboard())
+        return
+
+    if is_admin(user_id) and text == "📇 إعدادات التواصل":
+        context.user_data["admin_step"] = "contact_settings"
+        await message.reply_text("📇 أرسل حسابات التواصل بهذا الشكل في رسالة واحدة:\nرقم واتساب الدولي بدون + | رابط تيليغرام | رابط فيسبوك\n\nمثال: 213XXXXXXXXX | https://t.me/username | https://facebook.com/username\n\nيمكنك ترك أي خانة فارغة للإبقاء على قيمتها الحالية. أرسل /cancel للإلغاء.", reply_markup=cancel_keyboard())
         return
 
     # =========================
