@@ -38,7 +38,6 @@ CANCEL_WORDS = {
 MAIN_MENU = [
     ["🛍️ المتجر", "📦 طلباتي"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
-    ["💳 تسديد القرض", "💵 طلب قرض"],
     ["📞 اتصل بالإدارة", "🏪 طلب حساب تاجر"],
 ]
 
@@ -57,8 +56,9 @@ ADMIN_PANEL_MENU = [
 ["📝 إدارة النصوص", "📨 إرسال إشعار"],
 ["💬 مراسلة زبون"],
 ["👥 إدارة التجار", "💳 قروض التجار"],
-["💵 طلبات قروض الزبائن"],
+["🔄 تحويل نوع الحساب"],
 ["👤 طلبات حسب الزبون"],
+["🧹 تصفير الحسابات والطلبات"],
 ["🔙 القائمة الرئيسية"],
 ]
 
@@ -99,15 +99,13 @@ def is_admin(user_id):
 
 
 def main_keyboard(user_id):
-    keyboard = (
-        ADMIN_MAIN_MENU
-        if is_admin(user_id)
-        else MAIN_MENU
-    )
-    return ReplyKeyboardMarkup(
-        keyboard,
-        resize_keyboard=True
-    )
+    if is_admin(user_id):
+        keyboard = ADMIN_MAIN_MENU
+    else:
+        keyboard = [row[:] for row in MAIN_MENU]
+        if is_trader(user_id):
+            keyboard.insert(2, ["💳 تسديد القرض"])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def admin_command(update, context):
     user_id = update.effective_user.id
@@ -217,20 +215,21 @@ def init_db():
             created_at TEXT,
             processed_at TEXT DEFAULT ''
         );
-        CREATE TABLE IF NOT EXISTS customer_loan_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            amount INTEGER NOT NULL,
-            status TEXT DEFAULT 'pending',
-            term_days INTEGER DEFAULT 0,
-            due_at TEXT DEFAULT '',
-            created_at TEXT,
-            processed_at TEXT DEFAULT ''
-        );
         CREATE TABLE IF NOT EXISTS customer_chats (
             user_id INTEGER PRIMARY KEY,
             is_open INTEGER DEFAULT 0,
             updated_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS monthly_stats_archive (
+            month TEXT PRIMARY KEY,
+            users_count INTEGER DEFAULT 0,
+            total_orders INTEGER DEFAULT 0,
+            pending_orders INTEGER DEFAULT 0,
+            processing_orders INTEGER DEFAULT 0,
+            completed_orders INTEGER DEFAULT 0,
+            rejected_orders INTEGER DEFAULT 0,
+            completed_revenue INTEGER DEFAULT 0,
+            archived_at TEXT DEFAULT ''
         );
         """)
 
@@ -767,7 +766,6 @@ async def select_payment(
         # Some products (e.g. Netflix subscriptions) require no player ID or login.
         context.user_data["pending_player_id"] = ""
         context.user_data.pop("awaiting_player_id", None)
-        context.user_data.pop("awaiting_customer_loan_amount", None)
         if method == "balance":
             await create_wallet_order(query.message, context, "", user=query.from_user)
             return
@@ -1608,8 +1606,73 @@ async def admin_customer_orders(query, target_id):
 
 
 # =========================
-# إحصائيات المتجر
+# تصفير بيانات الحسابات مع حفظ ملخص إحصائي لشهرين
 # =========================
+
+def reset_customer_data_preserving_stats():
+    """Archive monthly order aggregates for the last two months, then clear transactional/user data.
+    Products, prices and settings are deliberately preserved.
+    """
+    with db() as conn:
+        # Archive monthly summaries from the last two months before deleting detailed records.
+        conn.execute("""
+            INSERT INTO monthly_stats_archive
+                (month, users_count, total_orders, pending_orders, processing_orders,
+                 completed_orders, rejected_orders, completed_revenue, archived_at)
+            SELECT substr(created_at, 1, 7) AS month,
+                   COUNT(DISTINCT user_id), COUNT(*),
+                   SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status='processing' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status='completed' THEN price ELSE 0 END), ?
+            FROM orders
+            WHERE created_at >= datetime('now', '-2 months')
+              AND created_at IS NOT NULL AND created_at != ''
+            GROUP BY substr(created_at, 1, 7)
+            ON CONFLICT(month) DO UPDATE SET
+                users_count=excluded.users_count,
+                total_orders=excluded.total_orders,
+                pending_orders=excluded.pending_orders,
+                processing_orders=excluded.processing_orders,
+                completed_orders=excluded.completed_orders,
+                rejected_orders=excluded.rejected_orders,
+                completed_revenue=excluded.completed_revenue,
+                archived_at=excluded.archived_at
+        """, (now_text(),))
+        # Keep only the two most recent calendar-month summaries.
+        conn.execute("DELETE FROM monthly_stats_archive WHERE month < strftime('%Y-%m', date('now', 'start of month', '-1 month'))")
+        # Reset user accounts, orders, wallet transactions and customer support sessions.
+        conn.execute("DELETE FROM orders")
+        conn.execute("DELETE FROM wallet_deposits")
+        conn.execute("DELETE FROM credit_payments")
+        conn.execute("DELETE FROM customer_chats")
+        conn.execute("DELETE FROM users")
+        # Reset auto-increment counters for the cleared transaction tables.
+        conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('orders','wallet_deposits','credit_payments')")
+
+
+async def show_archived_stats(query):
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM monthly_stats_archive ORDER BY month DESC LIMIT 2").fetchall()
+    if not rows:
+        await query.edit_message_text(
+            "📊 ما كاين حتى إحصائيات محفوظة للشهرين الأخيرين.\n\nالإحصائيات المحفوظة هي ملخصات شهرية فقط، ماشي تفاصيل طلبات أو حسابات.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="adm_stats")]])
+        )
+        return
+    lines = ["🗂️ <b>الإحصائيات المحفوظة للشهرين الأخيرين</b>", "<i>ملخصات شهرية؛ تفاصيل الحسابات والطلبات القديمة لا تبقى بعد التصفير.</i>"]
+    for r in rows:
+        lines.append(
+            f"\n📅 <b>{r['month']}</b>\n"
+            f"👥 مستخدمون لديهم طلبات: {r['users_count']}\n"
+            f"🧾 مجموع الطلبات: {r['total_orders']}\n"
+            f"⏳ معلقة: {r['pending_orders']} | 🔄 قيد التنفيذ: {r['processing_orders']}\n"
+            f"✅ مكتملة: {r['completed_orders']} | ❌ مرفوضة: {r['rejected_orders']}\n"
+            f"💰 قيمة الطلبات المكتملة: {r['completed_revenue']} دج"
+        )
+    await query.edit_message_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="adm_stats")]]))
+
 
 async def show_stats(query):
     with db() as conn:
@@ -1676,10 +1739,11 @@ async def show_stats(query):
                     callback_data="adm_stats",
                 ),
                 InlineKeyboardButton(
-                    "🔙 رجوع",
-                    callback_data="adm_home",
+                    "🗂️ إحصائيات الشهرين الماضيين",
+                    callback_data="adm_archived_stats",
                 ),
-            ]
+            ],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")]
         ]),
     )
 
@@ -1764,33 +1828,34 @@ async def callback_handler(update, context):
         "deposit_approve:",
         "deposit_reject:",
         "chat_reply:",
-        "loan_", "customer_orders:", "creditpay_", "customer_loan_",
+        "loan_", "customer_orders:", "creditpay_", "account_type_set:", "reset_data", "reset_confirm", "adm_archived_stats",
     )
 
     if data.startswith(admin_actions) and not is_admin(user_id):
         await query.answer("⛔ غير مسموح لك.", show_alert=True)
         return
 
-    if data.startswith("customer_loan_approve:") or data.startswith("customer_loan_reject:"):
-        request_id = int(data.split(":", 1)[1])
-        approve = data.startswith("customer_loan_approve:")
-        with db() as conn:
-            req = conn.execute("SELECT * FROM customer_loan_requests WHERE id = ?", (request_id,)).fetchone()
-            if not req or req["status"] != "pending":
-                await query.answer("تمت معالجة طلب القرض مسبقًا.", show_alert=True)
-                return
-            if not approve:
-                conn.execute("UPDATE customer_loan_requests SET status='rejected', processed_at=? WHERE id=? AND status='pending'", (now_text(), request_id))
-        if not approve:
-            try:
-                await context.bot.send_message(req["user_id"], f"❌ تم رفض طلب القرض #{request_id} بقيمة {req['amount']} دج.")
-            except Exception:
-                logger.exception("تعذر إشعار الزبون برفض القرض")
-            await query.edit_message_text(f"❌ تم رفض طلب قرض الزبون #{request_id}\nالمبلغ: {req['amount']} دج\nالزبون: {req['user_id']}")
+    if data.startswith("account_type_set:"):
+        parts = data.split(":")
+        if len(parts) != 3 or parts[1] not in ("customer", "trader"):
+            await query.answer("طلب غير صالح.", show_alert=True)
             return
-        context.user_data["admin_step"] = "customer_loan_term"
-        context.user_data["customer_loan_request_id"] = request_id
-        await query.message.reply_text(f"✅ تمت الموافقة المبدئية على طلب القرض #{request_id} بمبلغ {req['amount']} دج.\nأرسل مدة التسديد بالأيام (مثال: 30). سيتم إضافة المبلغ إلى محفظة الزبون وتسجيل الدين بعد تحديد المدة.")
+        new_type, target_id = parts[1], int(parts[2])
+        with db() as conn:
+            target = conn.execute("SELECT user_id, full_name, username, account_type, credit_debt FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not target:
+                await query.answer("الحساب غير موجود.", show_alert=True)
+                return
+            if target["account_type"] == "trader" and new_type == "customer" and int(target["credit_debt"] or 0) > 0:
+                await query.answer("لا يمكن تحويل التاجر إلى زبون قبل تسديد الدين.", show_alert=True)
+                return
+            conn.execute("UPDATE users SET account_type=?, trader_requested=0 WHERE user_id=?", (new_type, target_id))
+        label = "تاجر" if new_type == "trader" else "زبون عادي"
+        try:
+            await context.bot.send_message(target_id, f"ℹ️ تم تغيير نوع حسابك في {STORE_NAME} إلى: {label}.")
+        except Exception:
+            logger.exception("تعذر إشعار المستخدم بتغيير نوع الحساب")
+        await query.edit_message_text(f"✅ تم تغيير نوع الحساب إلى {label}.\nID: {target_id}\n" + ("يمكنك الآن ضبط سقف القرض وأجل التسديد من قائمة قروض التجار." if new_type == "trader" else "تم إيقاف صلاحيات التاجر. أي دين قائم يجب تسويته قبل التحويل."))
         return
 
     if data.startswith("loan_manage:"):
@@ -1888,6 +1953,36 @@ async def callback_handler(update, context):
         except Exception:
             logger.exception("تعذر إشعار صاحب طلب التاجر")
         await query.edit_message_text("✅ تم تفعيل حساب التاجر." if approved else "تم رفض طلب التاجر.")
+        return
+
+    # عرض إحصائيات الشهرين المحفوظة
+    if data == "adm_archived_stats":
+        await show_archived_stats(query)
+        return
+
+    # تصفير البيانات مع تأكيد مزدوج
+    if data == "reset_data":
+        await query.edit_message_text(
+            "⚠️ <b>تأكيد تصفير البيانات</b>\n\nسيتم حذف حسابات الزبائن والتجار، الطلبات، الأرصدة، نقاط الولاء، الديون، وصولات تعبئة الرصيد وتسديد الديون.\n\nستبقى الألعاب والعروض والأسعار وإعدادات البوت. سيتم حفظ ملخص إحصائي شهري للشهر الحالي والشهر السابق فقط، دون أسماء أو تفاصيل الطلبات.\n\nهل تريد المتابعة؟",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🧹 نعم، صفّر البيانات", callback_data="reset_confirm")],
+                [InlineKeyboardButton("❌ إلغاء", callback_data="adm_home")],
+            ])
+        )
+        return
+
+    if data == "reset_confirm":
+        try:
+            reset_customer_data_preserving_stats()
+        except Exception:
+            logger.exception("فشل تصفير بيانات المتجر")
+            await query.edit_message_text("❌ فشل تصفير البيانات. لم نؤكد نجاح العملية؛ راجع سجل السيرفر وقاعدة البيانات.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")]]))
+            return
+        await query.edit_message_text(
+            "✅ تم تصفير حسابات الزبائن والتجار والطلبات والأرصدة والديون ووصولات الدفع.\n\n🎮 الألعاب والعروض والأسعار والإعدادات بقيت كما هي.\n🗂️ تم حفظ ملخصات إحصائية للشهر الحالي والشهر السابق إذا كانت هناك طلبات ضمن هذه الفترة.\n\nخذ نسخة احتياطية من قاعدة البيانات قبل أي تعديل إضافي.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📊 عرض الإحصائيات المحفوظة", callback_data="adm_archived_stats")], [InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]])
+        )
         return
 
     # العودة إلى لوحة الإدارة
@@ -2540,7 +2635,6 @@ async def text_handler(update, context):
         context.user_data.pop("pending_offer_id", None)
         context.user_data.pop("pending_payment_method", None)
         context.user_data.pop("awaiting_player_id", None)
-        context.user_data.pop("awaiting_customer_loan_amount", None)
         context.user_data.pop("awaiting_credit_repay_amount", None)
         context.user_data.pop("awaiting_login_email", None)
         context.user_data.pop("awaiting_login_password", None)
@@ -2552,32 +2646,6 @@ async def text_handler(update, context):
             "❌ تم إلغاء العملية.",
             reply_markup=main_keyboard(user_id),
         )
-        return
-
-    if context.user_data.get("awaiting_customer_loan_amount"):
-        try:
-            amount = int(text.replace(" ", "").replace("دج", ""))
-            if amount < 100 or amount > 1000000:
-                raise ValueError
-        except ValueError:
-            await message.reply_text("❌ أدخل مبلغًا بين 100 و1,000,000 دج.")
-            return
-        context.user_data.pop("awaiting_customer_loan_amount", None)
-        with db() as conn:
-            pending = conn.execute("SELECT id FROM customer_loan_requests WHERE user_id=? AND status='pending'", (user_id,)).fetchone()
-            if pending:
-                await message.reply_text(f"⏳ عندك طلب قرض قيد المراجعة بالفعل (#{pending['id']}). انتظر رد الإدارة.")
-                return
-            cur = conn.execute("INSERT INTO customer_loan_requests (user_id, amount, status, created_at) VALUES (?, ?, 'pending', ?)", (user_id, amount, now_text()))
-            request_id = cur.lastrowid
-            conn.execute("INSERT OR IGNORE INTO users (user_id, username, full_name, created_at) VALUES (?, ?, ?, ?)", (user_id, update.effective_user.username or "", update.effective_user.full_name or "", now_text()))
-        try:
-            await context.bot.send_message(ADMIN_ID, f"💵 طلب قرض جديد #{request_id}\nالزبون: {update.effective_user.full_name}\nTelegram ID: {user_id}\nالمبلغ المطلوب: {amount} دج\nالإدارة: وافق لتحديد مدة التسديد أو ارفض الطلب.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة", callback_data=f"customer_loan_approve:{request_id}"), InlineKeyboardButton("❌ رفض", callback_data=f"customer_loan_reject:{request_id}")]]))
-        except Exception:
-            logger.exception("تعذر إرسال طلب القرض للإدارة")
-            await message.reply_text("⚠️ تم تسجيل طلبك لكن تعذر إشعار الإدارة تلقائيًا. تواصل مع الإدارة.")
-            return
-        await message.reply_text(f"✅ تم إرسال طلب القرض #{request_id} للإدارة.\nالمبلغ: {amount} دج\nلن يُضاف المبلغ إلى محفظتك إلا بعد الموافقة.", reply_markup=main_keyboard(user_id))
         return
 
     if context.user_data.get("awaiting_credit_repay_amount"):
@@ -2696,33 +2764,24 @@ async def text_handler(update, context):
     if is_admin(user_id):
         step = context.user_data.get("admin_step")
 
-        if step == "customer_loan_term":
+        if step == "account_convert_user_id":
             try:
-                term_days = int(text.strip())
-                if term_days < 1 or term_days > 3650:
+                target_id = int(text.strip())
+                if target_id <= 0:
                     raise ValueError
             except ValueError:
-                await message.reply_text("❌ أرسل عدد أيام صحيحًا بين 1 و3650 يومًا.")
+                await message.reply_text("❌ أرسل Telegram ID صحيحًا.")
                 return
-            request_id = int(context.user_data.get("customer_loan_request_id", 0))
             with db() as conn:
-                req = conn.execute("SELECT * FROM customer_loan_requests WHERE id=? AND status='pending'", (request_id,)).fetchone()
-                if not req:
-                    await message.reply_text("❌ الطلب غير موجود أو تمت معالجته مسبقًا.")
-                    context.user_data.pop("admin_step", None)
-                    context.user_data.pop("customer_loan_request_id", None)
-                    return
-                from datetime import timedelta
-                due_at = (datetime.now() + timedelta(days=term_days)).strftime("%Y-%m-%d %H:%M:%S")
-                conn.execute("UPDATE customer_loan_requests SET status='approved', term_days=?, due_at=?, processed_at=? WHERE id=? AND status='pending'", (term_days, due_at, now_text(), request_id))
-                conn.execute("UPDATE users SET balance=balance+?, credit_debt=credit_debt+?, credit_due_at=? WHERE user_id=?", (req['amount'], req['amount'], due_at, req['user_id']))
+                target = conn.execute("SELECT user_id, username, full_name, account_type, credit_debt FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not target:
+                await message.reply_text("❌ الحساب غير موجود في قاعدة البيانات.")
+                return
             context.user_data.pop("admin_step", None)
-            context.user_data.pop("customer_loan_request_id", None)
-            try:
-                await context.bot.send_message(req['user_id'], f"✅ تمت الموافقة على طلب القرض #{request_id}.\n💰 أُضيف إلى محفظتك: {req['amount']} دج\n📉 الدين المسجل: {req['amount']} دج بالإضافة إلى أي دين سابق\n📅 آخر أجل للتسديد: {due_at} ({term_days} يومًا).\nتذكّر أن الدين واجب التسديد.")
-            except Exception:
-                logger.exception("تعذر إشعار الزبون بالموافقة على القرض")
-            await message.reply_text(f"✅ تمت الموافقة على القرض #{request_id}.\nالمبلغ المضاف للمحفظة: {req['amount']} دج\nالمدة: {term_days} يومًا\nالاستحقاق: {due_at}", reply_markup=admin_keyboard())
+            context.user_data["account_convert_target_id"] = target_id
+            current = "تاجر" if target["account_type"] == "trader" else "زبون عادي"
+            buttons = [[InlineKeyboardButton("👤 تحويل إلى زبون عادي", callback_data=f"account_type_set:customer:{target_id}")], [InlineKeyboardButton("🏪 تحويل إلى تاجر", callback_data=f"account_type_set:trader:{target_id}")], [InlineKeyboardButton("❌ إلغاء", callback_data="adm_home")]]
+            await message.reply_text(f"👤 الحساب: {target['full_name'] or target['username'] or target_id}\nID: {target_id}\nالنوع الحالي: {current}\nالدين الحالي: {target['credit_debt'] or 0} دج\n\nاختر نوع الحساب الجديد. إذا كان عليه دين، لن يُسمح بتحويله من تاجر إلى زبون حتى تسوية الدين.", reply_markup=InlineKeyboardMarkup(buttons))
             return
 
         if step == "loan_config":
@@ -3168,15 +3227,10 @@ async def text_handler(update, context):
         await message.reply_text("💰 أرسل مبلغ التعبئة بالدينار الجزائري (مثال: 1000 دج).\nالحد الأدنى 100 دج.\nللإلغاء أرسل /cancel")
         return
 
-    if text == "💵 طلب قرض":
-        if is_admin(user_id) or is_trader(user_id):
-            await message.reply_text("هذه الخاصية مخصصة للزبائن العاديين. التجار يستعملون قرض التاجر من حسابهم.")
-            return
-        context.user_data["awaiting_customer_loan_amount"] = True
-        await message.reply_text("💵 طلب قرض من SERADJ STORE\nأرسل المبلغ الذي تريد طلبه بالدينار الجزائري (مثال: 2000).\nسيبقى الطلب قيد المراجعة، ولا يُضاف أي مبلغ إلى محفظتك إلا بعد موافقة الإدارة.\nللإلغاء أرسل /cancel")
-        return
-
     if text == "💳 تسديد القرض":
+        if not is_trader(user_id):
+            await message.reply_text("خاصية القرض وتسديده مخصصة للتجار المعتمدين فقط.", reply_markup=main_keyboard(user_id))
+            return
         with db() as conn:
             row = conn.execute("SELECT credit_debt, credit_limit, credit_due_at, account_type FROM users WHERE user_id = ?", (user_id,)).fetchone()
         debt = int(row["credit_debt"] or 0) if row else 0
@@ -3344,15 +3398,9 @@ async def text_handler(update, context):
             )
             return
 
-        if text == "💵 طلبات قروض الزبائن":
-            with db() as conn:
-                requests = conn.execute("SELECT r.id, r.user_id, r.amount, r.created_at, u.full_name, u.username FROM customer_loan_requests r LEFT JOIN users u ON u.user_id=r.user_id WHERE r.status='pending' ORDER BY r.id DESC LIMIT 30").fetchall()
-            if not requests:
-                await message.reply_text("لا توجد طلبات قروض زبائن معلقة.", reply_markup=admin_keyboard())
-                return
-            for req in requests:
-                label = req['full_name'] or (('@'+req['username']) if req['username'] else str(req['user_id']))
-                await message.reply_text(f"💵 طلب قرض زبون #{req['id']}\nالزبون: {label}\nTelegram ID: {req['user_id']}\nالمبلغ: {req['amount']} دج\nالتاريخ: {req['created_at']}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة", callback_data=f"customer_loan_approve:{req['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"customer_loan_reject:{req['id']}")]]))
+        if text == "🔄 تحويل نوع الحساب":
+            context.user_data["admin_step"] = "account_convert_user_id"
+            await message.reply_text("أرسل Telegram ID للحساب الذي تريد تغيير نوعه.\nللإلغاء أرسل /cancel")
             return
 
         if text == "💳 قروض التجار":
@@ -3367,6 +3415,13 @@ async def text_handler(update, context):
                 buttons.append([InlineKeyboardButton(label[:60], callback_data=f"loan_manage:{row['user_id']}")])
             buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
             await message.reply_text("💳 اختر تاجرًا لإعداد سقف القرض وأجل التسديد:", reply_markup=InlineKeyboardMarkup(buttons))
+            return
+
+        if text == "🧹 تصفير الحسابات والطلبات":
+            await message.reply_text(
+                "⚠️ هذا الإجراء يمسح حسابات الزبائن والتجار والطلبات والأرصدة والديون ووصولات الدفع، لكنه يبقي الألعاب والعروض والأسعار. سيحفظ ملخصات شهرية للشهر الحالي والسابق فقط. تابع من الزر التالي إذا كنت متأكدًا.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("متابعة إلى التأكيد", callback_data="reset_data")], [InlineKeyboardButton("إلغاء", callback_data="adm_home")]])
+            )
             return
 
         if text == "👤 طلبات حسب الزبون":
