@@ -38,7 +38,7 @@ CANCEL_WORDS = {
 MAIN_MENU = [
     ["🛍️ المتجر", "📦 طلباتي"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
-    ["💳 تسديد القرض"],
+    ["💳 تسديد القرض", "💵 طلب قرض"],
     ["📞 اتصل بالإدارة", "🏪 طلب حساب تاجر"],
 ]
 
@@ -57,6 +57,7 @@ ADMIN_PANEL_MENU = [
 ["📝 إدارة النصوص", "📨 إرسال إشعار"],
 ["💬 مراسلة زبون"],
 ["👥 إدارة التجار", "💳 قروض التجار"],
+["💵 طلبات قروض الزبائن"],
 ["👤 طلبات حسب الزبون"],
 ["🔙 القائمة الرئيسية"],
 ]
@@ -213,6 +214,16 @@ def init_db():
             payment_method TEXT DEFAULT '',
             receipt_file_id TEXT DEFAULT '',
             status TEXT DEFAULT 'pending',
+            created_at TEXT,
+            processed_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS customer_loan_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            status TEXT DEFAULT 'pending',
+            term_days INTEGER DEFAULT 0,
+            due_at TEXT DEFAULT '',
             created_at TEXT,
             processed_at TEXT DEFAULT ''
         );
@@ -502,6 +513,8 @@ async def show_account(message, user_id):
         f"📦 عدد الطلبات: {total}\n"
         f"🏷️ نوع الحساب: {'تاجر معتمد' if user['account_type'] == 'trader' else 'زبون عادي'}\n"
         f"💰 رصيد المحفظة: {int(user['balance'] or 0)} دج\n"
+        f"📉 الدين الحالي: {int(user['credit_debt'] or 0)} دج\n"
+        f"📅 آخر أجل للتسديد: {user['credit_due_at'] or 'لا يوجد'}\n"
         f"🎁 نقاط المكافآت: {int(user['points'] or 0)} نقطة\n"
         f"📅 التسجيل: {user['created_at']}",
         reply_markup=main_keyboard(user_id),
@@ -754,6 +767,7 @@ async def select_payment(
         # Some products (e.g. Netflix subscriptions) require no player ID or login.
         context.user_data["pending_player_id"] = ""
         context.user_data.pop("awaiting_player_id", None)
+        context.user_data.pop("awaiting_customer_loan_amount", None)
         if method == "balance":
             await create_wallet_order(query.message, context, "", user=query.from_user)
             return
@@ -971,7 +985,9 @@ async def photo_handler(update, context):
     if context.user_data.get("awaiting_credit_receipt"):
         amount = int(context.user_data.get("credit_repay_amount", 0))
         method = context.user_data.get("credit_repay_method", "")
-        limit_amount, debt, _, _ = get_trader_credit(user.id)
+        with db() as conn:
+            debt_row = conn.execute("SELECT credit_debt FROM users WHERE user_id=?", (user.id,)).fetchone()
+        debt = int(debt_row["credit_debt"] or 0) if debt_row else 0
         if amount <= 0 or amount > debt or not method:
             context.user_data.pop("awaiting_credit_receipt", None)
             await message.reply_text("❌ مبلغ التسديد غير صحيح أو أكبر من الدين الحالي. ابدأ من جديد.")
@@ -1748,11 +1764,33 @@ async def callback_handler(update, context):
         "deposit_approve:",
         "deposit_reject:",
         "chat_reply:",
-        "loan_", "customer_orders:", "creditpay_",
+        "loan_", "customer_orders:", "creditpay_", "customer_loan_",
     )
 
     if data.startswith(admin_actions) and not is_admin(user_id):
         await query.answer("⛔ غير مسموح لك.", show_alert=True)
+        return
+
+    if data.startswith("customer_loan_approve:") or data.startswith("customer_loan_reject:"):
+        request_id = int(data.split(":", 1)[1])
+        approve = data.startswith("customer_loan_approve:")
+        with db() as conn:
+            req = conn.execute("SELECT * FROM customer_loan_requests WHERE id = ?", (request_id,)).fetchone()
+            if not req or req["status"] != "pending":
+                await query.answer("تمت معالجة طلب القرض مسبقًا.", show_alert=True)
+                return
+            if not approve:
+                conn.execute("UPDATE customer_loan_requests SET status='rejected', processed_at=? WHERE id=? AND status='pending'", (now_text(), request_id))
+        if not approve:
+            try:
+                await context.bot.send_message(req["user_id"], f"❌ تم رفض طلب القرض #{request_id} بقيمة {req['amount']} دج.")
+            except Exception:
+                logger.exception("تعذر إشعار الزبون برفض القرض")
+            await query.edit_message_text(f"❌ تم رفض طلب قرض الزبون #{request_id}\nالمبلغ: {req['amount']} دج\nالزبون: {req['user_id']}")
+            return
+        context.user_data["admin_step"] = "customer_loan_term"
+        context.user_data["customer_loan_request_id"] = request_id
+        await query.message.reply_text(f"✅ تمت الموافقة المبدئية على طلب القرض #{request_id} بمبلغ {req['amount']} دج.\nأرسل مدة التسديد بالأيام (مثال: 30). سيتم إضافة المبلغ إلى محفظة الزبون وتسجيل الدين بعد تحديد المدة.")
         return
 
     if data.startswith("loan_manage:"):
@@ -1780,17 +1818,17 @@ async def callback_handler(update, context):
             if not pay or pay["status"] != "pending":
                 await query.answer("تمت معالجة هذا الوصل مسبقاً.", show_alert=True)
                 return
-            trader = conn.execute("SELECT credit_debt FROM users WHERE user_id = ?", (pay["user_id"],)).fetchone()
+            debtor = conn.execute("SELECT credit_debt FROM users WHERE user_id = ?", (pay["user_id"],)).fetchone()
+            debt_before = int(debtor["credit_debt"] or 0) if debtor else 0
             if approve:
-                debt = int(trader["credit_debt"] or 0) if trader else 0
-                amount = min(int(pay["amount"]), debt)
+                amount = min(int(pay["amount"]), debt_before)
                 conn.execute("UPDATE users SET credit_debt = MAX(0, credit_debt - ?), credit_due_at = CASE WHEN MAX(0, credit_debt - ?) = 0 THEN '' ELSE credit_due_at END WHERE user_id = ?", (amount, amount, pay["user_id"]))
                 conn.execute("UPDATE credit_payments SET status = 'approved', processed_at = ? WHERE id = ? AND status = 'pending'", (now_text(), payment_id))
             else:
                 amount = int(pay["amount"])
                 conn.execute("UPDATE credit_payments SET status = 'rejected', processed_at = ? WHERE id = ? AND status = 'pending'", (now_text(), payment_id))
         try:
-            await context.bot.send_message(pay["user_id"], f"{'✅ تم قبول' if approve else '❌ تم رفض'} تسديد القرض #{payment_id}.\nالمبلغ: {amount} دج\nالدين الحالي: {max(0, int(trader['credit_debt'] or 0)-amount) if approve and trader else (int(trader['credit_debt'] or 0) if trader else 0)} دج")
+            await context.bot.send_message(pay["user_id"], f"{'✅ تم قبول' if approve else '❌ تم رفض'} تسديد القرض #{payment_id}.\nالمبلغ: {amount} دج\nالدين الحالي: {max(0, debt_before-amount) if approve else debt_before} دج")
         except Exception:
             logger.exception("تعذر إشعار التاجر بتسديد القرض")
         await query.edit_message_caption(caption=f"{'✅ تم قبول' if approve else '❌ تم رفض'} تسديد القرض #{payment_id}\nالتاجر: {pay['user_id']}\nالمبلغ: {amount} دج", reply_markup=None)
@@ -2502,6 +2540,8 @@ async def text_handler(update, context):
         context.user_data.pop("pending_offer_id", None)
         context.user_data.pop("pending_payment_method", None)
         context.user_data.pop("awaiting_player_id", None)
+        context.user_data.pop("awaiting_customer_loan_amount", None)
+        context.user_data.pop("awaiting_credit_repay_amount", None)
         context.user_data.pop("awaiting_login_email", None)
         context.user_data.pop("awaiting_login_password", None)
         context.user_data.pop("pending_login_email", None)
@@ -2514,14 +2554,44 @@ async def text_handler(update, context):
         )
         return
 
+    if context.user_data.get("awaiting_customer_loan_amount"):
+        try:
+            amount = int(text.replace(" ", "").replace("دج", ""))
+            if amount < 100 or amount > 1000000:
+                raise ValueError
+        except ValueError:
+            await message.reply_text("❌ أدخل مبلغًا بين 100 و1,000,000 دج.")
+            return
+        context.user_data.pop("awaiting_customer_loan_amount", None)
+        with db() as conn:
+            pending = conn.execute("SELECT id FROM customer_loan_requests WHERE user_id=? AND status='pending'", (user_id,)).fetchone()
+            if pending:
+                await message.reply_text(f"⏳ عندك طلب قرض قيد المراجعة بالفعل (#{pending['id']}). انتظر رد الإدارة.")
+                return
+            cur = conn.execute("INSERT INTO customer_loan_requests (user_id, amount, status, created_at) VALUES (?, ?, 'pending', ?)", (user_id, amount, now_text()))
+            request_id = cur.lastrowid
+            conn.execute("INSERT OR IGNORE INTO users (user_id, username, full_name, created_at) VALUES (?, ?, ?, ?)", (user_id, update.effective_user.username or "", update.effective_user.full_name or "", now_text()))
+        try:
+            await context.bot.send_message(ADMIN_ID, f"💵 طلب قرض جديد #{request_id}\nالزبون: {update.effective_user.full_name}\nTelegram ID: {user_id}\nالمبلغ المطلوب: {amount} دج\nالإدارة: وافق لتحديد مدة التسديد أو ارفض الطلب.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة", callback_data=f"customer_loan_approve:{request_id}"), InlineKeyboardButton("❌ رفض", callback_data=f"customer_loan_reject:{request_id}")]]))
+        except Exception:
+            logger.exception("تعذر إرسال طلب القرض للإدارة")
+            await message.reply_text("⚠️ تم تسجيل طلبك لكن تعذر إشعار الإدارة تلقائيًا. تواصل مع الإدارة.")
+            return
+        await message.reply_text(f"✅ تم إرسال طلب القرض #{request_id} للإدارة.\nالمبلغ: {amount} دج\nلن يُضاف المبلغ إلى محفظتك إلا بعد الموافقة.", reply_markup=main_keyboard(user_id))
+        return
+
     if context.user_data.get("awaiting_credit_repay_amount"):
         try:
             amount = int(text.replace(" ", "").replace("دج", ""))
-            _, debt, _, _ = get_trader_credit(user_id)
+            with db() as conn:
+                debt_row = conn.execute("SELECT credit_debt FROM users WHERE user_id=?", (user_id,)).fetchone()
+            debt = int(debt_row["credit_debt"] or 0) if debt_row else 0
             if amount < 1 or amount > debt:
                 raise ValueError
         except ValueError:
-            _, debt, _, _ = get_trader_credit(user_id)
+            with db() as conn:
+                debt_row = conn.execute("SELECT credit_debt FROM users WHERE user_id=?", (user_id,)).fetchone()
+            debt = int(debt_row["credit_debt"] or 0) if debt_row else 0
             await message.reply_text(f"❌ أدخل مبلغًا صحيحًا لا يتجاوز الدين الحالي ({debt} دج).")
             return
         context.user_data["credit_repay_amount"] = amount
@@ -2625,6 +2695,35 @@ async def text_handler(update, context):
 
     if is_admin(user_id):
         step = context.user_data.get("admin_step")
+
+        if step == "customer_loan_term":
+            try:
+                term_days = int(text.strip())
+                if term_days < 1 or term_days > 3650:
+                    raise ValueError
+            except ValueError:
+                await message.reply_text("❌ أرسل عدد أيام صحيحًا بين 1 و3650 يومًا.")
+                return
+            request_id = int(context.user_data.get("customer_loan_request_id", 0))
+            with db() as conn:
+                req = conn.execute("SELECT * FROM customer_loan_requests WHERE id=? AND status='pending'", (request_id,)).fetchone()
+                if not req:
+                    await message.reply_text("❌ الطلب غير موجود أو تمت معالجته مسبقًا.")
+                    context.user_data.pop("admin_step", None)
+                    context.user_data.pop("customer_loan_request_id", None)
+                    return
+                from datetime import timedelta
+                due_at = (datetime.now() + timedelta(days=term_days)).strftime("%Y-%m-%d %H:%M:%S")
+                conn.execute("UPDATE customer_loan_requests SET status='approved', term_days=?, due_at=?, processed_at=? WHERE id=? AND status='pending'", (term_days, due_at, now_text(), request_id))
+                conn.execute("UPDATE users SET balance=balance+?, credit_debt=credit_debt+?, credit_due_at=? WHERE user_id=?", (req['amount'], req['amount'], due_at, req['user_id']))
+            context.user_data.pop("admin_step", None)
+            context.user_data.pop("customer_loan_request_id", None)
+            try:
+                await context.bot.send_message(req['user_id'], f"✅ تمت الموافقة على طلب القرض #{request_id}.\n💰 أُضيف إلى محفظتك: {req['amount']} دج\n📉 الدين المسجل: {req['amount']} دج بالإضافة إلى أي دين سابق\n📅 آخر أجل للتسديد: {due_at} ({term_days} يومًا).\nتذكّر أن الدين واجب التسديد.")
+            except Exception:
+                logger.exception("تعذر إشعار الزبون بالموافقة على القرض")
+            await message.reply_text(f"✅ تمت الموافقة على القرض #{request_id}.\nالمبلغ المضاف للمحفظة: {req['amount']} دج\nالمدة: {term_days} يومًا\nالاستحقاق: {due_at}", reply_markup=admin_keyboard())
+            return
 
         if step == "loan_config":
             try:
@@ -3069,16 +3168,25 @@ async def text_handler(update, context):
         await message.reply_text("💰 أرسل مبلغ التعبئة بالدينار الجزائري (مثال: 1000 دج).\nالحد الأدنى 100 دج.\nللإلغاء أرسل /cancel")
         return
 
-    if text == "💳 تسديد القرض":
-        limit_amount, debt, term_days, due_at = get_trader_credit(user_id)
-        if not is_trader(user_id):
-            await message.reply_text("هذه الخاصية متاحة للتجار المعتمدين فقط.")
+    if text == "💵 طلب قرض":
+        if is_admin(user_id) or is_trader(user_id):
+            await message.reply_text("هذه الخاصية مخصصة للزبائن العاديين. التجار يستعملون قرض التاجر من حسابهم.")
             return
+        context.user_data["awaiting_customer_loan_amount"] = True
+        await message.reply_text("💵 طلب قرض من SERADJ STORE\nأرسل المبلغ الذي تريد طلبه بالدينار الجزائري (مثال: 2000).\nسيبقى الطلب قيد المراجعة، ولا يُضاف أي مبلغ إلى محفظتك إلا بعد موافقة الإدارة.\nللإلغاء أرسل /cancel")
+        return
+
+    if text == "💳 تسديد القرض":
+        with db() as conn:
+            row = conn.execute("SELECT credit_debt, credit_limit, credit_due_at, account_type FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        debt = int(row["credit_debt"] or 0) if row else 0
+        limit_amount = int(row["credit_limit"] or 0) if row else 0
+        due_at = row["credit_due_at"] or "" if row else ""
         if debt <= 0:
-            await message.reply_text(f"✅ ما عندك حتى دين حاليًا.\nسقف القرض: {limit_amount} دج")
+            await message.reply_text("✅ ما عندك حتى دين حاليًا.")
             return
         context.user_data["awaiting_credit_repay_amount"] = True
-        await message.reply_text(f"💳 تسديد قرض التاجر\nالدين الحالي: {debt} دج\nسقف القرض: {limit_amount} دج\nتاريخ الاستحقاق: {due_at or 'غير محدد'}\n\nأرسل مبلغ التسديد بالدينار (كلي أو جزئي)، ثم أرسل صورة وصل الدفع.\nللإلغاء أرسل /cancel")
+        await message.reply_text(f"💳 تسديد القرض\nالدين الحالي: {debt} دج\nتاريخ الاستحقاق: {due_at or 'غير محدد'}\n\nأرسل مبلغ التسديد بالدينار (كلي أو جزئي)، ثم أرسل صورة وصل الدفع. ينقص الدين بعد موافقة الإدارة فقط.\nللإلغاء أرسل /cancel")
         return
 
     if text == "📞 اتصل بالإدارة":
@@ -3234,6 +3342,17 @@ async def text_handler(update, context):
                     ],
                 ]),
             )
+            return
+
+        if text == "💵 طلبات قروض الزبائن":
+            with db() as conn:
+                requests = conn.execute("SELECT r.id, r.user_id, r.amount, r.created_at, u.full_name, u.username FROM customer_loan_requests r LEFT JOIN users u ON u.user_id=r.user_id WHERE r.status='pending' ORDER BY r.id DESC LIMIT 30").fetchall()
+            if not requests:
+                await message.reply_text("لا توجد طلبات قروض زبائن معلقة.", reply_markup=admin_keyboard())
+                return
+            for req in requests:
+                label = req['full_name'] or (('@'+req['username']) if req['username'] else str(req['user_id']))
+                await message.reply_text(f"💵 طلب قرض زبون #{req['id']}\nالزبون: {label}\nTelegram ID: {req['user_id']}\nالمبلغ: {req['amount']} دج\nالتاريخ: {req['created_at']}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة", callback_data=f"customer_loan_approve:{req['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"customer_loan_reject:{req['id']}")]]))
             return
 
         if text == "💳 قروض التجار":
