@@ -70,7 +70,7 @@ ADMIN_PANEL_MENU = [
 ["💬 مراسلة زبون"],
 ["👥 التحكم في الأفراد", "👥 إدارة التجار"],
     ["💳 قروض التجار"],
-["🔄 تحويل نوع الحساب"],
+["🔄 تحويل زبون / تاجر"],
 ["👤 طلبات حسب الزبون"],
 ["🧹 تصفير الحسابات والطلبات"],
 ["🔙 القائمة الرئيسية"],
@@ -1621,7 +1621,7 @@ async def admin_offers(query, game_id):
             SELECT offers.id, offers.name, offers.price_baridi, offers.price_flexy, offers.active, offers.android_active, offers.ios_active, offers.reward_points, recharge_methods.title AS method_title
             FROM offers LEFT JOIN recharge_methods ON recharge_methods.id=offers.recharge_method_id
             WHERE offers.game_id = ?
-            ORDER BY id
+            ORDER BY offers.id
             """,
             (game_id,),
         ).fetchall()
@@ -4029,9 +4029,9 @@ async def text_handler(update, context):
             )
             return
 
-        if text == "🔄 تحويل نوع الحساب":
+        if text in ("🔄 تحويل نوع الحساب", "🔄 تحويل زبون / تاجر"):
             context.user_data["admin_step"] = "account_convert_user_id"
-            await message.reply_text("أرسل Telegram ID للحساب الذي تريد تغيير نوعه.\nللإلغاء أرسل /cancel")
+            await message.reply_text("🔄 تحويل نوع الحساب\n\nأرسل Telegram ID للحساب الذي تريد تحويله إلى تاجر أو زبون.\nبعدها اختر النوع الجديد من الأزرار التي ستظهر لك.\n\nللإلغاء أرسل /cancel")
             return
 
         if text == "👥 التحكم في الأفراد":
