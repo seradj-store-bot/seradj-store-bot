@@ -538,6 +538,7 @@ async def admin_person_card(query, target_id):
     banned = int(row["is_banned"] or 0) if "is_banned" in row.keys() else 0
     buttons = [
         [InlineKeyboardButton("💰 إضافة رصيد", callback_data=f"person_balance:{target_id}")],
+        [InlineKeyboardButton("✏️ تعديل الرصيد", callback_data=f"person_balance_edit:{target_id}")],
     ]
     if row["account_type"] == "trader":
         buttons.append([InlineKeyboardButton("💵 منح سلفية للتاجر", callback_data=f"person_loan_grant:{target_id}")])
@@ -2171,6 +2172,22 @@ async def callback_handler(update, context):
             pass
         await admin_person_card(query, target)
         return
+    if data.startswith("person_balance_edit:"):
+        target = int(data.split(":", 1)[1])
+        with db() as conn:
+            person = conn.execute("SELECT user_id, full_name, balance FROM users WHERE user_id=?", (target,)).fetchone()
+        if not person:
+            await query.answer("المشترك غير موجود.", show_alert=True)
+            return
+        context.user_data["person_balance_edit_target"] = target
+        await query.message.reply_text(
+            f"✏️ تعديل رصيد {person['full_name'] or target} (ID: {target})\n"
+            f"الرصيد الحالي: {int(person['balance'] or 0)} دج\n\n"
+            "أرسل الرصيد الجديد كاملًا بالدينار. مثال: 2500\n"
+            "لجعل الرصيد صفرًا أرسل 0. للإلغاء أرسل /cancel."
+        )
+        return
+
     if data.startswith("person_balance:"):
         target = int(data.split(":")[1])
         context.user_data["person_balance_target"] = target
@@ -3340,6 +3357,29 @@ async def text_handler(update, context):
             await context.bot.send_message(target, f"💵 منحتك الإدارة سلفية بقيمة {amount} دج.\nتمت إضافتها إلى رصيدك.\nإجمالي الدين: {new_debt} دج\nتاريخ التسديد المحدد: {due_at}")
         except Exception:
             logger.exception("تعذر إشعار التاجر بمنح السلفية")
+        return
+
+    if is_admin(user_id) and context.user_data.get("person_balance_edit_target"):
+        target = int(context.user_data.pop("person_balance_edit_target"))
+        try:
+            new_balance = int(text.replace(" ", "").replace("دج", "").replace(",", ""))
+            if new_balance < 0:
+                raise ValueError
+        except ValueError:
+            context.user_data["person_balance_edit_target"] = target
+            await message.reply_text("❌ أرسل رصيدًا صحيحًا يساوي صفرًا أو أكثر، أو أرسل /cancel للإلغاء.")
+            return
+        with db() as conn:
+            person = conn.execute("SELECT full_name FROM users WHERE user_id=?", (target,)).fetchone()
+            if not person:
+                await message.reply_text("❌ المشترك غير موجود؛ لم يتم تعديل الرصيد.")
+                return
+            conn.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, target))
+        await message.reply_text(f"✅ تم تعديل رصيد {person['full_name'] or target} إلى {new_balance} دج.")
+        try:
+            await context.bot.send_message(target, f"ℹ️ تم تحديث رصيد محفظتك من طرف الإدارة.\nالرصيد الجديد: {new_balance} دج.")
+        except Exception:
+            logger.exception("تعذر إشعار المشترك بتعديل رصيده")
         return
 
     if is_admin(user_id) and context.user_data.get("person_balance_target"):
