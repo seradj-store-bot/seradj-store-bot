@@ -747,6 +747,12 @@ async def show_account(message, user_id):
 
 # ====== عرض عروض اللعبة ======
 
+def game_store_category(game):
+    try:
+        return "app" if str(game["category"] or "game").lower() == "app" else "game"
+    except (KeyError, IndexError, TypeError):
+        return "game"
+
 async def open_game(query, game_id, platform=None, recharge_method_id=None):
     user_id = query.from_user.id
     game = get_game(game_id)
@@ -764,7 +770,7 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🤖 Android", callback_data=f"platform:{game_id}:android")],
                 [InlineKeyboardButton("🍎 iPhone (iOS)", callback_data=f"platform:{game_id}:ios")],
-                [InlineKeyboardButton("🔙 رجوع", callback_data="back_main")],
+                [InlineKeyboardButton("🔙 اختيار لعبة أخرى", callback_data=f"back_store:{game_store_category(game)}")],
             ]),
         )
         return
@@ -777,7 +783,7 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None):
         methods = conn.execute("SELECT * FROM recharge_methods WHERE game_id=? AND active=1 ORDER BY id", (game_id,)).fetchall()
     if recharge_method_id is None and methods:
         buttons = [[InlineKeyboardButton(f"🔀 {m['title']}", callback_data=f"recharge_select:{game_id}:{m['id']}:{platform or 'none'}")] for m in methods]
-        buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
+        buttons.append([InlineKeyboardButton("🔙 اختيار لعبة أخرى", callback_data=f"back_store:{game_store_category(game)}")])
         await query.edit_message_text(f"{game['emoji']} {game['name']}\n\nاختر طريقة الشحن:", reply_markup=InlineKeyboardMarkup(buttons))
         return
     selected_method = next((m for m in methods if int(m["id"]) == int(recharge_method_id)), None) if recharge_method_id is not None else (methods[0] if methods else None)
@@ -825,8 +831,8 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None):
 
     buttons.append([
         InlineKeyboardButton(
-            "🔙 رجوع للمتجر",
-            callback_data="back_main",
+            "🔙 اختيار لعبة أخرى",
+            callback_data=f"back_store:{game_store_category(game)}",
         )
     ])
 
@@ -888,10 +894,11 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None):
         [InlineKeyboardButton("💰 الدفع من رصيد المحفظة", callback_data=f"pay:{game_id}:{offer_id}:balance")],
         [
             InlineKeyboardButton(
-                "🔙 رجوع",
+                "🔙 رجوع للعروض",
                 callback_data=(f"platform:{game_id}:{platform}" if platform in ("android", "ios") else f"game:{game_id}"),
             )
         ],
+        [InlineKeyboardButton("🎮 اختيار لعبة أخرى", callback_data=f"back_store:{game_store_category(game)}")],
     ]
 
     await query.edit_message_text(
@@ -3316,6 +3323,24 @@ async def callback_handler(update, context):
     # المتجر للزبائن
     elif data == "store":
         await query.edit_message_text("اختر من القائمة الرئيسية: الألعاب أو التطبيقات.")
+    elif data.startswith("back_store:"):
+        category = data.split(":", 1)[1]
+        if category not in ("game", "app"):
+            category = "game"
+        with db() as conn:
+            games = conn.execute(
+                "SELECT * FROM games WHERE active=1 AND COALESCE(category,'game')=? ORDER BY id",
+                (category,),
+            ).fetchall()
+        if not games:
+            await query.edit_message_text("😕 لا توجد خدمات في هذا القسم حالياً.")
+            return
+        buttons = [[InlineKeyboardButton(f"{g['emoji']} {g['name']}", callback_data=f"game:{g['id']}")] for g in games]
+        buttons.append([InlineKeyboardButton("🔙 الأقسام الرئيسية", callback_data="back_main")])
+        await query.edit_message_text(
+            "🎮 اختار لعبة أخرى:" if category == "game" else "📱 اختار تطبيق آخر:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
     elif data == "back_main":
         await query.message.reply_text("القائمة الرئيسية:", reply_markup=main_keyboard(user_id))
 
