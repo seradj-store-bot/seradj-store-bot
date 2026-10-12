@@ -3021,13 +3021,8 @@ async def callback_handler(update, context):
             )
 
         try:
-            await context.bot.send_message(
-                chat_id=customer_id,
-                text=customer_notice,
-                reply_markup=main_keyboard(customer_id),
-            )
-            # Add the promotional CTA only after a completed order. The button
-            # opens the same bot directly and keeps the normal reply keyboard intact.
+            # Show the CTA as one button directly under the completion notice,
+            # instead of sending a duplicate plain-text message plus another button.
             if new_status == "completed":
                 bot_username = get_setting("bot_username", "").strip().lstrip("@")
                 if not bot_username:
@@ -3035,14 +3030,22 @@ async def callback_handler(update, context):
                     bot_username = (me.username or "").strip().lstrip("@")
                     if bot_username:
                         set_setting("bot_username", bot_username)
+                cta_markup = None
                 if bot_username:
-                    await context.bot.send_message(
-                        chat_id=customer_id,
-                        text="🚀 اشحن وانطلق!",
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🚀 اشحن وانطلق!", url=f"https://t.me/{bot_username}")]
-                        ]),
-                    )
+                    cta_markup = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🛒🚀 اشحن لعبتك الآن", url=f"https://t.me/{bot_username}")]
+                    ])
+                await context.bot.send_message(
+                    chat_id=customer_id,
+                    text=customer_notice,
+                    reply_markup=cta_markup or main_keyboard(customer_id),
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=customer_id,
+                    text=customer_notice,
+                    reply_markup=main_keyboard(customer_id),
+                )
         except Exception:
             logger.exception("تعذر إرسال تحديث الطلب أو زر الشحن إلى الزبون (ID=%s)", customer_id)
 
