@@ -541,6 +541,8 @@ async def admin_person_card(query, target_id):
     ]
     if row["account_type"] == "trader":
         buttons.append([InlineKeyboardButton("💵 منح سلفية للتاجر", callback_data=f"person_loan_grant:{target_id}")])
+        buttons.append([InlineKeyboardButton("✏️ تعديل الدين", callback_data=f"person_debtedit:{target_id}")])
+        buttons.append([InlineKeyboardButton("🧹 تصفير الدين", callback_data=f"person_debtzero:{target_id}")])
     buttons += [
         [InlineKeyboardButton("🔓 إلغاء الحظر" if banned else "🚫 حظر المشترك",
                               callback_data=f"person_unban:{target_id}" if banned else f"person_ban:{target_id}")],
@@ -553,7 +555,8 @@ async def admin_person_card(query, target_id):
         f"نوع الحساب: {'تاجر' if row['account_type']=='trader' else 'زبون'}\n"
         f"الحالة: {'🚫 محظور' if banned else '🟢 نشط'}\n"
         f"الرصيد: {int(row['balance'] or 0)} دج\n"
-        f"🎁 نقاط المكافآت: {int(row['points'] or 0)} نقطة\n"
+        + (f"💳 الدين الحالي: {int(row['credit_debt'] or 0)} دج\n" if row['account_type'] == 'trader' else "")
+        + f"🎁 نقاط المكافآت: {int(row['points'] or 0)} نقطة\n"
         f"عدد الطلبات: {orders}\n"
         f"تاريخ التسجيل: {row['created_at'] or 'غير معروف'}",
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -2020,7 +2023,7 @@ async def callback_handler(update, context):
     user_id = query.from_user.id
 
     # تعطيل واجهات القروض وطلبات السلفية من التجار؛ منح السلفية متاح للإدارة فقط.
-    if data.startswith(("loan_", "loanreq_", "creditpay_", "credit_repay_method:", "person_debtzero:")) or (data.startswith("pay:") and data.endswith(":credit")):
+    if data.startswith(("loan_", "loanreq_", "creditpay_", "credit_repay_method:")) or (data.startswith("pay:") and data.endswith(":credit")):
         await query.answer("⛔ نظام القروض والسلفية غير متاح.", show_alert=True)
         return
 
@@ -2190,10 +2193,29 @@ async def callback_handler(update, context):
             "أرسل مبلغ السلفية بالدينار. ستُضاف إلى رصيد التاجر ودينه.\nللإلغاء أرسل /cancel."
         )
         return
+    if data.startswith("person_debtedit:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ هذه الخاصية للإدارة فقط.", show_alert=True)
+            return
+        target = int(data.split(":", 1)[1])
+        context.user_data["person_debt_edit_target"] = target
+        await query.message.reply_text(
+            f"✏️ أرسل قيمة الدين الجديدة للتاجر {target} بالدينار.\n"
+            "مثال: 2500\nلجعل الدين صفرًا أرسل 0. للإلغاء أرسل /cancel."
+        )
+        return
     if data.startswith("person_debtzero:"):
-        target = int(data.split(":")[1])
+        if not is_admin(user_id):
+            await query.answer("⛔ هذه الخاصية للإدارة فقط.", show_alert=True)
+            return
+        target = int(data.split(":", 1)[1])
         with db() as conn:
+            trader = conn.execute("SELECT account_type FROM users WHERE user_id=?", (target,)).fetchone()
+            if not trader or trader["account_type"] != "trader":
+                await query.answer("هذا الحساب ليس تاجرًا.", show_alert=True)
+                return
             conn.execute("UPDATE users SET credit_debt=0, credit_due_at='' WHERE user_id=?", (target,))
+        await query.answer("تم تصفير الدين.", show_alert=True)
         await admin_person_card(query, target)
         return
     if data.startswith("person_delete_confirm:"):
@@ -3174,6 +3196,7 @@ async def text_handler(update, context):
         context.user_data.pop("awaiting_game_request", None)
         context.user_data.pop("person_loan_grant_target", None)
         context.user_data.pop("person_balance_target", None)
+        context.user_data.pop("person_debt_edit_target", None)
         context.user_data.pop("awaiting_trader_loan_amount", None)
 
         await message.reply_text(
@@ -3269,6 +3292,28 @@ async def text_handler(update, context):
         buttons = [[InlineKeyboardButton(f"{r['full_name'] or r['username'] or r['user_id']} | {r['user_id']}"[:60], callback_data=f"person_view:{r['user_id']}")] for r in rows]
         buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="people_active")])
         await message.reply_text("نتائج البحث:" if rows else "لم يتم العثور على مشترك.", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if is_admin(user_id) and context.user_data.get("person_debt_edit_target"):
+        target = int(context.user_data.pop("person_debt_edit_target"))
+        try:
+            new_debt = int(text.replace(" ", "").replace("دج", "").replace(",", ""))
+            if new_debt < 0:
+                raise ValueError
+        except ValueError:
+            context.user_data["person_debt_edit_target"] = target
+            await message.reply_text("❌ أرسل مبلغًا صحيحًا يساوي صفرًا أو أكثر، أو /cancel للإلغاء.")
+            return
+        with db() as conn:
+            trader = conn.execute("SELECT account_type, full_name FROM users WHERE user_id=?", (target,)).fetchone()
+            if not trader or trader["account_type"] != "trader":
+                await message.reply_text("❌ الحساب ليس تاجرًا؛ لم يتم تعديل الدين.")
+                return
+            conn.execute(
+                "UPDATE users SET credit_debt=?, credit_due_at=CASE WHEN ?=0 THEN '' ELSE credit_due_at END WHERE user_id=?",
+                (new_debt, new_debt, target),
+            )
+        await message.reply_text(f"✅ تم تحديث دين التاجر {trader['full_name'] or target} إلى {new_debt} دج. لم يتغير رصيد المحفظة.")
         return
 
     if is_admin(user_id) and context.user_data.get("person_loan_grant_target"):
