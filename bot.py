@@ -754,6 +754,8 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None):
         )
         return
 
+    game_category = (game["category"] if "category" in game.keys() else "game") or "game"
+    category_back = "back_apps" if game_category == "app" else "back_games"
     mode = game["platform_mode"] if "platform_mode" in game.keys() else "none"
     if mode == "both" and platform is None:
         await query.edit_message_text(
@@ -761,7 +763,7 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🤖 Android", callback_data=f"platform:{game_id}:android")],
                 [InlineKeyboardButton("🍎 iPhone (iOS)", callback_data=f"platform:{game_id}:ios")],
-                [InlineKeyboardButton("🔙 رجوع", callback_data="back_main")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data=category_back)],
             ]),
         )
         return
@@ -774,7 +776,7 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None):
         methods = conn.execute("SELECT * FROM recharge_methods WHERE game_id=? AND active=1 ORDER BY id", (game_id,)).fetchall()
     if recharge_method_id is None and methods:
         buttons = [[InlineKeyboardButton(f"🔀 {m['title']}", callback_data=f"recharge_select:{game_id}:{m['id']}:{platform or 'none'}")] for m in methods]
-        buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
+        buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data=category_back)])
         await query.edit_message_text(f"{game['emoji']} {game['name']}\n\nاختر طريقة الشحن:", reply_markup=InlineKeyboardMarkup(buttons))
         return
     selected_method = next((m for m in methods if int(m["id"]) == int(recharge_method_id)), None) if recharge_method_id is not None else (methods[0] if methods else None)
@@ -822,8 +824,14 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None):
 
     buttons.append([
         InlineKeyboardButton(
-            "🔙 رجوع للمتجر",
-            callback_data="back_main",
+            "🔙 رجوع",
+            callback_data=f"game_back:{game_id}:{platform or 'none'}",
+        )
+    ])
+    buttons.append([
+        InlineKeyboardButton(
+            "🎮 اختيار لعبة أخرى",
+            callback_data=category_back,
         )
     ])
 
@@ -885,8 +893,8 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None):
         [InlineKeyboardButton("💰 الدفع من رصيد المحفظة", callback_data=f"pay:{game_id}:{offer_id}:balance")],
         [
             InlineKeyboardButton(
-                "🔙 رجوع",
-                callback_data=(f"platform:{game_id}:{platform}" if platform in ("android", "ios") else f"game:{game_id}"),
+                "🔙 رجوع للعروض",
+                callback_data=f"recharge_select:{game_id}:{int(offer['recharge_method_id'])}:{platform or 'none'}",
             )
         ],
     ]
@@ -3300,11 +3308,35 @@ async def callback_handler(update, context):
             "❌ تم إلغاء إرسال الإشعار."
         )
 
+    # التنقل داخل المتجر: الرجوع إلى قائمة الألعاب/التطبيقات أو المستوى السابق.
+    elif data in ("back_games", "back_apps"):
+        category = "app" if data == "back_apps" else "game"
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM games WHERE active=1 AND COALESCE(category,'game')=? ORDER BY id",
+                (category,),
+            ).fetchall()
+        if not rows:
+            await query.edit_message_text("😕 لا توجد خدمات في هذا القسم حالياً.")
+            return
+        buttons = [[InlineKeyboardButton(f"{g['emoji']} {g['name']}", callback_data=f"game:{g['id']}")] for g in rows]
+        buttons.append([InlineKeyboardButton("🔙 الأقسام", callback_data="back_main")])
+        await query.edit_message_text("🎮 قائمة الألعاب:" if category == "game" else "📱 قائمة التطبيقات:", reply_markup=InlineKeyboardMarkup(buttons))
+    elif data.startswith("game_back:"):
+        parts = data.split(":")
+        if len(parts) != 3:
+            return
+        try:
+            game_id = int(parts[1])
+        except ValueError:
+            return
+        platform = parts[2] if parts[2] in ("android", "ios") else None
+        await open_game(query, game_id, platform)
     # المتجر للزبائن
     elif data == "store":
         await query.edit_message_text("اختر من القائمة الرئيسية: الألعاب أو التطبيقات.")
     elif data == "back_main":
-        await query.message.reply_text("القائمة الرئيسية:", reply_markup=main_keyboard(user_id))
+        await query.edit_message_text("القائمة الرئيسية:", reply_markup=main_keyboard(user_id))
 
     # إلغاء أو رجوع عام
     elif data == "cancel":
