@@ -3033,7 +3033,7 @@ async def callback_handler(update, context):
                 cta_markup = None
                 if bot_username:
                     cta_markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🛒🚀 اشحن لعبتك الآن", url=f"https://t.me/{bot_username}")]
+                        [InlineKeyboardButton("🚀 اشحن وانطلق!", url=f"https://t.me/{bot_username}")]
                     ])
                 await context.bot.send_message(
                     chat_id=customer_id,
