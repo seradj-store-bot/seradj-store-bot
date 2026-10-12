@@ -64,7 +64,7 @@ ADMIN_PANEL_MENU = [
 ["📦 إدارة العروض", "➕ إضافة عرض"],
 ["💰 تعديل سعر عرض", "📋 كل الطلبات"],
 ["📊 الإحصائيات", "💳 إعدادات الدفع"],
-["🎵 سعر عملة TikTok"],
+["🎵 سعر عملة TikTok", "📏 حدود كمية TikTok"],
 ["📝 إدارة النصوص", "📨 إرسال إشعار"],
 ["📇 إعدادات التواصل"],
 ["🎁 إدارة متجر النقاط", "📬 طلبات الألعاب"],
@@ -106,6 +106,18 @@ def set_setting(key, value):
             """,
             (key, value),
         )
+
+
+def tiktok_quantity_limits():
+    """Return configured TikTok custom quantity limits, with safe defaults."""
+    try:
+        minimum = int(get_setting("tiktok_min_quantity", "200"))
+        maximum = int(get_setting("tiktok_max_quantity", "99999"))
+        if minimum < 1 or maximum < minimum:
+            raise ValueError
+        return minimum, maximum
+    except (TypeError, ValueError):
+        return 200, 99999
 
 
 def is_admin(user_id):
@@ -786,9 +798,10 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None):
 
     # TikTok: let the customer request a custom coin quantity in addition to preset offers.
     if (game["name"] or "").strip().lower() == "tiktok":
+        tiktok_min, tiktok_max = tiktok_quantity_limits()
         buttons.append([
             InlineKeyboardButton(
-                "✏️ اختيار مبلغ آخر (200–99,999)",
+                f"✏️ اختيار كمية أخرى ({tiktok_min:,}–{tiktok_max:,})",
                 callback_data=f"tiktok_custom:{game_id}:{context_method_id}:{platform or 'none'}",
             )
         ])
@@ -3048,10 +3061,11 @@ async def callback_handler(update, context):
             "platform": parts[3] if parts[3] in ("android", "ios") else "",
         }
         context.user_data["awaiting_tiktok_custom_amount"] = True
+        tiktok_min, tiktok_max = tiktok_quantity_limits()
         await query.edit_message_text(
             "✏️ اختيار كمية TikTok مخصصة\n\n"
-            "أرسل عدد الكوينز اللي حاب تشحنهم، من 200 حتى 99,999.\n"
-            "السعر تحدده الإدارة يدويًا بعد استلام طلبك.\n\n"
+            f"أرسل عدد الكوينز اللي حاب تشحنهم، من {tiktok_min:,} حتى {tiktok_max:,}.\n"
+            "السعر يتحسب تلقائيًا حسب سعر الكوين اللي حددته الإدارة.\n\n"
             "للإلغاء أرسل /cancel"
         )
 
@@ -3255,6 +3269,7 @@ async def text_handler(update, context):
         context.user_data.pop("person_balance_target", None)
         context.user_data.pop("person_debt_edit_target", None)
         context.user_data.pop("awaiting_trader_loan_amount", None)
+        context.user_data.pop("pending_tiktok_min_quantity", None)
 
         await message.reply_text(
             "❌ تم إلغاء العملية.",
@@ -3263,13 +3278,14 @@ async def text_handler(update, context):
         return
 
     if context.user_data.get("awaiting_tiktok_custom_amount"):
+        tiktok_min, tiktok_max = tiktok_quantity_limits()
         try:
             amount_text = text.replace(" ", "").replace(",", "").replace("٬", "")
             amount = int(amount_text)
-            if amount < 200 or amount > 99999:
+            if amount < tiktok_min or amount > tiktok_max:
                 raise ValueError
         except ValueError:
-            await message.reply_text("❌ أدخل كمية صحيحة بين 200 و99,999 كوينز.")
+            await message.reply_text(f"❌ أدخل كمية صحيحة بين {tiktok_min:,} و{tiktok_max:,} كوينز.")
             return
         request = context.user_data.get("tiktok_custom_request") or {}
         game = get_game(request.get("game_id")) if request.get("game_id") else None
@@ -3560,6 +3576,45 @@ async def text_handler(update, context):
 
     if is_admin(user_id):
         step = context.user_data.get("admin_step")
+
+        if step == "tiktok_min_quantity":
+            try:
+                minimum = int(text.strip().replace(",", "").replace("٬", ""))
+                if minimum < 1 or minimum > 10000000:
+                    raise ValueError
+            except ValueError:
+                await message.reply_text("❌ الحد الأدنى لازم يكون عددًا صحيحًا أكبر من صفر. أعد الإرسال أو أرسل /cancel.")
+                return
+            context.user_data["pending_tiktok_min_quantity"] = minimum
+            context.user_data["admin_step"] = "tiktok_max_quantity"
+            current_max = tiktok_quantity_limits()[1]
+            await message.reply_text(
+                f"✅ الحد الأدنى المؤقت: {minimum:,} كوينز.\n\n"
+                f"أرسل الآن الحد الأقصى للكمية (الحد الأقصى الحالي {current_max:,}).\n"
+                "لازم يكون أكبر من أو يساوي الحد الأدنى.\nللإلغاء أرسل /cancel."
+            )
+            return
+
+        if step == "tiktok_max_quantity":
+            minimum = context.user_data.get("pending_tiktok_min_quantity")
+            try:
+                maximum = int(text.strip().replace(",", "").replace("٬", ""))
+                if minimum is None or maximum < int(minimum) or maximum > 10000000:
+                    raise ValueError
+            except ValueError:
+                minimum_shown = context.user_data.get("pending_tiktok_min_quantity", "غير معروف")
+                await message.reply_text(f"❌ الحد الأقصى لازم يكون عددًا صحيحًا لا يقل عن {minimum_shown}. أعد الإرسال أو أرسل /cancel.")
+                return
+            set_setting("tiktok_min_quantity", str(int(minimum)))
+            set_setting("tiktok_max_quantity", str(maximum))
+            context.user_data.pop("pending_tiktok_min_quantity", None)
+            context.user_data.pop("admin_step", None)
+            await message.reply_text(
+                f"✅ تم حفظ حدود كمية TikTok.\n\nالحد الأدنى: {int(minimum):,} كوينز\n"
+                f"الحد الأقصى: {maximum:,} كوينز\n\nستظهر هذه الحدود للزبون ويتحقق منها البوت تلقائيًا.",
+                reply_markup=admin_keyboard(),
+            )
+            return
 
         if step == "tiktok_coin_price":
             try:
@@ -4292,6 +4347,16 @@ async def text_handler(update, context):
                         )
                     ]
                 ]),
+            )
+            return
+        if text == "📏 حدود كمية TikTok":
+            current_min, current_max = tiktok_quantity_limits()
+            context.user_data["admin_step"] = "tiktok_min_quantity"
+            context.user_data.pop("pending_tiktok_min_quantity", None)
+            await message.reply_text(
+                f"📏 حدود كمية TikTok الحالية:\nالحد الأدنى: {current_min:,} كوينز\nالحد الأقصى: {current_max:,} كوينز\n\n"
+                "أرسل الحد الأدنى الجديد كعدد صحيح. بعدها سيطلب منك البوت الحد الأقصى.\n"
+                "للإلغاء أرسل /cancel."
             )
             return
         if text == "🎵 سعر عملة TikTok":
