@@ -3026,8 +3026,25 @@ async def callback_handler(update, context):
                 text=customer_notice,
                 reply_markup=main_keyboard(customer_id),
             )
+            # Add the promotional CTA only after a completed order. The button
+            # opens the same bot directly and keeps the normal reply keyboard intact.
+            if new_status == "completed":
+                bot_username = get_setting("bot_username", "").strip().lstrip("@")
+                if not bot_username:
+                    me = await context.bot.get_me()
+                    bot_username = (me.username or "").strip().lstrip("@")
+                    if bot_username:
+                        set_setting("bot_username", bot_username)
+                if bot_username:
+                    await context.bot.send_message(
+                        chat_id=customer_id,
+                        text="🚀 اشحن وانطلق!",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🚀 اشحن وانطلق!", url=f"https://t.me/{bot_username}")]
+                        ]),
+                    )
         except Exception:
-            logger.exception("تعذر إرسال تحديث الطلب إلى الزبون (ID=%s)", customer_id)
+            logger.exception("تعذر إرسال تحديث الطلب أو زر الشحن إلى الزبون (ID=%s)", customer_id)
 
         # Also notify the store owner/admin about every status change.
         if ADMIN_ID and int(ADMIN_ID) != int(customer_id):
