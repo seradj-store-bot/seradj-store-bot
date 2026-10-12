@@ -782,6 +782,15 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None):
             )
         ])
 
+    # TikTok: let the customer request a custom coin quantity in addition to preset offers.
+    if (game["name"] or "").strip().lower() == "tiktok":
+        buttons.append([
+            InlineKeyboardButton(
+                "✏️ اختيار مبلغ آخر (200–99,999)",
+                callback_data=f"tiktok_custom:{game_id}:{context_method_id}:{platform or 'none'}",
+            )
+        ])
+
     buttons.append([
         InlineKeyboardButton(
             "🔙 رجوع للمتجر",
@@ -1051,6 +1060,9 @@ async def create_order(update, context):
 
     if not draft:
         context.user_data.pop("awaiting_player_id", None)
+        context.user_data.pop("awaiting_tiktok_custom_amount", None)
+        context.user_data.pop("awaiting_tiktok_custom_id", None)
+        context.user_data.pop("tiktok_custom_request", None)
         context.user_data.pop("awaiting_credit_repay_amount", None)
         context.user_data.pop("awaiting_trader_loan_amount", None)
         context.user_data.pop("awaiting_credit_receipt", None)
@@ -3015,6 +3027,32 @@ async def callback_handler(update, context):
         context.user_data.pop("selected_platform", None)
         await open_game(query, game_id)
 
+    # TikTok custom coin quantity: price is handled manually by the admin.
+    elif data.startswith("tiktok_custom:"):
+        parts = data.split(":")
+        if len(parts) != 4:
+            return
+        try:
+            game_id, method_id = int(parts[1]), int(parts[2])
+        except ValueError:
+            return
+        game = get_game(game_id)
+        if not game or (game["name"] or "").strip().lower() != "tiktok":
+            await query.edit_message_text("❌ هذا الخيار متاح لشحن TikTok فقط.")
+            return
+        context.user_data["tiktok_custom_request"] = {
+            "game_id": game_id,
+            "method_id": method_id,
+            "platform": parts[3] if parts[3] in ("android", "ios") else "",
+        }
+        context.user_data["awaiting_tiktok_custom_amount"] = True
+        await query.edit_message_text(
+            "✏️ اختيار كمية TikTok مخصصة\n\n"
+            "أرسل عدد الكوينز اللي حاب تشحنهم، من 200 حتى 99,999.\n"
+            "السعر تحدده الإدارة يدويًا بعد استلام طلبك.\n\n"
+            "للإلغاء أرسل /cancel"
+        )
+
     # فتح عرض للزبون
     elif data.startswith("offer:"):
         parts = data.split(":")
@@ -3219,6 +3257,72 @@ async def text_handler(update, context):
         await message.reply_text(
             "❌ تم إلغاء العملية.",
             reply_markup=main_keyboard(user_id),
+        )
+        return
+
+    if context.user_data.get("awaiting_tiktok_custom_amount"):
+        try:
+            amount_text = text.replace(" ", "").replace(",", "").replace("٬", "")
+            amount = int(amount_text)
+            if amount < 200 or amount > 99999:
+                raise ValueError
+        except ValueError:
+            await message.reply_text("❌ أدخل كمية صحيحة بين 200 و99,999 كوينز.")
+            return
+        request = context.user_data.get("tiktok_custom_request") or {}
+        game = get_game(request.get("game_id")) if request.get("game_id") else None
+        if not game or (game["name"] or "").strip().lower() != "tiktok":
+            context.user_data.pop("awaiting_tiktok_custom_amount", None)
+            context.user_data.pop("tiktok_custom_request", None)
+            await message.reply_text("❌ انتهت جلسة الطلب. ارجع للمتجر وابدأ من جديد.")
+            return
+        request["amount"] = amount
+        context.user_data["tiktok_custom_request"] = request
+        context.user_data.pop("awaiting_tiktok_custom_amount", None)
+        context.user_data["awaiting_tiktok_custom_id"] = True
+        await message.reply_text(
+            f"✅ الكمية: {amount:,} كوينز.\n\n"
+            "أرسل الآن رابط حساب TikTok أو اسم المستخدم المراد شحنه.\n"
+            "بعدها نبعث طلبك للإدارة لتحديد السعر يدويًا.\n\n"
+            "للإلغاء أرسل /cancel"
+        )
+        return
+
+    if context.user_data.get("awaiting_tiktok_custom_id"):
+        if not text or text.startswith("/"):
+            await message.reply_text("❌ أرسل رابط حساب TikTok أو اسم المستخدم الصحيح.")
+            return
+        request = context.user_data.get("tiktok_custom_request") or {}
+        amount = int(request.get("amount", 0))
+        if not amount or not 200 <= amount <= 99999:
+            context.user_data.pop("awaiting_tiktok_custom_id", None)
+            context.user_data.pop("tiktok_custom_request", None)
+            await message.reply_text("❌ انتهت جلسة الطلب. ارجع للمتجر وابدأ من جديد.")
+            return
+        user = update.effective_user
+        if ADMIN_ID:
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "🆕 طلب كمية TikTok مخصصة\n\n"
+                        f"👤 الزبون: {user.full_name}\n"
+                        f"🆔 Telegram ID: {user.id}\n"
+                        f"🎵 الكمية المطلوبة: {amount:,} كوينز\n"
+                        f"🔗 حساب TikTok: {text}\n\n"
+                        "💰 حدّد السعر يدويًا وتواصل مع الزبون لإتمام الدفع."
+                    ),
+                )
+            except Exception:
+                logger.exception("تعذر إرسال طلب كمية TikTok مخصصة للإدارة")
+                await message.reply_text("❌ تعذر إرسال طلبك للإدارة. حاول لاحقًا.")
+                return
+        context.user_data.pop("awaiting_tiktok_custom_id", None)
+        context.user_data.pop("tiktok_custom_request", None)
+        await message.reply_text(
+            f"✅ تم إرسال طلبك للإدارة.\nالكمية: {amount:,} كوينز\n\n"
+            "الإدارة تحدد السعر وتتواصل معك لإتمام الطلب.",
+            reply_markup=main_keyboard(user.id),
         )
         return
 
