@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import logging
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timedelta
 
 from telegram import (
@@ -63,6 +64,7 @@ ADMIN_PANEL_MENU = [
 ["📦 إدارة العروض", "➕ إضافة عرض"],
 ["💰 تعديل سعر عرض", "📋 كل الطلبات"],
 ["📊 الإحصائيات", "💳 إعدادات الدفع"],
+["🎵 سعر عملة TikTok"],
 ["📝 إدارة النصوص", "📨 إرسال إشعار"],
 ["📇 إعدادات التواصل"],
 ["🎁 إدارة متجر النقاط", "📬 طلبات الألعاب"],
@@ -3300,17 +3302,33 @@ async def text_handler(update, context):
             await message.reply_text("❌ انتهت جلسة الطلب. ارجع للمتجر وابدأ من جديد.")
             return
         user = update.effective_user
+        try:
+            price_per_coin = Decimal(get_setting("tiktok_coin_price", "0") or "0")
+        except InvalidOperation:
+            price_per_coin = Decimal("0")
+        if price_per_coin <= 0:
+            context.user_data.pop("awaiting_tiktok_custom_id", None)
+            context.user_data.pop("tiktok_custom_request", None)
+            await message.reply_text(
+                "❌ سعر عملة TikTok غير محدد حاليًا. تواصل مع الإدارة أو حاول لاحقًا.",
+                reply_markup=main_keyboard(user.id),
+            )
+            return
+        total_price = (price_per_coin * Decimal(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        price_per_coin_text = format(price_per_coin.normalize(), "f")
+        total_price_text = format(total_price.normalize(), "f")
         if ADMIN_ID:
             try:
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
                     text=(
-                        "🆕 طلب كمية TikTok مخصصة\n\n"
+                        "🆕 طلب شحن TikTok بكمية مخصصة\n\n"
                         f"👤 الزبون: {user.full_name}\n"
                         f"🆔 Telegram ID: {user.id}\n"
                         f"🎵 الكمية المطلوبة: {amount:,} كوينز\n"
-                        f"🔗 حساب TikTok: {text}\n\n"
-                        "💰 حدّد السعر يدويًا وتواصل مع الزبون لإتمام الدفع."
+                        f"💵 سعر الكوين الواحد: {price_per_coin_text} دج\n"
+                        f"💰 السعر الإجمالي: {total_price_text} دج\n"
+                        f"🔗 حساب TikTok: {text}"
                     ),
                 )
             except Exception:
@@ -3320,8 +3338,10 @@ async def text_handler(update, context):
         context.user_data.pop("awaiting_tiktok_custom_id", None)
         context.user_data.pop("tiktok_custom_request", None)
         await message.reply_text(
-            f"✅ تم إرسال طلبك للإدارة.\nالكمية: {amount:,} كوينز\n\n"
-            "الإدارة تحدد السعر وتتواصل معك لإتمام الطلب.",
+            f"✅ تم إرسال طلبك للإدارة.\n\n🎵 الكمية: {amount:,} كوينز\n"
+            f"💵 سعر الكوين الواحد: {price_per_coin_text} دج\n"
+            f"💰 السعر الإجمالي: {total_price_text} دج\n\n"
+            "انتظر تأكيد الإدارة لإتمام الدفع.",
             reply_markup=main_keyboard(user.id),
         )
         return
@@ -3540,6 +3560,26 @@ async def text_handler(update, context):
 
     if is_admin(user_id):
         step = context.user_data.get("admin_step")
+
+        if step == "tiktok_coin_price":
+            try:
+                raw_price = text.strip().replace("دج", "").replace("DA", "").replace("da", "").replace(",", ".").replace(" ", "")
+                price = Decimal(raw_price)
+                if not price.is_finite() or price <= 0 or price > Decimal("1000000"):
+                    raise InvalidOperation
+                price = price.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP).normalize()
+            except (InvalidOperation, ValueError):
+                await message.reply_text("❌ السعر غير صحيح. أرسل رقمًا أكبر من صفر، مثال: 0.15 أو 0,15. أو /cancel للإلغاء.")
+                return
+            price_text = format(price, "f")
+            set_setting("tiktok_coin_price", price_text)
+            context.user_data.pop("admin_step", None)
+            await message.reply_text(
+                f"✅ تم حفظ سعر عملة TikTok.\n\nسعر الكوين الواحد: {price_text} دج\n"
+                "سيحسب البوت سعر الكمية المخصصة تلقائيًا بضرب عدد الكوينز في هذا السعر.",
+                reply_markup=admin_keyboard(),
+            )
+            return
 
         if step == "account_convert_user_id":
             try:
@@ -4252,6 +4292,16 @@ async def text_handler(update, context):
                         )
                     ]
                 ]),
+            )
+            return
+        if text == "🎵 سعر عملة TikTok":
+            current_price = get_setting("tiktok_coin_price", "")
+            shown_price = current_price if current_price else "غير محدد"
+            context.user_data["admin_step"] = "tiktok_coin_price"
+            await message.reply_text(
+                f"🎵 سعر عملة TikTok الحالية: {shown_price} دج للكوين الواحد.\n\n"
+                "أرسل السعر الجديد للكوين الواحد بالدينار، ويمكنك استعمال الكسور مثل 0.15 أو 0,15.\n"
+                "مثال: 0.15\n\nللإلغاء أرسل /cancel."
             )
             return
         if text == "📝 إدارة النصوص":
