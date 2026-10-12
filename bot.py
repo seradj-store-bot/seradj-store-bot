@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from telegram import (
     Update,
@@ -539,6 +539,8 @@ async def admin_person_card(query, target_id):
     buttons = [
         [InlineKeyboardButton("💰 إضافة رصيد", callback_data=f"person_balance:{target_id}")],
     ]
+    if row["account_type"] == "trader":
+        buttons.append([InlineKeyboardButton("💵 منح سلفية للتاجر", callback_data=f"person_loan_grant:{target_id}")])
     buttons += [
         [InlineKeyboardButton("🔓 إلغاء الحظر" if banned else "🚫 حظر المشترك",
                               callback_data=f"person_unban:{target_id}" if banned else f"person_ban:{target_id}")],
@@ -2017,8 +2019,8 @@ async def callback_handler(update, context):
     data = query.data or ""
     user_id = query.from_user.id
 
-    # تم تعطيل نظام القروض والسلفية بالكامل.
-    if data.startswith(("loan_", "loanreq_", "creditpay_", "credit_repay_method:", "person_loan_grant:", "person_debtzero:")) or (data.startswith("pay:") and data.endswith(":credit")):
+    # تعطيل واجهات القروض وطلبات السلفية من التجار؛ منح السلفية متاح للإدارة فقط.
+    if data.startswith(("loan_", "loanreq_", "creditpay_", "credit_repay_method:", "person_debtzero:")) or (data.startswith("pay:") and data.endswith(":credit")):
         await query.answer("⛔ نظام القروض والسلفية غير متاح.", show_alert=True)
         return
 
@@ -2172,6 +2174,9 @@ async def callback_handler(update, context):
         await query.message.reply_text(f"💰 أرسل المبلغ الذي تريد إضافته إلى رصيد المشترك {target} بالدينار.")
         return
     if data.startswith("person_loan_grant:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ هذه الخاصية للإدارة فقط.", show_alert=True)
+            return
         target = int(data.split(":", 1)[1])
         with db() as conn:
             trader = conn.execute("SELECT user_id, full_name, account_type, credit_debt, credit_term_days FROM users WHERE user_id=?", (target,)).fetchone()
@@ -2181,8 +2186,7 @@ async def callback_handler(update, context):
         context.user_data["person_loan_grant_target"] = target
         await query.message.reply_text(
             f"💵 منح سلفية للتاجر {trader['full_name'] or target} (ID: {target})\n"
-            f"الدين الحالي: {int(trader['credit_debt'] or 0)} دج\n"
-            f"أجل التسديد الافتراضي: {max(1, int(trader['credit_term_days'] or 30))} يوم\n\n"
+            f"الدين الحالي: {int(trader['credit_debt'] or 0)} دج\n\n"
             "أرسل مبلغ السلفية بالدينار. ستُضاف إلى رصيد التاجر ودينه.\nللإلغاء أرسل /cancel."
         )
         return
@@ -2225,7 +2229,7 @@ async def callback_handler(update, context):
             await context.bot.send_message(target_id, f"ℹ️ تم تغيير نوع حسابك في {STORE_NAME} إلى: {label}.")
         except Exception:
             logger.exception("تعذر إشعار المستخدم بتغيير نوع الحساب")
-        await query.edit_message_text(f"✅ تم تغيير نوع الحساب إلى {label}.\nID: {target_id}\n" + ("يمكنك الآن ضبط سقف القرض وأجل التسديد من قائمة قروض التجار." if new_type == "trader" else "تم إيقاف صلاحيات التاجر. أي دين قائم يجب تسويته قبل التحويل."))
+        await query.edit_message_text(f"✅ تم تغيير نوع الحساب إلى {label}.\nID: {target_id}\n" + ("يمكن للإدارة منح سلفية لهذا التاجر من بطاقة حسابه." if new_type == "trader" else "تم إيقاف صلاحيات التاجر. أي دين قائم يجب تسويته قبل التحويل."))
         return
 
     if data.startswith("loanreq_approve:") or data.startswith("loanreq_reject:"):
@@ -3265,6 +3269,32 @@ async def text_handler(update, context):
         buttons = [[InlineKeyboardButton(f"{r['full_name'] or r['username'] or r['user_id']} | {r['user_id']}"[:60], callback_data=f"person_view:{r['user_id']}")] for r in rows]
         buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="people_active")])
         await message.reply_text("نتائج البحث:" if rows else "لم يتم العثور على مشترك.", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if is_admin(user_id) and context.user_data.get("person_loan_grant_target"):
+        target = int(context.user_data.pop("person_loan_grant_target"))
+        try:
+            amount = int(text.replace(" ", "").replace("دج", "").replace(",", ""))
+            if amount < 1:
+                raise ValueError
+        except ValueError:
+            context.user_data["person_loan_grant_target"] = target
+            await message.reply_text("❌ أرسل مبلغ سلفية صحيحًا أكبر من صفر، أو أرسل /cancel للإلغاء.")
+            return
+        with db() as conn:
+            trader = conn.execute("SELECT user_id, full_name, account_type, credit_debt, credit_term_days FROM users WHERE user_id=?", (target,)).fetchone()
+            if not trader or trader["account_type"] != "trader":
+                await message.reply_text("❌ الحساب لم يعد حساب تاجر؛ لم تُمنح السلفية.")
+                return
+            new_debt = int(trader["credit_debt"] or 0) + amount
+            term_days = max(1, int(trader["credit_term_days"] or 30))
+            due_at = (datetime.now() + timedelta(days=term_days)).strftime("%Y-%m-%d")
+            conn.execute("UPDATE users SET balance=balance+?, credit_debt=credit_debt+?, credit_due_at=? WHERE user_id=?", (amount, amount, due_at, target))
+        await message.reply_text(f"✅ تم منح سلفية بقيمة {amount} دج للتاجر {trader['full_name'] or target}.\nالدين الإجمالي الآن: {new_debt} دج.")
+        try:
+            await context.bot.send_message(target, f"💵 منحتك الإدارة سلفية بقيمة {amount} دج.\nتمت إضافتها إلى رصيدك.\nإجمالي الدين: {new_debt} دج\nتاريخ التسديد المحدد: {due_at}")
+        except Exception:
+            logger.exception("تعذر إشعار التاجر بمنح السلفية")
         return
 
     if is_admin(user_id) and context.user_data.get("person_balance_target"):
