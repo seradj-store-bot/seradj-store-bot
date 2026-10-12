@@ -120,6 +120,23 @@ def tiktok_quantity_limits():
         return 200, 99999
 
 
+def tiktok_coin_price(method, user_id):
+    """Return TikTok coin unit price for payment method and customer type."""
+    trader = is_trader(user_id)
+    method_key = "flexy" if method == "flexy" else "baridi"
+    tier = "trader" if trader else "retail"
+    key = f"tiktok_coin_price_{tier}_{method_key}"
+    value = get_setting(key, "")
+    # Backward compatibility: the old single price becomes retail Baridi price.
+    if not value and tier == "retail" and method_key == "baridi":
+        value = get_setting("tiktok_coin_price", "0")
+    try:
+        price = Decimal(value or "0")
+        return price if price.is_finite() and price > 0 else Decimal("0")
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
+
+
 def is_admin(user_id):
     return user_id == ADMIN_ID and ADMIN_ID != 0
 
@@ -2050,6 +2067,30 @@ async def callback_handler(update, context):
     data = query.data or ""
     user_id = query.from_user.id
 
+    if data.startswith("tiktok_price_set:"):
+        if not is_admin(user_id):
+            await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
+            return
+        parts = data.split(":")
+        if len(parts) != 3 or parts[1] not in ("retail", "trader") or parts[2] not in ("baridi", "flexy"):
+            return
+        tier, method = parts[1], parts[2]
+        step = f"tiktok_coin_price_{tier}_{method}"
+        key = f"tiktok_coin_price_{tier}_{method}"
+        current = get_setting(key, "")
+        if not current and tier == "retail" and method == "baridi":
+            current = get_setting("tiktok_coin_price", "")
+        context.user_data["admin_step"] = step
+        tier_label = "التجزئة (الزبائن)" if tier == "retail" else "الجملة (التجار)"
+        method_label = "BaridiMob / CCP" if method == "baridi" else "Flexy"
+        await query.edit_message_text(
+            f"🎵 سعر كوين TikTok — {tier_label} / {method_label}\n"
+            f"السعر الحالي: {current or 'غير محدد'} دج للكوين الواحد.\n\n"
+            "أرسل السعر الجديد للكوين الواحد بالدينار، مثال: 0.15 أو 0,15.\n"
+            "للإلغاء أرسل /cancel."
+        )
+        return
+
     # تعطيل واجهات القروض وطلبات السلفية من التجار؛ منح السلفية متاح للإدارة فقط.
     if data.startswith(("loan_", "loanreq_", "creditpay_", "credit_repay_method:")) or (data.startswith("pay:") and data.endswith(":credit")):
         await query.answer("⛔ نظام القروض والسلفية غير متاح.", show_alert=True)
@@ -3042,7 +3083,7 @@ async def callback_handler(update, context):
         context.user_data.pop("selected_platform", None)
         await open_game(query, game_id)
 
-    # TikTok custom coin quantity: price is handled manually by the admin.
+    # TikTok custom coin quantity: calculate price and let the customer choose payment.
     elif data.startswith("tiktok_custom:"):
         parts = data.split(":")
         if len(parts) != 4:
@@ -3065,7 +3106,69 @@ async def callback_handler(update, context):
         await query.edit_message_text(
             "✏️ اختيار كمية TikTok مخصصة\n\n"
             f"أرسل عدد الكوينز اللي حاب تشحنهم، من {tiktok_min:,} حتى {tiktok_max:,}.\n"
-            "السعر يتحسب تلقائيًا حسب سعر الكوين اللي حددته الإدارة.\n\n"
+            "بعد إدخال الكمية، يظهر السعر وطرق الدفع تلقائيًا.\n\n"
+            "للإلغاء أرسل /cancel"
+        )
+
+    elif data.startswith("tiktok_custom_pay:"):
+        method = data.split(":", 1)[1]
+        if method not in ("baridi", "flexy", "balance"):
+            return
+        request = context.user_data.get("tiktok_custom_request") or {}
+        game = get_game(request.get("game_id")) if request.get("game_id") else None
+        amount = int(request.get("amount", 0) or 0)
+        minimum, maximum = tiktok_quantity_limits()
+        if not game or (game["name"] or "").strip().lower() != "tiktok" or not minimum <= amount <= maximum:
+            context.user_data.pop("tiktok_custom_request", None)
+            await query.edit_message_text("❌ انتهت جلسة الطلب. ارجع للمتجر وابدأ من جديد.")
+            return
+        rate_method = "flexy" if method == "flexy" else "baridi"
+        price_per_coin = tiktok_coin_price(rate_method, query.from_user.id)
+        total = (price_per_coin * Decimal(amount)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        if price_per_coin <= 0 or total <= 0:
+            await query.edit_message_text("❌ سعر TikTok لهذه الفئة وطريقة الدفع غير مضبوط. تواصل مع الإدارة.")
+            return
+        price = int(total)
+        if method == "baridi":
+            method_name = "BaridiMob / CCP"
+            details = get_setting("baridi_details", "تواصل مع الإدارة لمعرفة معلومات الدفع.")
+        elif method == "flexy":
+            method_name = "Flexy"
+            details = get_setting("flexy_details", "تواصل مع الإدارة لمعرفة معلومات الدفع.")
+        else:
+            with db() as conn:
+                balance_row = conn.execute("SELECT balance FROM users WHERE user_id=?", (query.from_user.id,)).fetchone()
+            balance = int(balance_row["balance"] or 0) if balance_row else 0
+            if balance < price:
+                await query.edit_message_text(f"❌ رصيد محفظتك غير كافٍ.\nالسعر: {price} دج\nرصيدك: {balance} دج\n\nاختر BaridiMob / CCP أو Flexy، أو عبّئ محفظتك.")
+                return
+            method_name = "رصيد المحفظة"
+            details = "سيُخصم المبلغ من محفظتك عند تأكيد الطلب. (يُطبّق سعر BaridiMob / CCP لفئتك.)"
+        context.user_data["order_draft"] = {
+            "game_id": game["id"],
+            "offer_id": None,
+            "game_name": game["name"],
+            "offer_name": f"{amount:,} TikTok Coins (كمية مخصصة)",
+            "method": method_name,
+            "price": price,
+            "base_price": price,
+            "points_used": 0,
+            "payment_type": method,
+            "platform": request.get("platform", ""),
+            "login_mode": True,
+            "tiktok_amount": amount,
+        }
+        context.user_data.pop("awaiting_tiktok_custom_amount", None)
+        context.user_data["awaiting_login_email"] = True
+        await query.edit_message_text(
+            "✅ تم حساب طلب TikTok\n\n"
+            f"🎵 الكمية: {amount:,} كوينز\n"
+            f"💵 سعر الكوين الواحد: {format(price_per_coin.normalize(), 'f')} دج\n"
+            f"💰 السعر الإجمالي: {price} دج\n"
+            f"💳 طريقة الدفع: {method_name}\n\n"
+            f"📥 معلومات الدفع:\n{details}\n\n"
+            "🔐 الآن أرسل إيميل حساب TikTok المراد شحنه، وبعدها سيطلب منك البوت كلمة السر.\n"
+            "⚠️ أرسل بيانات الحساب المراد شحنه فقط.\n"
             "للإلغاء أرسل /cancel"
         )
 
@@ -3297,68 +3400,30 @@ async def text_handler(update, context):
         request["amount"] = amount
         context.user_data["tiktok_custom_request"] = request
         context.user_data.pop("awaiting_tiktok_custom_amount", None)
-        context.user_data["awaiting_tiktok_custom_id"] = True
-        await message.reply_text(
-            f"✅ الكمية: {amount:,} كوينز.\n\n"
-            "أرسل الآن رابط حساب TikTok أو اسم المستخدم المراد شحنه.\n"
-            "بعدها نبعث طلبك للإدارة لتحديد السعر يدويًا.\n\n"
-            "للإلغاء أرسل /cancel"
-        )
-        return
-
-    if context.user_data.get("awaiting_tiktok_custom_id"):
-        if not text or text.startswith("/"):
-            await message.reply_text("❌ أرسل رابط حساب TikTok أو اسم المستخدم الصحيح.")
-            return
-        request = context.user_data.get("tiktok_custom_request") or {}
-        amount = int(request.get("amount", 0))
-        if not amount or not 200 <= amount <= 99999:
-            context.user_data.pop("awaiting_tiktok_custom_id", None)
+        baridi_rate = tiktok_coin_price("baridi", message.from_user.id)
+        flexy_rate = tiktok_coin_price("flexy", message.from_user.id)
+        baridi_total = (baridi_rate * Decimal(amount)).quantize(Decimal("1"), rounding=ROUND_HALF_UP) if baridi_rate > 0 else Decimal("0")
+        flexy_total = (flexy_rate * Decimal(amount)).quantize(Decimal("1"), rounding=ROUND_HALF_UP) if flexy_rate > 0 else Decimal("0")
+        if baridi_total <= 0 and flexy_total <= 0:
             context.user_data.pop("tiktok_custom_request", None)
-            await message.reply_text("❌ انتهت جلسة الطلب. ارجع للمتجر وابدأ من جديد.")
+            await message.reply_text("❌ أسعار TikTok غير محددة لهذه الفئة حاليًا. تواصل مع الإدارة.")
             return
-        user = update.effective_user
-        try:
-            price_per_coin = Decimal(get_setting("tiktok_coin_price", "0") or "0")
-        except InvalidOperation:
-            price_per_coin = Decimal("0")
-        if price_per_coin <= 0:
-            context.user_data.pop("awaiting_tiktok_custom_id", None)
-            context.user_data.pop("tiktok_custom_request", None)
-            await message.reply_text(
-                "❌ سعر عملة TikTok غير محدد حاليًا. تواصل مع الإدارة أو حاول لاحقًا.",
-                reply_markup=main_keyboard(user.id),
-            )
-            return
-        total_price = (price_per_coin * Decimal(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        price_per_coin_text = format(price_per_coin.normalize(), "f")
-        total_price_text = format(total_price.normalize(), "f")
-        if ADMIN_ID:
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=(
-                        "🆕 طلب شحن TikTok بكمية مخصصة\n\n"
-                        f"👤 الزبون: {user.full_name}\n"
-                        f"🆔 Telegram ID: {user.id}\n"
-                        f"🎵 الكمية المطلوبة: {amount:,} كوينز\n"
-                        f"💵 سعر الكوين الواحد: {price_per_coin_text} دج\n"
-                        f"💰 السعر الإجمالي: {total_price_text} دج\n"
-                        f"🔗 حساب TikTok: {text}"
-                    ),
-                )
-            except Exception:
-                logger.exception("تعذر إرسال طلب كمية TikTok مخصصة للإدارة")
-                await message.reply_text("❌ تعذر إرسال طلبك للإدارة. حاول لاحقًا.")
-                return
-        context.user_data.pop("awaiting_tiktok_custom_id", None)
-        context.user_data.pop("tiktok_custom_request", None)
+        tier_label = "التاجر" if is_trader(message.from_user.id) else "الزبون العادي"
+        baridi_label = f"💳 BaridiMob / CCP — {int(baridi_total)} دج" if baridi_total > 0 else "💳 BaridiMob / CCP — غير متاح"
+        flexy_label = f"📱 Flexy — {int(flexy_total)} دج" if flexy_total > 0 else "📱 Flexy — غير متاح"
+        payment_rows = []
+        if baridi_total > 0:
+            payment_rows.append([InlineKeyboardButton(baridi_label, callback_data="tiktok_custom_pay:baridi")])
+            payment_rows.append([InlineKeyboardButton("💰 الدفع من رصيد المحفظة (بسعر BaridiMob / CCP)", callback_data="tiktok_custom_pay:balance")])
+        if flexy_total > 0:
+            payment_rows.append([InlineKeyboardButton(flexy_label, callback_data="tiktok_custom_pay:flexy")])
         await message.reply_text(
-            f"✅ تم إرسال طلبك للإدارة.\n\n🎵 الكمية: {amount:,} كوينز\n"
-            f"💵 سعر الكوين الواحد: {price_per_coin_text} دج\n"
-            f"💰 السعر الإجمالي: {total_price_text} دج\n\n"
-            "انتظر تأكيد الإدارة لإتمام الدفع.",
-            reply_markup=main_keyboard(user.id),
+            f"✅ الكمية المطلوبة: {amount:,} كوينز\n"
+            f"🏷️ فئة السعر: {tier_label}\n"
+            f"💳 سعر BaridiMob / CCP: {format(baridi_rate.normalize(), 'f') if baridi_rate > 0 else 'غير مضبوط'} دج/كوين — {int(baridi_total) if baridi_total > 0 else '—'} دج\n"
+            f"📱 سعر Flexy: {format(flexy_rate.normalize(), 'f') if flexy_rate > 0 else 'غير مضبوط'} دج/كوين — {int(flexy_total) if flexy_total > 0 else '—'} دج\n\n"
+            "اختر طريقة الدفع:",
+            reply_markup=InlineKeyboardMarkup(payment_rows),
         )
         return
 
@@ -3616,7 +3681,7 @@ async def text_handler(update, context):
             )
             return
 
-        if step == "tiktok_coin_price":
+        if step and step.startswith("tiktok_coin_price_"):
             try:
                 raw_price = text.strip().replace("دج", "").replace("DA", "").replace("da", "").replace(",", ".").replace(" ", "")
                 price = Decimal(raw_price)
@@ -3627,11 +3692,17 @@ async def text_handler(update, context):
                 await message.reply_text("❌ السعر غير صحيح. أرسل رقمًا أكبر من صفر، مثال: 0.15 أو 0,15. أو /cancel للإلغاء.")
                 return
             price_text = format(price, "f")
-            set_setting("tiktok_coin_price", price_text)
+            set_setting(step, price_text)
+            # Keep old setting in sync for legacy retail Baridi users.
+            if step == "tiktok_coin_price_retail_baridi":
+                set_setting("tiktok_coin_price", price_text)
             context.user_data.pop("admin_step", None)
+            tier, method = step.removeprefix("tiktok_coin_price_").split("_", 1)
+            tier_label = "التجزئة (الزبائن)" if tier == "retail" else "الجملة (التجار)"
+            method_label = "BaridiMob / CCP" if method == "baridi" else "Flexy"
             await message.reply_text(
-                f"✅ تم حفظ سعر عملة TikTok.\n\nسعر الكوين الواحد: {price_text} دج\n"
-                "سيحسب البوت سعر الكمية المخصصة تلقائيًا بضرب عدد الكوينز في هذا السعر.",
+                f"✅ تم حفظ سعر TikTok.\nالفئة: {tier_label}\nطريقة الدفع: {method_label}\n"
+                f"سعر الكوين الواحد: {price_text} دج.\nسيُستخدم هذا السعر لحساب الكمية المخصصة تلقائيًا.",
                 reply_markup=admin_keyboard(),
             )
             return
@@ -4360,13 +4431,25 @@ async def text_handler(update, context):
             )
             return
         if text == "🎵 سعر عملة TikTok":
-            current_price = get_setting("tiktok_coin_price", "")
-            shown_price = current_price if current_price else "غير محدد"
-            context.user_data["admin_step"] = "tiktok_coin_price"
+            values = {
+                "retail_baridi": get_setting("tiktok_coin_price_retail_baridi", get_setting("tiktok_coin_price", "غير محدد")) or "غير محدد",
+                "retail_flexy": get_setting("tiktok_coin_price_retail_flexy", "غير محدد") or "غير محدد",
+                "trader_baridi": get_setting("tiktok_coin_price_trader_baridi", "غير محدد") or "غير محدد",
+                "trader_flexy": get_setting("tiktok_coin_price_trader_flexy", "غير محدد") or "غير محدد",
+            }
             await message.reply_text(
-                f"🎵 سعر عملة TikTok الحالية: {shown_price} دج للكوين الواحد.\n\n"
-                "أرسل السعر الجديد للكوين الواحد بالدينار، ويمكنك استعمال الكسور مثل 0.15 أو 0,15.\n"
-                "مثال: 0.15\n\nللإلغاء أرسل /cancel."
+                "🎵 إعداد أسعار عملة TikTok\n\n"
+                f"👤 زبون عادي — BaridiMob / CCP: {values['retail_baridi']} دج/كوين\n"
+                f"👤 زبون عادي — Flexy: {values['retail_flexy']} دج/كوين\n"
+                f"🏪 تاجر — BaridiMob / CCP: {values['trader_baridi']} دج/كوين\n"
+                f"🏪 تاجر — Flexy: {values['trader_flexy']} دج/كوين\n\n"
+                "اختر السعر الذي تريد تعديله:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("👤 الزبون — BaridiMob / CCP", callback_data="tiktok_price_set:retail:baridi")],
+                    [InlineKeyboardButton("👤 الزبون — Flexy", callback_data="tiktok_price_set:retail:flexy")],
+                    [InlineKeyboardButton("🏪 التاجر — BaridiMob / CCP", callback_data="tiktok_price_set:trader:baridi")],
+                    [InlineKeyboardButton("🏪 التاجر — Flexy", callback_data="tiktok_price_set:trader:flexy")],
+                ])
             )
             return
         if text == "📝 إدارة النصوص":
