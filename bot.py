@@ -1605,6 +1605,12 @@ async def admin_games(query):
         method_label = {"id": "ID اللاعب", "login": "إيميل وكلمة سر", "none": "بدون معلومات شحن"}.get(method, "ID اللاعب")
         buttons.append([
             InlineKeyboardButton(
+                "✏️ تغيير اسم اللعبة / التطبيق",
+                callback_data=f"game_rename:{game['id']}",
+            ),
+        ])
+        buttons.append([
+            InlineKeyboardButton(
                 f"📱 الأجهزة: {game['platform_mode'] if 'platform_mode' in game.keys() else 'none'} (تغيير)",
                 callback_data=f"game_platform:{game['id']}",
             ),
@@ -2751,6 +2757,25 @@ async def callback_handler(update, context):
         await query.answer(f"تم التغيير: {labels[new_method]}")
         await admin_games(query)
 
+    # تغيير اسم اللعبة أو التطبيق
+    elif data.startswith("game_rename:"):
+        try:
+            game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.message.reply_text("❌ معرّف اللعبة غير صالح.")
+            return
+        with db() as conn:
+            game = conn.execute("SELECT id, name FROM games WHERE id = ?", (game_id,)).fetchone()
+        if not game:
+            await query.message.reply_text("❌ اللعبة أو التطبيق غير موجود.")
+            return
+        context.user_data["editing_game_name"] = game_id
+        await query.message.reply_text(
+            f"✏️ أرسل الاسم الجديد لـ {game['name']}\n\n"
+            "سيتم تغيير الاسم في المتجر والقوائم والعروض المرتبطة به، دون تغيير الأسعار أو الطلبات.\n"
+            "أرسل /cancel للإلغاء."
+        )
+
     # تعديل وصف اللعبة
     elif data.startswith("game_desc:"):
 
@@ -3545,6 +3570,7 @@ async def text_handler(update, context):
         context.user_data.pop("pending_login_email", None)
         context.user_data.pop("editing_game_description", None)
         context.user_data.pop("editing_game_prompt", None)
+        context.user_data.pop("editing_game_name", None)
         context.user_data.pop("awaiting_game_request", None)
         context.user_data.pop("person_loan_grant_target", None)
         context.user_data.pop("person_balance_target", None)
@@ -3780,6 +3806,28 @@ async def text_handler(update, context):
             conn.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, target))
         await message.reply_text(f"✅ تمت إضافة {amount} DA إلى رصيد المشترك {target}.")
         return
+
+    # حفظ اسم اللعبة أو التطبيق الجديد
+    if is_admin(user_id):
+        game_id = context.user_data.get("editing_game_name")
+        if game_id is not None:
+            new_name = text.strip()
+            if not new_name or len(new_name) > 80:
+                await message.reply_text("❌ الاسم غير صالح. أرسل اسمًا من 1 إلى 80 حرفًا، أو /cancel للإلغاء.")
+                return
+            try:
+                with db() as conn:
+                    duplicate = conn.execute("SELECT id FROM games WHERE lower(name)=lower(?) AND id<>?", (new_name, int(game_id))).fetchone()
+                    if duplicate:
+                        await message.reply_text("❌ يوجد لعبة أو تطبيق بهذا الاسم بالفعل. أرسل اسمًا مختلفًا.")
+                        return
+                    conn.execute("UPDATE games SET name = ? WHERE id = ?", (new_name, int(game_id)))
+                context.user_data.pop("editing_game_name", None)
+                await message.reply_text("✅ تم تغيير اسم اللعبة / التطبيق بنجاح.")
+            except Exception:
+                logger.exception("فشل تغيير اسم اللعبة أو التطبيق")
+                await message.reply_text("❌ حدث خطأ أثناء تغيير الاسم.")
+            return
 
     # تعديل وصف اللعبة
     if is_admin(user_id):
