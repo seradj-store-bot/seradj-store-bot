@@ -702,6 +702,12 @@ def premium_button_kwargs(game_id):
     return {"icon_custom_emoji_id": emoji_id} if emoji_id else {}
 
 
+def game_button_label(game):
+    """Use the Premium button icon instead of the original creation emoji."""
+    custom_id = premium_emoji_id(game["id"])
+    return game["name"] if custom_id else f"{game['emoji']} {game['name']}"
+
+
 # ====== عرض المتجر ======
 
 async def show_store(message, user_id, category=None):
@@ -1561,8 +1567,9 @@ async def admin_choose_offer_game(query):
     buttons = [
         [
             InlineKeyboardButton(
-                f"{game['emoji']} {game['name']}",
+                game_button_label(game),
                 callback_data=f"add_offer_game:{game['id']}",
+                **premium_button_kwargs(game['id']),
             )
         ]
         for game in games
@@ -1598,8 +1605,9 @@ async def admin_games(query):
 
         buttons.append([
             InlineKeyboardButton(
-                f"{state} {game['emoji']} {game['name']}",
+                f"{state} {game_button_label(game)}",
                 callback_data=f"game_toggle:{game['id']}",
+                **premium_button_kwargs(game['id']),
             ),
             InlineKeyboardButton(
                 "🗑️",
@@ -1739,8 +1747,9 @@ async def admin_choose_manage_game(query):
     buttons = [
         [
             InlineKeyboardButton(
-                f"{game['emoji']} {game['name']}",
+                game_button_label(game),
                 callback_data=f"offers_game:{game['id']}",
+                **premium_button_kwargs(game['id']),
             )
         ]
         for game in games
@@ -2626,7 +2635,7 @@ async def callback_handler(update, context):
             custom_id = get_setting(f"premium_emoji_id_{game['id']}", "").strip()
             enabled = get_setting(f"premium_emoji_enabled_{game['id']}", "1") == "1"
             status = "🟢" if custom_id and enabled else ("⏸️" if custom_id else "⚪")
-            buttons.append([InlineKeyboardButton(f"{status} {game['emoji']} {game['name']}", callback_data=f"premium_game:{game['id']}")])
+            buttons.append([InlineKeyboardButton(f"{status} {game_button_label(game)}", callback_data=f"premium_game:{game['id']}", **premium_button_kwargs(game['id']))])
         buttons.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")])
         await query.edit_message_text("✨ إدارة إيموجيات Premium\n🟢 مفعّل | ⏸️ متوقف | ⚪ غير مضاف", reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -3512,7 +3521,7 @@ async def callback_handler(update, context):
         if not rows:
             await query.edit_message_text("😕 لا توجد خدمات في هذا القسم حالياً.")
             return
-        buttons = [[InlineKeyboardButton(f"{g['emoji']} {g['name']}", callback_data=f"game:{g['id']}")] for g in rows]
+        buttons = [[InlineKeyboardButton(game_button_label(g), callback_data=f"game:{g['id']}", **premium_button_kwargs(g['id']))] for g in rows]
         buttons.append([InlineKeyboardButton("🔙 الأقسام", callback_data="back_main")])
         await query.edit_message_text("🎮 قائمة الألعاب:" if category == "game" else "📱 قائمة التطبيقات:", reply_markup=InlineKeyboardMarkup(buttons))
     elif data.startswith("game_back:"):
@@ -4589,7 +4598,7 @@ async def text_handler(update, context):
                 custom_id = get_setting(f"premium_emoji_id_{game['id']}", "").strip()
                 enabled = get_setting(f"premium_emoji_enabled_{game['id']}", "1") == "1"
                 status = "🟢" if custom_id and enabled else ("⏸️" if custom_id else "⚪")
-                buttons.append([InlineKeyboardButton(f"{status} {game['emoji']} {game['name']}", callback_data=f"premium_game:{game['id']}")])
+                buttons.append([InlineKeyboardButton(f"{status} {game_button_label(game)}", callback_data=f"premium_game:{game['id']}", **premium_button_kwargs(game['id']))])
             buttons.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")])
             await message.reply_text("✨ إدارة إيموجيات Premium\nاختار لعبة لإضافة إيموجي مخصص أو تغييره أو إيقافه.", reply_markup=InlineKeyboardMarkup(buttons))
             return
