@@ -713,7 +713,13 @@ async def show_store(message, user_id, category=None):
     if not games:
         await message.reply_text("😕 لا توجد خدمات في هذا القسم حالياً.", reply_markup=main_keyboard(user_id))
         return
-    buttons = [[InlineKeyboardButton(f"{g['emoji']} {g['name']}", callback_data=f"game:{g['id']}", **premium_button_kwargs(g['id']))] for g in games]
+    buttons = []
+    for g in games:
+        custom_id = premium_emoji_id(g["id"])
+        # When a Premium custom emoji is configured, use it as the button icon
+        # and remove the default emoji from the button text to avoid showing both.
+        button_text = g["name"] if custom_id else f"{g['emoji']} {g['name']}"
+        buttons.append([InlineKeyboardButton(button_text, callback_data=f"game:{g['id']}", **premium_button_kwargs(g['id']))])
     buttons.append([InlineKeyboardButton("🔙 الأقسام", callback_data="back_main")])
     title = "🎮 قائمة الألعاب:" if category == "game" else "📱 قائمة التطبيقات:"
     lines = [title, ""]
