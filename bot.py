@@ -61,8 +61,10 @@ ADMIN_MAIN_MENU = [
 
 ADMIN_PANEL_MENU = [
 ["🎮 إدارة الألعاب", "➕ إضافة لعبة"],
+["✨ إدارة إيموجيات Premium"],
 ["📦 إدارة العروض", "➕ إضافة عرض"],
 ["💰 تعديل سعر عرض", "📋 كل الطلبات"],
+["🗑️ حذف جميع الطلبات"],
 ["📊 الإحصائيات", "💳 إعدادات الدفع"],
 ["🎵 سعر عملة TikTok", "📏 حدود كمية TikTok"],
 ["📝 إدارة النصوص", "📨 إرسال إشعار"],
@@ -536,16 +538,18 @@ async def offer_contact_message(message):
 async def admin_show_people(message, banned=False):
     with db() as conn:
         rows = conn.execute(
-            "SELECT user_id, username, full_name, phone_number, is_banned "
+            "SELECT user_id, username, full_name, phone_number, is_banned, account_type, balance "
             "FROM users WHERE COALESCE(is_banned,0)=? ORDER BY user_id DESC LIMIT 30",
             (1 if banned else 0,),
         ).fetchall()
+        total = conn.execute("SELECT COUNT(*) FROM users WHERE COALESCE(is_banned,0)=?", (1 if banned else 0,)).fetchone()[0]
     buttons = []
     for row in rows:
         label = row["full_name"] or (("@"+row["username"]) if row["username"] else str(row["user_id"]))
-        username = (" @" + row["username"]) if row["username"] else ""
+        kind = "تاجر" if row["account_type"] == "trader" else "زبون"
+        balance = int(row["balance"] or 0)
         buttons.append([InlineKeyboardButton(
-            f"{label}{username} | {row['user_id']}"[:60],
+            f"{kind} | {label} | {balance} DA | ID:{row['user_id']}"[:60],
             callback_data=f"person_view:{row['user_id']}",
         )])
     buttons.append([InlineKeyboardButton("🔎 البحث بالاسم أو ID", callback_data="person_search")])
@@ -553,7 +557,7 @@ async def admin_show_people(message, banned=False):
                                           callback_data="people_banned" if not banned else "people_active")])
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
     title = "🚫 قائمة المحظورين" if banned else "👥 المشتركين النشطون"
-    await message.reply_text(title + "\nاختر مشتركًا لعرض معلوماته وإدارة حسابه:",
+    await message.reply_text(f"{title} — العدد: {total}\n\nكل زر يعرض نوع الحساب والاسم والرصيد وID. اضغط على الشخص لإدارة رصيده ودينه وحظره أو حذف حسابه.\nيعرض هنا آخر 30 حسابًا؛ استعمل البحث للوصول إلى غيرهم.",
                              reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -686,6 +690,18 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def premium_emoji_id(game_id):
+    """Return the configured custom emoji ID when enabled for a game."""
+    if get_setting(f"premium_emoji_enabled_{game_id}", "1") != "1":
+        return ""
+    return get_setting(f"premium_emoji_id_{game_id}", "").strip()
+
+
+def premium_button_kwargs(game_id):
+    emoji_id = premium_emoji_id(game_id)
+    return {"icon_custom_emoji_id": emoji_id} if emoji_id else {}
+
+
 # ====== عرض المتجر ======
 
 async def show_store(message, user_id, category=None):
@@ -697,9 +713,15 @@ async def show_store(message, user_id, category=None):
     if not games:
         await message.reply_text("😕 لا توجد خدمات في هذا القسم حالياً.", reply_markup=main_keyboard(user_id))
         return
-    buttons = [[InlineKeyboardButton(f"{g['emoji']} {g['name']}", callback_data=f"game:{g['id']}")] for g in games]
+    buttons = [[InlineKeyboardButton(f"{g['emoji']} {g['name']}", callback_data=f"game:{g['id']}", **premium_button_kwargs(g['id']))] for g in games]
     buttons.append([InlineKeyboardButton("🔙 الأقسام", callback_data="back_main")])
-    await message.reply_text("🎮 قائمة الألعاب:" if category == "game" else "📱 قائمة التطبيقات:", reply_markup=InlineKeyboardMarkup(buttons))
+    title = "🎮 قائمة الألعاب:" if category == "game" else "📱 قائمة التطبيقات:"
+    lines = [title, ""]
+    for g in games:
+        custom_id = premium_emoji_id(g['id'])
+        icon = f'<tg-emoji emoji-id="{custom_id}">{g["emoji"] or "🎮"}</tg-emoji>' if custom_id else (g['emoji'] or "🎮")
+        lines.append(f"{icon} {g['name']}")
+    await message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # ====== حساب الزبون ======
@@ -2208,11 +2230,50 @@ async def callback_handler(update, context):
         "deposit_approve:",
         "deposit_reject:",
         "chat_reply:",
-        "loan_", "loanreq_", "customer_orders:", "creditpay_", "account_type_set:", "reset_data", "reset_confirm", "adm_archived_stats", "people_", "person_",
+        "loan_", "loanreq_", "customer_orders:", "creditpay_", "account_type_set:", "reset_data", "reset_confirm", "adm_archived_stats", "people_", "person_", "offer_price_one:", "offer_price_all:", "orders_delete_",
     )
 
     if data.startswith(admin_actions) and not is_admin(user_id):
         await query.answer("⛔ غير مسموح لك.", show_alert=True)
+        return
+
+    if data.startswith("offer_price_one:"):
+        parts = data.split(":")
+        if len(parts) != 3 or parts[2] not in ("price_baridi", "price_flexy", "price_baridi_trader", "price_flexy_trader"):
+            await query.answer("اختيار غير صالح.", show_alert=True)
+            return
+        offer_id, column = int(parts[1]), parts[2]
+        with db() as conn:
+            offer = conn.execute(f"SELECT name, {column} AS current_price FROM offers WHERE id=?", (offer_id,)).fetchone()
+        if not offer:
+            await query.answer("العرض غير موجود.", show_alert=True)
+            return
+        context.user_data["admin_step"] = "edit_single_offer_price"
+        context.user_data["pending_offer_id"] = offer_id
+        context.user_data["pending_offer_price_column"] = column
+        labels = {"price_baridi":"سعر الزبون عبر BaridiMob/CCP", "price_flexy":"سعر الزبون عبر Flexy", "price_baridi_trader":"سعر التاجر عبر BaridiMob/CCP", "price_flexy_trader":"سعر التاجر عبر Flexy"}
+        await query.message.reply_text(f"✏️ {offer['name']}\n{labels[column]} الحالي: {offer['current_price']} DA\nأرسل السعر الجديد فقط. بقية الأسعار لن تتغير.\nللإلغاء أرسل /cancel.")
+        return
+    if data.startswith("offer_price_all:"):
+        offer_id = int(data.split(":", 1)[1])
+        context.user_data["admin_step"] = "edit_price_data"
+        context.user_data["pending_offer_id"] = offer_id
+        await query.message.reply_text("أرسل الأسعار الأربعة بهذا الترتيب:\nسعر الزبون Baridi | سعر الزبون Flexy | سعر التاجر Baridi | سعر التاجر Flexy\nمثال: 750 | 900 | 650 | 800\nللإلغاء أرسل /cancel.")
+        return
+
+    if data == "orders_delete_all":
+        await query.edit_message_text("⚠️ هل أنت متأكد من حذف جميع الطلبات؟ سيتم حذف سجلات الطلبات فقط، ولن تتغير حسابات المستخدمين أو الأرصدة أو الألعاب والعروض. لا يمكن التراجع عن العملية.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ نعم، احذف جميع الطلبات", callback_data="orders_delete_confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="adm_home")]]))
+        return
+    if data == "orders_delete_confirm":
+        with db() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+            conn.execute("DELETE FROM orders")
+            # Reset SQLite sequence if the table uses AUTOINCREMENT.
+            try:
+                conn.execute("DELETE FROM sqlite_sequence WHERE name='orders'")
+            except sqlite3.OperationalError:
+                pass
+        await query.edit_message_text(f"✅ تم حذف جميع الطلبات ({count} طلب). الحسابات والأرصدة والألعاب والعروض لم تتغير.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]]))
         return
 
     if data == "people_active":
@@ -2523,6 +2584,70 @@ async def callback_handler(update, context):
     # الإحصائيات
     elif data == "adm_stats":
         await show_stats(query)
+
+    # إدارة إيموجيات Premium لكل لعبة
+    elif data.startswith("premium_game:"):
+        game_id = int(data.split(":", 1)[1])
+        with db() as conn:
+            game = conn.execute("SELECT id, name, emoji FROM games WHERE id=?", (game_id,)).fetchone()
+        if not game:
+            await query.answer("اللعبة غير موجودة", show_alert=True)
+            return
+        custom_id = get_setting(f"premium_emoji_id_{game_id}", "").strip()
+        enabled = get_setting(f"premium_emoji_enabled_{game_id}", "1") == "1"
+        state = "مفعّل 🟢" if enabled else "متوقف ⏸️"
+        status = f"\nالإيموجي ID: {custom_id}\nالحالة: {state}" if custom_id else "\nمازال ما ضفت حتى إيموجي لهذه اللعبة."
+        buttons = [
+            [InlineKeyboardButton("➕ إضافة / تغيير الإيموجي", callback_data=f"premium_set:{game_id}")],
+        ]
+        if custom_id:
+            buttons.append([InlineKeyboardButton("⏯️ تفعيل / إيقاف", callback_data=f"premium_toggle:{game_id}")])
+            buttons.append([InlineKeyboardButton("🗑️ حذف الإيموجي", callback_data=f"premium_delete:{game_id}")])
+        buttons.append([InlineKeyboardButton("🔙 قائمة الإيموجيات", callback_data="premium_manage")])
+        await query.edit_message_text(f"✨ إيموجي Premium — {game['name']}{status}\n\nتقدر تتحكم في الإيموجي من هنا.", reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif data == "premium_manage":
+        with db() as conn:
+            emoji_games = conn.execute("SELECT id, name, emoji FROM games ORDER BY id").fetchall()
+        buttons = []
+        for game in emoji_games:
+            custom_id = get_setting(f"premium_emoji_id_{game['id']}", "").strip()
+            enabled = get_setting(f"premium_emoji_enabled_{game['id']}", "1") == "1"
+            status = "🟢" if custom_id and enabled else ("⏸️" if custom_id else "⚪")
+            buttons.append([InlineKeyboardButton(f"{status} {game['emoji']} {game['name']}", callback_data=f"premium_game:{game['id']}")])
+        buttons.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")])
+        await query.edit_message_text("✨ إدارة إيموجيات Premium\n🟢 مفعّل | ⏸️ متوقف | ⚪ غير مضاف", reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif data.startswith("premium_set:"):
+        game_id = int(data.split(":", 1)[1])
+        context.user_data["admin_step"] = "premium_emoji_set"
+        context.user_data["pending_premium_game_id"] = game_id
+        await query.message.reply_text("أرسل الآن ID الإيموجي Premium لهذه اللعبة (الأرقام/المعرف فقط).\nتقدر تجيبه من أداة استخراج Custom Emoji ID.\nأرسل /cancel للإلغاء.")
+
+    elif data.startswith("premium_toggle:"):
+        game_id = int(data.split(":", 1)[1])
+        current = get_setting(f"premium_emoji_enabled_{game_id}", "1")
+        set_setting(f"premium_emoji_enabled_{game_id}", "0" if current == "1" else "1")
+        await query.answer("تم تحديث حالة الإيموجي")
+        with db() as conn:
+            game = conn.execute("SELECT id, name FROM games WHERE id=?", (game_id,)).fetchone()
+        custom_id = get_setting(f"premium_emoji_id_{game_id}", "").strip()
+        enabled = get_setting(f"premium_emoji_enabled_{game_id}", "1") == "1"
+        state = "مفعّل 🟢" if enabled else "متوقف ⏸️"
+        buttons = [[InlineKeyboardButton("➕ تغيير الإيموجي", callback_data=f"premium_set:{game_id}")], [InlineKeyboardButton("⏯️ تفعيل / إيقاف", callback_data=f"premium_toggle:{game_id}")], [InlineKeyboardButton("🗑️ حذف الإيموجي", callback_data=f"premium_delete:{game_id}")], [InlineKeyboardButton("🔙 قائمة الإيموجيات", callback_data="premium_manage")]]
+        await query.edit_message_text(f"✨ إيموجي Premium — {game['name']}\nالإيموجي ID: {custom_id}\nالحالة: {state}", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    elif data.startswith("premium_delete:"):
+        game_id = int(data.split(":", 1)[1])
+        set_setting(f"premium_emoji_id_{game_id}", "")
+        set_setting(f"premium_emoji_enabled_{game_id}", "1")
+        await query.answer("تم حذف الإيموجي")
+        with db() as conn:
+            game = conn.execute("SELECT id, name FROM games WHERE id=?", (game_id,)).fetchone()
+        buttons = [[InlineKeyboardButton("➕ إضافة إيموجي", callback_data=f"premium_set:{game_id}")], [InlineKeyboardButton("🔙 قائمة الإيموجيات", callback_data="premium_manage")]]
+        await query.edit_message_text(f"✨ إيموجي Premium — {game['name']}\nمازال ما ضفت حتى إيموجي لهذه اللعبة.", reply_markup=InlineKeyboardMarkup(buttons))
+        return
 
     # إدارة طرق الشحن لكل لعبة أو تطبيق
     elif data.startswith("game_methods:"):
@@ -2870,16 +2995,19 @@ async def callback_handler(update, context):
             )
             return
 
-        context.user_data["admin_step"] = "edit_price_data"
         context.user_data["pending_offer_id"] = offer_id
-
+        with db() as conn:
+            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
         await query.message.reply_text(
-            f"💰 تعديل أسعار العرض: {offer['name']}\n\n"
-            "ابعث السعرين بهذا الشكل:\n"
-            "سعر BaridiMob/CCP | سعر Flexy\n\n"
-            "مثال:\n"
-            "750 | 900\n\n"
-            "ابعث /cancel للإلغاء."
+            f"💰 تعديل سعر العرض: {offer['name']}\n\n"
+            f"الأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\n"
+            f"تاجر Baridi {price_row['price_baridi_trader']} DA | تاجر Flexy {price_row['price_flexy_trader']} DA\n\n"
+            "اختار السعر اللي تحب تبدله فقط؛ باقي الأسعار تبقى كما هي:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
+                [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy_trader")],
+                [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
+            ])
         )
 
     # تشغيل/إخفاء طرق الدفع للزبائن
@@ -3423,6 +3551,7 @@ async def text_handler(update, context):
         context.user_data.pop("person_debt_edit_target", None)
         context.user_data.pop("awaiting_trader_loan_amount", None)
         context.user_data.pop("pending_tiktok_min_quantity", None)
+        context.user_data.pop("pending_premium_game_id", None)
 
         await message.reply_text(
             "❌ تم إلغاء العملية.",
@@ -4012,6 +4141,33 @@ async def text_handler(update, context):
             await message.reply_text(f"✅ تم ضبط مكافأة العرض على {reward_points} نقطة.", reply_markup=admin_keyboard())
             return
 
+        # تعديل سعر واحد فقط لعرض مع الحفاظ على بقية الأسعار
+        if step == "edit_single_offer_price":
+            try:
+                new_price = int(text)
+                if new_price < 0:
+                    raise ValueError
+            except ValueError:
+                await message.reply_text("❌ أرسل سعرًا صحيحًا (0 أو أكثر)، أو /cancel للإلغاء.")
+                return
+            offer_id = context.user_data.get("pending_offer_id")
+            column = context.user_data.get("pending_offer_price_column")
+            if column not in ("price_baridi", "price_flexy", "price_baridi_trader", "price_flexy_trader") or not offer_id:
+                context.user_data.pop("admin_step", None)
+                await message.reply_text("❌ انتهت جلسة تعديل السعر. افتح تعديل سعر العرض من جديد.")
+                return
+            with db() as conn:
+                result = conn.execute(f"UPDATE offers SET {column}=? WHERE id=?", (new_price, offer_id))
+                offer_name_row = conn.execute("SELECT name FROM offers WHERE id=?", (offer_id,)).fetchone()
+            context.user_data.pop("admin_step", None)
+            context.user_data.pop("pending_offer_id", None)
+            context.user_data.pop("pending_offer_price_column", None)
+            if not result.rowcount or not offer_name_row:
+                await message.reply_text("❌ العرض غير موجود.", reply_markup=admin_keyboard())
+            else:
+                await message.reply_text(f"✅ تم تعديل السعر فقط إلى {new_price} DA للعرض {offer_name_row['name']}. بقية الأسعار بقيت كما هي.", reply_markup=admin_keyboard())
+            return
+
         # تعديل أسعار عرض
         if step == "edit_price_data":
             parts = [part.strip() for part in text.split("|")]
@@ -4108,6 +4264,26 @@ async def text_handler(update, context):
 # تعديل النصوص وإرسال الإشعارات
     if is_admin(user_id):
         step = context.user_data.get("admin_step")
+
+        if step == "premium_emoji_set":
+            game_id = context.user_data.get("pending_premium_game_id")
+            # Easiest path: admin sends/pastes one custom emoji; fallback accepts its numeric ID.
+            custom_id = ""
+            for entity in (message.entities or []):
+                if getattr(entity, "type", "") == "custom_emoji" and getattr(entity, "custom_emoji_id", None):
+                    custom_id = entity.custom_emoji_id
+                    break
+            if not custom_id and text.isdigit() and len(text) >= 5:
+                custom_id = text
+            if not game_id or not custom_id:
+                await message.reply_text("❌ ما قدرتش نقرأ الإيموجي. ابعث إيموجي Premium وحده من تيليغرام، أو ابعث الـ ID تاعه كأرقام فقط. /cancel للإلغاء.")
+                return
+            set_setting(f"premium_emoji_id_{game_id}", custom_id)
+            set_setting(f"premium_emoji_enabled_{game_id}", "1")
+            context.user_data.pop("admin_step", None)
+            context.user_data.pop("pending_premium_game_id", None)
+            await message.reply_text("✅ تم حفظ إيموجي Premium وتفعيله. سيظهر في زر اللعبة وفي قائمة الألعاب إذا كان البوت/مالك البوت مؤهلاً لاستخدام الإيموجيات المخصصة.", reply_markup=ReplyKeyboardMarkup(ADMIN_PANEL_MENU, resize_keyboard=True))
+            return
 
         # حفظ النص الجديد
         if step == "edit_setting_value":
@@ -4351,6 +4527,19 @@ async def text_handler(update, context):
             await show_admin_panel(update, context)
             return
 
+        if text == "✨ إدارة إيموجيات Premium":
+            with db() as conn:
+                emoji_games = conn.execute("SELECT id, name, emoji FROM games ORDER BY id").fetchall()
+            buttons = []
+            for game in emoji_games:
+                custom_id = get_setting(f"premium_emoji_id_{game['id']}", "").strip()
+                enabled = get_setting(f"premium_emoji_enabled_{game['id']}", "1") == "1"
+                status = "🟢" if custom_id and enabled else ("⏸️" if custom_id else "⚪")
+                buttons.append([InlineKeyboardButton(f"{status} {game['emoji']} {game['name']}", callback_data=f"premium_game:{game['id']}")])
+            buttons.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")])
+            await message.reply_text("✨ إدارة إيموجيات Premium\nاختار لعبة لإضافة إيموجي مخصص أو تغييره أو إيقافه.", reply_markup=InlineKeyboardMarkup(buttons))
+            return
+
         if text == "🎮 إدارة الألعاب":
             await message.reply_text(
                 "🎮 إدارة الألعاب:",
@@ -4541,6 +4730,12 @@ async def text_handler(update, context):
 
         if text == "👥 التحكم في الأفراد":
             await admin_show_people(message, banned=False)
+            return
+
+        if text == "🗑️ حذف جميع الطلبات":
+            with db() as conn:
+                count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+            await message.reply_text(f"🗑️ حذف جميع الطلبات\nعدد الطلبات الحالية: {count}\n\nسيتم حذف سجلات الطلبات فقط، ولن تتغير حسابات المستخدمين أو الأرصدة أو الألعاب والعروض. العملية لا يمكن التراجع عنها.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("متابعة إلى التأكيد", callback_data="orders_delete_all")], [InlineKeyboardButton("إلغاء", callback_data="adm_home")]]))
             return
 
         if text == "🧹 تصفير الحسابات والطلبات":
