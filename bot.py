@@ -3541,19 +3541,41 @@ async def callback_handler(update, context):
     elif data == "notify_broadcast_confirm":
         broadcast_text = context.user_data.get("pending_broadcast_text", "")
         if not broadcast_text:
-            await query.answer("ما كاين حتى نص للإرسال", show_alert=True); return
+            await query.answer("ما كاين حتى نص للإرسال", show_alert=True)
+            return
         with db() as conn:
             recipients = [r[0] for r in conn.execute("SELECT user_id FROM users").fetchall()]
         sent = failed = 0
+        raw_entities = context.user_data.get("pending_broadcast_entities", [])
+        from telegram import MessageEntity
+        prefix = "📢 إشعار من SERADJ STORE:\\n\\n"
+        buttons = context.user_data.get("pending_broadcast_buttons", [])
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(b["text"], **({"url": b["url"]} if "url" in b else {"callback_data": b["callback_data"]}))]
+            for b in buttons
+        ]) if buttons else None
         for recipient in recipients:
             try:
-                await context.bot.send_message(chat_id=recipient, text=f"📢 إشعار من SERADJ STORE:\n\n{broadcast_text}")
+                kwargs = {}
+                if raw_entities:
+                    kwargs["entities"] = [
+                        MessageEntity.de_json({**item, "offset": int(item.get("offset", 0)) + len(prefix)}, context.bot)
+                        for item in raw_entities
+                    ]
+                await context.bot.send_message(
+                    chat_id=recipient, text=prefix + broadcast_text,
+                    reply_markup=keyboard, **kwargs
+                )
                 sent += 1
             except Exception:
                 failed += 1
-        context.user_data.pop("pending_broadcast_text", None)
+        for key in ("pending_broadcast_text", "pending_broadcast_entities", "pending_broadcast_buttons"):
+            context.user_data.pop(key, None)
         context.user_data.pop("admin_step", None)
-        await query.edit_message_text(f"✅ انتهى إرسال الإشعار.\nوصل إلى: {sent}\nتعذّر الإرسال إلى: {failed}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]]))
+        await query.edit_message_text(
+            f"✅ انتهى إرسال الإشعار.\\nوصل إلى: {sent}\\nتعذّر الإرسال إلى: {failed}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]])
+        )
         return
 
     elif data == "notify_confirm":
@@ -4536,10 +4558,60 @@ async def text_handler(update, context):
 
         if step == "notify_broadcast_message":
             context.user_data["pending_broadcast_text"] = text
+            context.user_data["pending_broadcast_entities"] = [
+                entity.to_dict() for entity in (message.entities or [])
+            ]
+            context.user_data["admin_step"] = "notify_broadcast_buttons"
+            await message.reply_text(
+                "✅ حفظت نص الإشعار.\n\n"
+                "إذا حبيت تزيد أزرار، ابعث كل زر في سطر بهذا الشكل:\n"
+                "رابط | اسم الزر | https://example.com\n"
+                "قسم | اسم الزر | store\n"
+                "قسم | اسم الزر | back_main\n\n"
+                "الأقسام المدعومة: store و back_main. الحد الأقصى 8 أزرار.\n"
+                "إذا ما تحتاجش أزرار ابعث: بدون\n"
+                "للإلغاء ابعث /cancel."
+            )
+            return
+
+        if step == "notify_broadcast_buttons":
+            buttons = []
+            if text.strip().lower() not in ("بدون", "لا", "no", "none"):
+                for line in text.splitlines():
+                    parts = [part.strip() for part in line.split("|", 2)]
+                    if len(parts) != 3 or parts[0] not in ("رابط", "قسم") or not parts[1] or not parts[2]:
+                        await message.reply_text("❌ صيغة غير صحيحة. استعمل: رابط | اسم الزر | https://example.com أو قسم | اسم الزر | store")
+                        return
+                    kind, label, target = parts
+                    if kind == "رابط":
+                        if not target.startswith(("https://", "http://")):
+                            await message.reply_text("❌ الرابط لازم يبدأ بـ https:// أو http://")
+                            return
+                        buttons.append({"text": label, "url": target})
+                    else:
+                        if target not in ("store", "back_main"):
+                            await message.reply_text("❌ الأقسام المدعومة: store و back_main")
+                            return
+                        buttons.append({"text": label, "callback_data": target})
+                    if len(buttons) > 8:
+                        await message.reply_text("❌ الحد الأقصى 8 أزرار.")
+                        return
+            context.user_data["pending_broadcast_buttons"] = buttons
             context.user_data["admin_step"] = "notify_broadcast_confirm"
             with db() as conn:
                 total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-            await message.reply_text(f"📨 معاينة إشعار لجميع المشتركين ({total} حساب):\n\n{text}\n\nتأكيد الإرسال؟", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ إرسال للجميع", callback_data="notify_broadcast_confirm"), InlineKeyboardButton("❌ إلغاء", callback_data="notify_cancel")]]))
+            preview_rows = [
+                [InlineKeyboardButton(b["text"], **({"url": b["url"]} if "url" in b else {"callback_data": b["callback_data"]}))]
+                for b in buttons
+            ]
+            preview_rows.append([
+                InlineKeyboardButton("✅ إرسال للجميع", callback_data="notify_broadcast_confirm"),
+                InlineKeyboardButton("❌ إلغاء", callback_data="notify_cancel")
+            ])
+            await message.reply_text(
+                f"📨 معاينة إشعار لجميع المشتركين ({total} حساب):\n\n{text}\n\nتأكيد الإرسال؟",
+                reply_markup=InlineKeyboardMarkup(preview_rows)
+            )
             return
 
         # استقبال Telegram ID للزبون
