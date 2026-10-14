@@ -60,10 +60,9 @@ ADMIN_MAIN_MENU = [
 ]
 
 ADMIN_PANEL_MENU = [
-["➕ إضافة", "🛍️ المتجر"],
-["🎮 إدارة الألعاب", "✨ إدارة إيموجيات Premium"],
-["💰 تعديل الأسعار", "📂 إدارة البوت"],
-["📨 إرسال إشعار", "📇 إعدادات التواصل"],
+["➕ إضافة", "🎮 إدارة الألعاب"],
+["✨ إدارة إيموجيات Premium", "💰 تعديل الأسعار"],
+["📂 إدارة البوت", "📨 إرسال إشعار"],
 ["🎁 إدارة متجر النقاط", "💬 مراسلة زبون"],
 ["👥 التحكم في الأفراد", "👥 إدارة التجار"],
 ["🔙 القائمة الرئيسية"],
@@ -2199,9 +2198,15 @@ async def callback_handler(update, context):
     if data.startswith("store_category:"):
         category = data.split(":", 1)[1]
         if category not in ("game", "app"):
+            await query.answer("القسم غير معروف.", show_alert=True)
             return
-        await query.edit_message_text("جارٍ تحميل القسم...")
+        # Remove the category chooser instead of leaving a permanent loading message.
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         await show_store(query.message, user_id, category)
+        await query.answer()
         return
 
     if data == "contact_unset":
