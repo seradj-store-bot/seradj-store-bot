@@ -379,8 +379,19 @@ def init_db():
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('baridi_details', 'تواصل مع الإدارة لمعرفة معلومات الدفع.')")
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('flexy_details', 'تواصل مع الإدارة لمعرفة معلومات Flexy.')")
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('points_value', '1')")
-        # Classify known digital services separately; preserve any existing custom classification.
-        conn.execute("UPDATE games SET category='app' WHERE lower(name) IN ('tiktok','snapchat+','netflix','azar','app store') AND (category IS NULL OR category='game')")
+        # Repair older databases where applications were saved with the default category='game'.
+        # Include common apps/services, using normalized lowercase names and preserving game titles.
+        conn.execute("""
+            UPDATE games SET category='app'
+            WHERE lower(trim(name)) IN (
+                'tiktok','tik tok','snapchat+','snapchat plus','netflix','azar',
+                'app store','apple store','telegram premium','telegram','spotify',
+                'youtube premium','youtube','instagram','facebook','discord',
+                'capcut','chatgpt','canva','shahid','osn+','crunchyroll',
+                'imo','tinder','truecaller','google play','google play gift card'
+            )
+            AND (category IS NULL OR trim(category)='' OR category='game')
+        """)
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('facebook_url', '')")
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('telegram_url', '')")
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", ("privacy_policy", TERMS_PRIVACY_TEXT))
@@ -705,7 +716,22 @@ async def show_store(message, user_id, category=None):
         await message.reply_text("اختر زر 🎮 الألعاب أو 📱 التطبيقات من القائمة الرئيسية.", reply_markup=main_keyboard(user_id))
         return
     with db() as conn:
-        games = conn.execute("SELECT * FROM games WHERE active=1 AND COALESCE(category,'game')=? ORDER BY id", (category,)).fetchall()
+        if category == "app":
+            games = conn.execute("""
+                SELECT * FROM games
+                WHERE active=1 AND (
+                    lower(trim(COALESCE(category,'')))='app'
+                    OR lower(trim(name)) IN (
+                        'tiktok','tik tok','snapchat+','snapchat plus','netflix','azar',
+                        'app store','apple store','telegram premium','telegram','spotify',
+                        'youtube premium','youtube','instagram','facebook','discord',
+                        'capcut','chatgpt','canva','shahid','osn+','crunchyroll',
+                        'imo','tinder','truecaller','google play','google play gift card'
+                    )
+                ) ORDER BY id
+            """).fetchall()
+        else:
+            games = conn.execute("SELECT * FROM games WHERE active=1 AND COALESCE(NULLIF(trim(category),''),'game')='game' ORDER BY id").fetchall()
     if not games:
         await message.reply_text("😕 لا توجد خدمات في هذا القسم حالياً.", reply_markup=main_keyboard(user_id))
         return
@@ -3587,10 +3613,21 @@ async def callback_handler(update, context):
     elif data in ("back_games", "back_apps"):
         category = "app" if data == "back_apps" else "game"
         with db() as conn:
-            rows = conn.execute(
-                "SELECT * FROM games WHERE active=1 AND COALESCE(category,'game')=? ORDER BY id",
-                (category,),
-            ).fetchall()
+            if category == "app":
+                rows = conn.execute("""
+                    SELECT * FROM games WHERE active=1 AND (
+                        lower(trim(COALESCE(category,'')))='app'
+                        OR lower(trim(name)) IN (
+                            'tiktok','tik tok','snapchat+','snapchat plus','netflix','azar',
+                            'app store','apple store','telegram premium','telegram','spotify',
+                            'youtube premium','youtube','instagram','facebook','discord',
+                            'capcut','chatgpt','canva','shahid','osn+','crunchyroll',
+                            'imo','tinder','truecaller','google play','google play gift card'
+                        )
+                    ) ORDER BY id
+                """).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM games WHERE active=1 AND COALESCE(NULLIF(trim(category),''),'game')='game' ORDER BY id").fetchall()
         if not rows:
             await query.edit_message_text("😕 لا توجد خدمات في هذا القسم حالياً.")
             return
