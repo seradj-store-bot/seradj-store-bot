@@ -61,6 +61,7 @@ ADMIN_MAIN_MENU = [
 
 ADMIN_PANEL_MENU = [
 ["🎮 إدارة الألعاب", "➕ إضافة لعبة"],
+["📱 إضافة تطبيق"],
 ["✨ إدارة إيموجيات Premium"],
 ["📦 إدارة العروض", "➕ إضافة عرض"],
 ["💰 تعديل سعر عرض", "📋 كل الطلبات"],
@@ -4064,7 +4065,7 @@ async def text_handler(update, context):
 
             game_name = parts[0]
             emoji = parts[1] if len(parts) > 1 and parts[1] else "🎮"
-            category = parts[2].lower() if len(parts) > 2 and parts[2] else "game"
+            category = parts[2].lower() if len(parts) > 2 and parts[2] else context.user_data.get("pending_add_category", "game")
             if category not in ("game", "app"):
                 await message.reply_text("❌ النوع يجب أن يكون game أو app."); return
 
@@ -4089,6 +4090,7 @@ async def text_handler(update, context):
                 )
 
             context.user_data.pop("admin_step", None)
+            context.user_data.pop("pending_add_category", None)
 
             await message.reply_text(
                 f"✅ تمت إضافة {'التطبيق' if category == 'app' else 'اللعبة'}: {emoji} {game_name}",
@@ -4617,12 +4619,14 @@ async def text_handler(update, context):
             )
             return
 
-        if text == "➕ إضافة لعبة":
+        if text in ("➕ إضافة لعبة", "📱 إضافة تطبيق"):
             context.user_data["admin_step"] = "add_game"
-
+            forced_category = "app" if text == "📱 إضافة تطبيق" else "game"
+            context.user_data["pending_add_category"] = forced_category
+            example = "Netflix | 🎬 | app" if forced_category == "app" else "Free Fire | 🔥 | game"
             await message.reply_text(
-                "➕ ابعث الاسم | الإيموجي | النوع (game أو app):\n\n"
-                "Free Fire | 🔥 | game\nNetflix | 🎬 | app\n\n"
+                f"➕ ابعث الاسم | الإيموجي\nمثال: {example}\n\n"
+                "تقدر كذلك تبعث الاسم | الإيموجي | النوع (game أو app).\n"
                 "ابعث /cancel للإلغاء."
             )
             return
