@@ -60,22 +60,12 @@ ADMIN_MAIN_MENU = [
 ]
 
 ADMIN_PANEL_MENU = [
-["🎮 إدارة الألعاب", "➕ إضافة لعبة"],
-["📱 إضافة تطبيق"],
-["✨ إدارة إيموجيات Premium"],
-["📦 إدارة العروض", "➕ إضافة عرض"],
-["💰 تعديل الأسعار", "📋 كل الطلبات"],
-["🗑️ حذف جميع الطلبات"],
-["📊 الإحصائيات", "💳 إعدادات الدفع"],
-
-["📝 إدارة النصوص", "📨 إرسال إشعار"],
-["📇 إعدادات التواصل"],
-["🎁 إدارة متجر النقاط", "📬 طلبات الألعاب"],
-["💬 مراسلة زبون"],
+["➕ إضافة", "🛍️ المتجر"],
+["🎮 إدارة الألعاب", "✨ إدارة إيموجيات Premium"],
+["💰 تعديل الأسعار", "📂 إدارة البوت"],
+["📨 إرسال إشعار", "📇 إعدادات التواصل"],
+["🎁 إدارة متجر النقاط", "💬 مراسلة زبون"],
 ["👥 التحكم في الأفراد", "👥 إدارة التجار"],
-["🔄 تحويل زبون / تاجر"],
-["👤 طلبات حسب الزبون"],
-["🧹 تصفير الحسابات والطلبات"],
 ["🔙 القائمة الرئيسية"],
 ]
 
@@ -2648,7 +2638,7 @@ async def callback_handler(update, context):
     if data == "adm_home":
         await query.edit_message_text(
             "⚙️ لوحة الإدارة",
-            reply_markup=ADMIN_PANEL_MENU,
+            reply_markup=ReplyKeyboardMarkup(ADMIN_PANEL_MENU, resize_keyboard=True),
         )
 
     # عرض الطلبات
@@ -3514,6 +3504,24 @@ async def callback_handler(update, context):
         )
 
     # تأكيد إرسال إشعار
+    elif data == "notify_broadcast_confirm":
+        broadcast_text = context.user_data.get("pending_broadcast_text", "")
+        if not broadcast_text:
+            await query.answer("ما كاين حتى نص للإرسال", show_alert=True); return
+        with db() as conn:
+            recipients = [r[0] for r in conn.execute("SELECT user_id FROM users").fetchall()]
+        sent = failed = 0
+        for recipient in recipients:
+            try:
+                await context.bot.send_message(chat_id=recipient, text=f"📢 إشعار من SERADJ STORE:\n\n{broadcast_text}")
+                sent += 1
+            except Exception:
+                failed += 1
+        context.user_data.pop("pending_broadcast_text", None)
+        context.user_data.pop("admin_step", None)
+        await query.edit_message_text(f"✅ انتهى إرسال الإشعار.\nوصل إلى: {sent}\nتعذّر الإرسال إلى: {failed}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]]))
+        return
+
     elif data == "notify_confirm":
         target_id = context.user_data.get(
             "pending_notify_user_id"
@@ -4481,6 +4489,14 @@ async def text_handler(update, context):
             context.user_data.pop("chat_target_id", None)
             return
 
+        if step == "notify_broadcast_message":
+            context.user_data["pending_broadcast_text"] = text
+            context.user_data["admin_step"] = "notify_broadcast_confirm"
+            with db() as conn:
+                total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            await message.reply_text(f"📨 معاينة إشعار لجميع المشتركين ({total} حساب):\n\n{text}\n\nتأكيد الإرسال؟", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ إرسال للجميع", callback_data="notify_broadcast_confirm"), InlineKeyboardButton("❌ إلغاء", callback_data="notify_cancel")]]))
+            return
+
         # استقبال Telegram ID للزبون
         if step == "notify_user_id":
             try:
@@ -4661,6 +4677,22 @@ async def text_handler(update, context):
             await show_admin_panel(update, context)
             return
 
+        if text == "➕ إضافة":
+            await message.reply_text("➕ اختار واش تحب تزيد:", reply_markup=ReplyKeyboardMarkup([["➕ إضافة لعبة", "➕ إضافة عرض"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
+            return
+        if text == "🛍️ المتجر":
+            await message.reply_text("🛍️ إدارة الألعاب والتطبيقات:", reply_markup=ReplyKeyboardMarkup([["🎮 الألعاب", "📱 التطبيقات"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
+            return
+        if text == "📂 إدارة البوت":
+            await message.reply_text("📂 إدارة البوت:", reply_markup=ReplyKeyboardMarkup([["📋 كل الطلبات", "🗑️ حذف جميع الطلبات"], ["💳 إعدادات الدفع", "📊 الإحصائيات"], ["📝 إدارة النصوص", "📇 إعدادات التواصل"], ["🧹 تصفير الحسابات والطلبات", "🔄 تحويل زبون / تاجر"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
+            return
+        if text == "📱 التطبيقات":
+            await show_store(message, user_id, "app")
+            return
+        if text == "🎮 الألعاب":
+            await show_store(message, user_id, "game")
+            return
+
         if text == "✨ إدارة إيموجيات Premium":
             with db() as conn:
                 emoji_games = conn.execute("SELECT id, name, emoji FROM games ORDER BY id").fetchall()
@@ -4688,14 +4720,14 @@ async def text_handler(update, context):
             )
             return
 
-        if text in ("➕ إضافة لعبة", "📱 إضافة تطبيق"):
+        if text == "➕ إضافة لعبة":
             context.user_data["admin_step"] = "add_game"
-            forced_category = "app" if text == "📱 إضافة تطبيق" else "game"
+            forced_category = "game"
             context.user_data["pending_add_category"] = forced_category
-            example = "Netflix | 🎬 | app" if forced_category == "app" else "Free Fire | 🔥 | game"
+            example = "Free Fire | 🔥 | game"
             await message.reply_text(
                 f"➕ ابعث الاسم | الإيموجي\nمثال: {example}\n\n"
-                "تقدر كذلك تبعث الاسم | الإيموجي | النوع (game أو app).\n"
+                "تقدر كذلك تبعث الاسم | الإيموجي | النوع (game أو app). لإضافة تطبيق اكتب app في خانة النوع.\n"
                 "ابعث /cancel للإلغاء."
             )
             return
@@ -4752,17 +4784,7 @@ async def text_handler(update, context):
             return
 
         if text == "📋 كل الطلبات":
-            await message.reply_text(
-                "📋 إدارة الطلبات:",
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            "عرض جميع الطلبات",
-                            callback_data="adm_orders",
-                        )
-                    ]
-                ]),
-            )
+            await message.reply_text("📋 إدارة الطلبات:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض جميع الطلبات", callback_data="adm_orders")], [InlineKeyboardButton("🗑️ حذف جميع الطلبات", callback_data="orders_delete_all")]]))
             return
 
         if text == "📊 الإحصائيات":
@@ -4879,11 +4901,8 @@ async def text_handler(update, context):
             return
 
         if text == "📨 إرسال إشعار":
-            context.user_data["admin_step"] = "notify_user_id"
-            await message.reply_text(
-                "📨 ابعث Telegram ID تاع الزبون.\n\n"
-                "ابعث /cancel للإلغاء."
-            )
+            context.user_data["admin_step"] = "notify_broadcast_message"
+            await message.reply_text("📨 ابعث نص الإشعار الذي تريد إرساله لجميع المشتركين.\n\nابعث /cancel للإلغاء.")
             return
 
         if text == "🔙 القائمة الرئيسية":
