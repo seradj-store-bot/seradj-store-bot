@@ -3549,6 +3549,8 @@ async def callback_handler(update, context):
         raw_entities = context.user_data.get("pending_broadcast_entities", [])
         from telegram import MessageEntity
         prefix = "📢 إشعار من SERADJ STORE:\\n\\n"
+        # Telegram entity offsets use UTF-16 code units, not Python character count.
+        prefix_utf16_len = len(prefix.encode("utf-16-le")) // 2
         buttons = context.user_data.get("pending_broadcast_buttons", [])
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(b["text"], **({"url": b["url"]} if "url" in b else {"callback_data": b["callback_data"]}))]
@@ -3559,7 +3561,7 @@ async def callback_handler(update, context):
                 kwargs = {}
                 if raw_entities:
                     kwargs["entities"] = [
-                        MessageEntity.de_json({**item, "offset": int(item.get("offset", 0)) + len(prefix)}, context.bot)
+                        MessageEntity.de_json({**item, "offset": int(item.get("offset", 0)) + prefix_utf16_len}, context.bot)
                         for item in raw_entities
                     ]
                 await context.bot.send_message(
@@ -4564,6 +4566,7 @@ async def text_handler(update, context):
             context.user_data["admin_step"] = "notify_broadcast_buttons"
             await message.reply_text(
                 "✅ حفظت نص الإشعار.\n\n"
+                "تقدر تبعث إيموجيات Premium داخل النص مباشرة إذا كانت ظاهرة عندك في تيليغرام.\n\n"
                 "إذا حبيت تزيد أزرار، ابعث كل زر في سطر بهذا الشكل:\n"
                 "رابط | اسم الزر | https://example.com\n"
                 "قسم | اسم الزر | store\n"
