@@ -747,13 +747,12 @@ async def show_store(message, user_id, category=None):
     title = "🎮 قائمة الألعاب:" if category == "game" else "📱 قائمة التطبيقات:"
     lines = [title, ""]
     for g in games:
-        custom_id = premium_emoji_id(g['id'])
-        icon = f'<tg-emoji emoji-id="{custom_id}">{g["emoji"] or "🎮"}</tg-emoji>' if custom_id else (g['emoji'] or "🎮")
-        # Escape names because Telegram parses this message as HTML. Names such as
-        # "TikTok & ..." or names containing < and > must not break the whole list.
-        safe_name = html.escape(str(g["name"] or ""))
+        # Send the store list as plain text: names and custom-emoji HTML tags can
+        # otherwise trigger Telegram's Entity_text_invalid error.
+        icon = g['emoji'] or "🎮"
+        safe_name = str(g["name"] or "")
         lines.append(f"{icon} {safe_name}")
-    await message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
+    await message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # ====== حساب الزبون ======
