@@ -1,7 +1,7 @@
 import os
+import html
 import sqlite3
 import logging
-import html
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timedelta
 
@@ -749,7 +749,10 @@ async def show_store(message, user_id, category=None):
     for g in games:
         custom_id = premium_emoji_id(g['id'])
         icon = f'<tg-emoji emoji-id="{custom_id}">{g["emoji"] or "🎮"}</tg-emoji>' if custom_id else (g['emoji'] or "🎮")
-        lines.append(f"{icon} {html.escape(str(g['name'] or ''))}")
+        # Escape names because Telegram parses this message as HTML. Names such as
+        # "TikTok & ..." or names containing < and > must not break the whole list.
+        safe_name = html.escape(str(g["name"] or ""))
+        lines.append(f"{icon} {safe_name}")
     await message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -2668,7 +2671,7 @@ async def callback_handler(update, context):
 
     # العودة إلى لوحة الإدارة
     if data == "adm_home":
-        await query.edit_message_text(
+        await query.message.reply_text(
             "⚙️ لوحة الإدارة",
             reply_markup=ReplyKeyboardMarkup(ADMIN_PANEL_MENU, resize_keyboard=True),
         )
