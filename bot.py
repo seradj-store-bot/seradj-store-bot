@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import logging
+import html
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timedelta
 
@@ -748,7 +749,7 @@ async def show_store(message, user_id, category=None):
     for g in games:
         custom_id = premium_emoji_id(g['id'])
         icon = f'<tg-emoji emoji-id="{custom_id}">{g["emoji"] or "🎮"}</tg-emoji>' if custom_id else (g['emoji'] or "🎮")
-        lines.append(f"{icon} {g['name']}")
+        lines.append(f"{icon} {html.escape(str(g['name'] or ''))}")
     await message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -2226,11 +2227,13 @@ async def callback_handler(update, context):
         if category not in ("game", "app"):
             await query.answer("القسم غير معروف.", show_alert=True)
             return
-        # Keep the original message alive: show_store() sends the catalogue
-        # as a reply to query.message, so deleting it first makes Telegram reject
-        # the follow-up message and the button appears to do nothing.
-        await query.answer()
+        # Remove the category chooser instead of leaving a permanent loading message.
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         await show_store(query.message, user_id, category)
+        await query.answer()
         return
 
     if data == "contact_unset":
