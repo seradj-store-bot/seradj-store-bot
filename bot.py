@@ -4,6 +4,8 @@ import sqlite3
 import logging
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+import asyncio
 
 from telegram import (
     Update,
@@ -35,6 +37,65 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+STORE_TZ = ZoneInfo("Africa/Algiers")
+DEFAULT_OPEN_MESSAGE = "🟢 تم فتح متجر SERADJ STORE!\nتقدروا الآن تطلبوا خدماتكم بكل سهولة 🛍️"
+DEFAULT_CLOSE_MESSAGE = "🔴 تم غلق متجر SERADJ STORE مؤقتًا.\nتقدروا تتصفحوا المتجر، والطلبات الجديدة ترجع عند الافتتاح القادم."
+
+def store_is_open(now=None):
+    """Store order availability based on Algeria local time; browsing remains enabled."""
+    if get_setting("store_hours_enabled", "0") != "1":
+        return True
+    now = now or datetime.now(STORE_TZ)
+    try:
+        opening = datetime.strptime(get_setting("store_open_time", "09:00"), "%H:%M").time()
+        closing = datetime.strptime(get_setting("store_close_time", "23:00"), "%H:%M").time()
+    except ValueError:
+        return True
+    current = now.time().replace(tzinfo=None)
+    if opening == closing:
+        return True  # equal times means open 24 hours
+    if opening < closing:
+        return opening <= current < closing
+    return current >= opening or current < closing  # overnight schedule
+
+def store_closed_notice():
+    return (get_setting("store_closed_notice", "🔴 المتجر مغلق حاليًا. يمكنك تصفح الخدمات، لكن الطلبات الجديدة غير متاحة حتى موعد الافتتاح.") or "🔴 المتجر مغلق حاليًا. يمكنك تصفح الخدمات، لكن الطلبات الجديدة غير متاحة حتى موعد الافتتاح.")
+
+async def broadcast_store_transition(application, is_open):
+    text = get_setting("store_open_message" if is_open else "store_close_message", DEFAULT_OPEN_MESSAGE if is_open else DEFAULT_CLOSE_MESSAGE)
+    with db() as conn:
+        rows = conn.execute("SELECT user_id FROM users WHERE COALESCE(is_banned,0)=0").fetchall()
+    sent = 0
+    for row in rows:
+        try:
+            await application.bot.send_message(chat_id=int(row["user_id"]), text=text)
+            sent += 1
+        except Exception as exc:
+            logger.debug("Store status broadcast failed for %s: %s", row["user_id"], exc)
+        if sent and sent % 25 == 0:
+            await asyncio.sleep(1)
+    logger.info("Store %s broadcast finished; delivered to %s users", "opened" if is_open else "closed", sent)
+
+async def store_schedule_loop(application):
+    """Check schedule every 20 seconds and broadcast once per transition."""
+    while True:
+        try:
+            if get_setting("store_hours_enabled", "0") == "1":
+                now = datetime.now(STORE_TZ)
+                state = "open" if store_is_open(now) else "closed"
+                previous = get_setting("store_last_state", "")
+                if previous and previous != state:
+                    await broadcast_store_transition(application, state == "open")
+                set_setting("store_last_state", state)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Store schedule check failed")
+        await asyncio.sleep(20)
+
+async def post_init(application):
+    application.create_task(store_schedule_loop(application), name="store-schedule-loop")
 
 CANCEL_WORDS = {
     "إلغاء", "الغاء", "❌ إلغاء", "/cancel"
@@ -966,6 +1027,9 @@ async def select_payment(
     offer_id,
     method,
 ):
+    if not store_is_open() and not is_admin(query.from_user.id):
+        await query.answer(store_closed_notice(), show_alert=True)
+        return
     game = get_game(game_id)
     offers = get_offers(game_id)
 
@@ -1094,6 +1158,10 @@ async def select_payment(
 # ====== إنشاء طلب مدفوع من المحفظة ======
 async def create_wallet_order(message, context, player_id, user=None):
     user = user or message.from_user
+    if not store_is_open() and not is_admin(user.id):
+        context.user_data.pop("order_draft", None)
+        await message.reply_text(store_closed_notice(), reply_markup=main_keyboard(user.id))
+        return
     draft = context.user_data.get("order_draft")
     if not draft:
         await message.reply_text("❌ انتهت جلسة الطلب. ابدأ من جديد.")
@@ -1334,6 +1402,12 @@ async def photo_handler(update, context):
         await message.reply_text(
             "❌ انتهت جلسة الطلب. ابدأ طلبًا جديدًا."
         )
+        return
+    if not store_is_open() and not is_admin(user.id):
+        context.user_data.pop("awaiting_payment_receipt", None)
+        context.user_data.pop("order_draft", None)
+        context.user_data.pop("pending_player_id", None)
+        await message.reply_text(store_closed_notice(), reply_markup=main_keyboard(user.id))
         return
 
     # الحصول على صورة الوصل
@@ -3723,6 +3797,29 @@ async def text_handler(update, context):
         )
         return
 
+    if is_admin(user_id) and context.user_data.get("admin_step") in ("store_open_time", "store_close_time", "store_open_message", "store_close_message"):
+        key = context.user_data.get("admin_step")
+        if key in ("store_open_time", "store_close_time"):
+            try:
+                parsed = datetime.strptime(text, "%H:%M")
+                value = parsed.strftime("%H:%M")
+            except ValueError:
+                await message.reply_text("❌ صيغة غير صحيحة. أرسل الوقت هكذا 09:00 أو 18:30.")
+                return
+        else:
+            value = text
+            if not value:
+                await message.reply_text("❌ الرسالة لا يمكن أن تكون فارغة. أرسل النص أو /cancel.")
+                return
+        set_setting(key, value)
+        context.user_data.pop("admin_step", None)
+        if key in ("store_open_time", "store_close_time"):
+            set_setting("store_last_state", "open" if store_is_open() else "closed")
+            await message.reply_text(f"✅ تم حفظ الإعداد: {value}", reply_markup=ReplyKeyboardMarkup([["🟢 تفعيل أوقات المتجر", "⚪ تعطيل أوقات المتجر"], ["⏰ تعديل وقت الافتتاح", "⏰ تعديل وقت الغلق"], ["📣 تعديل رسالة الافتتاح", "📣 تعديل رسالة الغلق"], ["🔙 إدارة البوت"]], resize_keyboard=True))
+        else:
+            await message.reply_text("✅ تم حفظ الرسالة الجديدة.", reply_markup=ReplyKeyboardMarkup([["🟢 تفعيل أوقات المتجر", "⚪ تعطيل أوقات المتجر"], ["⏰ تعديل وقت الافتتاح", "⏰ تعديل وقت الغلق"], ["📣 تعديل رسالة الافتتاح", "📣 تعديل رسالة الغلق"], ["🔙 إدارة البوت"]], resize_keyboard=True))
+        return
+
     if context.user_data.get("awaiting_tiktok_custom_amount"):
         tiktok_min, tiktok_max = tiktok_quantity_limits()
         try:
@@ -4800,8 +4897,42 @@ async def text_handler(update, context):
             await message.reply_text("🛍️ إدارة الألعاب والتطبيقات:", reply_markup=ReplyKeyboardMarkup([["🎮 الألعاب", "📱 التطبيقات"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
             return
         if text == "📂 إدارة البوت":
-            await message.reply_text("📂 إدارة البوت:", reply_markup=ReplyKeyboardMarkup([["📋 كل الطلبات", "🗑️ حذف جميع الطلبات"], ["💳 إعدادات الدفع", "📊 الإحصائيات"], ["📝 إدارة النصوص", "📇 إعدادات التواصل"], ["🧹 تصفير الحسابات والطلبات", "🔄 تحويل زبون / تاجر"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
+            await message.reply_text("📂 إدارة البوت:", reply_markup=ReplyKeyboardMarkup([["📋 كل الطلبات", "🗑️ حذف جميع الطلبات"], ["💳 إعدادات الدفع", "📊 الإحصائيات"], ["📝 إدارة النصوص", "📇 إعدادات التواصل"], ["🕒 أوقات المتجر", "🧹 تصفير الحسابات والطلبات"], ["🔄 تحويل زبون / تاجر"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
             return
+        if text == "🕒 أوقات المتجر":
+            enabled = get_setting("store_hours_enabled", "0") == "1"
+            opening = get_setting("store_open_time", "09:00")
+            closing = get_setting("store_close_time", "23:00")
+            await message.reply_text(
+                f"🕒 إعداد أوقات المتجر (توقيت الجزائر)\n\nالحالة: {'مفعّل' if enabled else 'معطّل'}\nالافتتاح: {opening}\nالغلق: {closing}\n\nاختر إجراءً. عند التعطيل تبقى الطلبات متاحة دائمًا. عند التفعيل يمكن تصفح المتجر خارج الوقت لكن لا يمكن إرسال طلب جديد.",
+                reply_markup=ReplyKeyboardMarkup([["🟢 تفعيل أوقات المتجر", "⚪ تعطيل أوقات المتجر"], ["⏰ تعديل وقت الافتتاح", "⏰ تعديل وقت الغلق"], ["📣 تعديل رسالة الافتتاح", "📣 تعديل رسالة الغلق"], ["🔙 إدارة البوت"]], resize_keyboard=True))
+            return
+        if text == "🟢 تفعيل أوقات المتجر":
+            set_setting("store_hours_enabled", "1")
+            set_setting("store_last_state", "open" if store_is_open() else "closed")
+            await message.reply_text("✅ تم تفعيل أوقات المتجر.", reply_markup=main_keyboard(user_id))
+            return
+        if text == "⚪ تعطيل أوقات المتجر":
+            set_setting("store_hours_enabled", "0")
+            await message.reply_text("✅ تم تعطيل أوقات المتجر؛ الطلبات متاحة في كل الأوقات.", reply_markup=main_keyboard(user_id))
+            return
+        if text == "⏰ تعديل وقت الافتتاح":
+            context.user_data["admin_step"] = "store_open_time"
+            await message.reply_text("أرسل وقت الافتتاح بصيغة 24 ساعة مثل 09:00 أو 18:30. للإلغاء أرسل /cancel")
+            return
+        if text == "⏰ تعديل وقت الغلق":
+            context.user_data["admin_step"] = "store_close_time"
+            await message.reply_text("أرسل وقت الغلق بصيغة 24 ساعة مثل 23:00 أو 02:30. للإلغاء أرسل /cancel")
+            return
+        if text == "📣 تعديل رسالة الافتتاح":
+            context.user_data["admin_step"] = "store_open_message"
+            await message.reply_text("أرسل رسالة الافتتاح الجديدة. سيتم إرسالها للمشتركين عند فتح المتجر. للإلغاء أرسل /cancel")
+            return
+        if text == "📣 تعديل رسالة الغلق":
+            context.user_data["admin_step"] = "store_close_message"
+            await message.reply_text("أرسل رسالة الغلق الجديدة. سيتم إرسالها للمشتركين عند غلق المتجر. للإلغاء أرسل /cancel")
+            return
+
         if text == "📱 التطبيقات":
             await show_store(message, user_id, "app")
             return
@@ -5067,7 +5198,7 @@ def main():
     init_db()
 
     # إنشاء التطبيق
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
 
     # الأوامر
     app.add_handler(CommandHandler("start", start))
