@@ -43,7 +43,7 @@ MAIN_MENU = [
     ["📦 طلباتي"],
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
-    ["🎮 الألعاب", "📱 التطبيقات"],
+    ["🛍️ المتجر"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
     ["➕ طلب لعبة غير موجودة"],
@@ -54,7 +54,7 @@ ADMIN_MAIN_MENU = [
     ["📦 طلباتي"],
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
-    ["🎮 الألعاب", "📱 التطبيقات"],
+    ["🛍️ المتجر"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
 ]
@@ -64,10 +64,10 @@ ADMIN_PANEL_MENU = [
 ["📱 إضافة تطبيق"],
 ["✨ إدارة إيموجيات Premium"],
 ["📦 إدارة العروض", "➕ إضافة عرض"],
-["💰 تعديل سعر عرض", "📋 كل الطلبات"],
+["💰 تعديل الأسعار", "📋 كل الطلبات"],
 ["🗑️ حذف جميع الطلبات"],
 ["📊 الإحصائيات", "💳 إعدادات الدفع"],
-["🎵 سعر عملة TikTok", "📏 حدود كمية TikTok"],
+
 ["📝 إدارة النصوص", "📨 إرسال إشعار"],
 ["📇 إعدادات التواصل"],
 ["🎁 إدارة متجر النقاط", "📬 طلبات الألعاب"],
@@ -2112,6 +2112,65 @@ async def callback_handler(update, context):
 
     data = query.data or ""
     user_id = query.from_user.id
+
+    if data == "price_menu_offers":
+        if not is_admin(user_id):
+            await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
+            return
+        await query.edit_message_text(
+            "💰 اختار اللعبة التي تريد تعديل عروضها:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("اختيار اللعبة", callback_data="adm_offers")], [InlineKeyboardButton("🔙 تعديل الأسعار", callback_data="price_menu_back")]])
+        )
+        return
+    if data == "price_menu_tiktok":
+        if not is_admin(user_id):
+            await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
+            return
+        values = {
+            "retail_baridi": get_setting("tiktok_coin_price_retail_baridi", get_setting("tiktok_coin_price", "غير محدد")) or "غير محدد",
+            "retail_flexy": get_setting("tiktok_coin_price_retail_flexy", "غير محدد") or "غير محدد",
+            "trader_baridi": get_setting("tiktok_coin_price_trader_baridi", "غير محدد") or "غير محدد",
+            "trader_flexy": get_setting("tiktok_coin_price_trader_flexy", "غير محدد") or "غير محدد",
+        }
+        await query.edit_message_text(
+            "🎵 إعداد أسعار عملة TikTok\n\n"
+            f"👤 زبون عادي — BaridiMob / CCP: {values['retail_baridi']} DA/كوين\n"
+            f"👤 زبون عادي — Flexy: {values['retail_flexy']} DA/كوين\n"
+            f"🏪 تاجر — BaridiMob / CCP: {values['trader_baridi']} DA/كوين\n"
+            f"🏪 تاجر — Flexy: {values['trader_flexy']} DA/كوين\n\nاختر السعر الذي تريد تعديله:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👤 الزبون — BaridiMob / CCP", callback_data="tiktok_price_set:retail:baridi")],
+                [InlineKeyboardButton("👤 الزبون — Flexy", callback_data="tiktok_price_set:retail:flexy")],
+                [InlineKeyboardButton("🏪 التاجر — BaridiMob / CCP", callback_data="tiktok_price_set:trader:baridi")],
+                [InlineKeyboardButton("🏪 التاجر — Flexy", callback_data="tiktok_price_set:trader:flexy")],
+                [InlineKeyboardButton("🔙 تعديل الأسعار", callback_data="price_menu_back")],
+            ])
+        )
+        return
+    if data == "price_menu_tiktok_limits":
+        if not is_admin(user_id):
+            await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
+            return
+        current_min, current_max = tiktok_quantity_limits()
+        context.user_data["admin_step"] = "tiktok_min_quantity"
+        context.user_data.pop("pending_tiktok_min_quantity", None)
+        await query.edit_message_text(
+            f"📏 حدود كمية TikTok الحالية:\nالحد الأدنى: {current_min:,} كوينز\nالحد الأقصى: {current_max:,} كوينز\n\nأرسل الحد الأدنى الجديد كعدد صحيح. بعدها سيطلب منك البوت الحد الأقصى.\nللإلغاء أرسل /cancel."
+        )
+        return
+    if data == "price_menu_back":
+        if not is_admin(user_id):
+            await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
+            return
+        await query.edit_message_text(
+            "💰 تعديل الأسعار\n\nاختار نوع الأسعار التي تريد تعديلها:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎮 أسعار الألعاب والتطبيقات / العروض", callback_data="price_menu_offers")],
+                [InlineKeyboardButton("🎵 أسعار عملة TikTok", callback_data="price_menu_tiktok")],
+                [InlineKeyboardButton("📏 حدود كمية TikTok", callback_data="price_menu_tiktok_limits")],
+            ])
+        )
+        return
 
     if data.startswith("tiktok_price_set:"):
         if not is_admin(user_id):
@@ -4501,6 +4560,16 @@ async def text_handler(update, context):
     # أزرار القائمة الرئيسية
     # =========================
 
+    if text == "🛍️ المتجر":
+        await message.reply_text(
+            "🛍️ اختار القسم لي حاب تتصفح:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎮 الألعاب", callback_data="store_category:game")],
+                [InlineKeyboardButton("📱 التطبيقات", callback_data="store_category:app")],
+            ])
+        )
+        return
+    # توافق مع الأزرار القديمة إذا كانت ما زالت ظاهرة في جلسة المستخدم
     if text == "🎮 الألعاب":
         await show_store(message, user_id, "game"); return
     if text == "📱 التطبيقات":
@@ -4671,16 +4740,13 @@ async def text_handler(update, context):
             )
             return
 
-        if text == "💰 تعديل سعر عرض":
+        if text in ("💰 تعديل الأسعار", "💰 تعديل سعر عرض"):
             await message.reply_text(
-                "💰 اختار اللعبة التي تريد تعديل عروضها:",
+                "💰 تعديل الأسعار\n\nاختار نوع الأسعار التي تريد تعديلها:",
                 reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            "اختيار اللعبة",
-                            callback_data="adm_offers",
-                        )
-                    ]
+                    [InlineKeyboardButton("🎮 أسعار الألعاب والتطبيقات / العروض", callback_data="price_menu_offers")],
+                    [InlineKeyboardButton("🎵 أسعار عملة TikTok", callback_data="price_menu_tiktok")],
+                    [InlineKeyboardButton("📏 حدود كمية TikTok", callback_data="price_menu_tiktok_limits")],
                 ]),
             )
             return
@@ -4726,36 +4792,10 @@ async def text_handler(update, context):
                 ]),
             )
             return
-        if text == "📏 حدود كمية TikTok":
-            current_min, current_max = tiktok_quantity_limits()
-            context.user_data["admin_step"] = "tiktok_min_quantity"
-            context.user_data.pop("pending_tiktok_min_quantity", None)
+        if text in ("📏 حدود كمية TikTok", "🎵 سعر عملة TikTok"):
             await message.reply_text(
-                f"📏 حدود كمية TikTok الحالية:\nالحد الأدنى: {current_min:,} كوينز\nالحد الأقصى: {current_max:,} كوينز\n\n"
-                "أرسل الحد الأدنى الجديد كعدد صحيح. بعدها سيطلب منك البوت الحد الأقصى.\n"
-                "للإلغاء أرسل /cancel."
-            )
-            return
-        if text == "🎵 سعر عملة TikTok":
-            values = {
-                "retail_baridi": get_setting("tiktok_coin_price_retail_baridi", get_setting("tiktok_coin_price", "غير محدد")) or "غير محدد",
-                "retail_flexy": get_setting("tiktok_coin_price_retail_flexy", "غير محدد") or "غير محدد",
-                "trader_baridi": get_setting("tiktok_coin_price_trader_baridi", "غير محدد") or "غير محدد",
-                "trader_flexy": get_setting("tiktok_coin_price_trader_flexy", "غير محدد") or "غير محدد",
-            }
-            await message.reply_text(
-                "🎵 إعداد أسعار عملة TikTok\n\n"
-                f"👤 زبون عادي — BaridiMob / CCP: {values['retail_baridi']} DA/كوين\n"
-                f"👤 زبون عادي — Flexy: {values['retail_flexy']} DA/كوين\n"
-                f"🏪 تاجر — BaridiMob / CCP: {values['trader_baridi']} DA/كوين\n"
-                f"🏪 تاجر — Flexy: {values['trader_flexy']} DA/كوين\n\n"
-                "اختر السعر الذي تريد تعديله:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("👤 الزبون — BaridiMob / CCP", callback_data="tiktok_price_set:retail:baridi")],
-                    [InlineKeyboardButton("👤 الزبون — Flexy", callback_data="tiktok_price_set:retail:flexy")],
-                    [InlineKeyboardButton("🏪 التاجر — BaridiMob / CCP", callback_data="tiktok_price_set:trader:baridi")],
-                    [InlineKeyboardButton("🏪 التاجر — Flexy", callback_data="tiktok_price_set:trader:flexy")],
-                ])
+                "افتح 💰 تعديل الأسعار ثم اختار إعداد TikTok الذي تريد تغييره.",
+                reply_markup=admin_keyboard(),
             )
             return
         if text == "📝 إدارة النصوص":
