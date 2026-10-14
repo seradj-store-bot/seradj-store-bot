@@ -1612,71 +1612,47 @@ async def admin_choose_offer_game(query):
 # =========================
 
 async def admin_games(query):
+    """قائمة مختصرة: اضغط على التطبيق لفتح لوحة التحكم الخاصة به."""
     with db() as conn:
-        games = conn.execute(
-            "SELECT * FROM games ORDER BY id"
-        ).fetchall()
+        games = conn.execute("SELECT * FROM games ORDER BY CASE WHEN lower(COALESCE(category,''))='app' THEN 0 ELSE 1 END, name COLLATE NOCASE").fetchall()
 
     buttons = []
-
     for game in games:
         state = "🟢" if game["active"] else "🔴"
-
-        buttons.append([
-            InlineKeyboardButton(
-                f"{state} {game_button_label(game)}",
-                callback_data=f"game_toggle:{game['id']}",
-                **premium_button_kwargs(game['id']),
-            ),
-            InlineKeyboardButton(
-                "🗑️",
-                callback_data=f"game_delete:{game['id']}",
-            ),
-        ])
-
-        method = game["recharge_method"] if "recharge_method" in game.keys() else "id"
-        method_label = {"id": "ID اللاعب", "login": "إيميل وكلمة سر", "none": "بدون معلومات شحن"}.get(method, "ID اللاعب")
-        buttons.append([
-            InlineKeyboardButton(
-                "✏️ تغيير اسم اللعبة / التطبيق",
-                callback_data=f"game_rename:{game['id']}",
-            ),
-        ])
-        buttons.append([
-            InlineKeyboardButton(
-                f"📱 الأجهزة: {game['platform_mode'] if 'platform_mode' in game.keys() else 'none'} (تغيير)",
-                callback_data=f"game_platform:{game['id']}",
-            ),
-        ])
-        buttons.append([InlineKeyboardButton("🔀 طرق الشحن والأسعار", callback_data=f"game_methods:{game['id']}")])
-        buttons.append([
-            InlineKeyboardButton(
-                "📝 تعديل الوصف",
-                callback_data=f"game_desc:{game['id']}",
-            ),
-            InlineKeyboardButton(
-                "✏️ تعديل رسالة طلب المعلومات",
-                callback_data=f"game_prompt:{game['id']}",
-            ),
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            "🔄 تحديث",
-            callback_data="adm_games",
-        )
-    ])
-
+        buttons.append([InlineKeyboardButton(
+            f"{state} {game_button_label(game)}",
+            callback_data=f"game_manage:{game['id']}",
+            **premium_button_kwargs(game['id']),
+        )])
+    buttons.append([InlineKeyboardButton("🔄 تحديث", callback_data="adm_games")])
+    buttons.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")])
     await query.edit_message_text(
-        "🎮 <b>إدارة الألعاب</b>\n\n"
-        "🟢 / 🔴 اضغط على اسم اللعبة لتفعيلها أو إيقافها.\n"
-        "📝 تعديل وصف اللعبة.\n"
-        "✏️ تعديل رسالة طلب المعلومات.\n"
-        "🗑️ حذف اللعبة والعروض التابعة لها.",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons),
+        "🎮 <b>إدارة الألعاب والتطبيقات</b>\n\n"
+        "اضغط على اسم أي لعبة أو تطبيق لفتح خيارات التحكم: التفعيل، الاسم، الأجهزة، طرق الشحن والأسعار، الوصف، ورسالة طلب المعلومات.",
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons),
     )
 
+
+async def admin_game_manage(query, game_id):
+    with db() as conn:
+        game = conn.execute("SELECT * FROM games WHERE id=?", (game_id,)).fetchone()
+    if not game:
+        await query.answer("اللعبة أو التطبيق غير موجود.", show_alert=True)
+        return
+    state = "🟢 مفعّل" if game["active"] else "🔴 متوقف"
+    method = game["recharge_method"] if "recharge_method" in game.keys() else "id"
+    method_label = {"id": "ID اللاعب", "login": "إيميل وكلمة سر", "none": "بدون معلومات شحن"}.get(method, "ID اللاعب")
+    platform = game["platform_mode"] if "platform_mode" in game.keys() else "none"
+    buttons = [
+        [InlineKeyboardButton(("⏸️ إيقاف" if game["active"] else "🟢 تفعيل"), callback_data=f"game_toggle:{game_id}")],
+        [InlineKeyboardButton("✏️ تغيير الاسم", callback_data=f"game_rename:{game_id}")],
+        [InlineKeyboardButton(f"📱 الأجهزة: {platform} (تغيير)", callback_data=f"game_platform:{game_id}")],
+        [InlineKeyboardButton(f"🔀 طرق الشحن والأسعار ({method_label})", callback_data=f"game_methods:{game_id}")],
+        [InlineKeyboardButton("📝 تعديل الوصف", callback_data=f"game_desc:{game_id}"), InlineKeyboardButton("✏️ رسالة طلب المعلومات", callback_data=f"game_prompt:{game_id}")],
+        [InlineKeyboardButton("🗑️ حذف التطبيق/اللعبة", callback_data=f"game_delete:{game_id}")],
+        [InlineKeyboardButton("🔙 قائمة الألعاب والتطبيقات", callback_data="adm_games")],
+    ]
+    await query.edit_message_text(f"⚙️ <b>إدارة {game_button_label(game)}</b>\nالحالة: {state}", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # =========================
@@ -2307,6 +2283,7 @@ async def callback_handler(update, context):
     # التحقق من صلاحيات الإدارة
     admin_actions = (
         "adm_",
+        "game_manage:",
         "game_toggle:",
         "game_delete:",
         "game_desc:",
@@ -2946,6 +2923,15 @@ async def callback_handler(update, context):
 
         await admin_order_details(query, order_id)
 
+    # فتح لوحة التحكم الخاصة بلعبة أو تطبيق
+    elif data.startswith("game_manage:"):
+        try:
+            game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("معرّف غير صالح.", show_alert=True)
+            return
+        await admin_game_manage(query, game_id)
+
     # تفعيل أو إيقاف لعبة
     elif data.startswith("game_toggle:"):
         try:
@@ -2966,7 +2952,7 @@ async def callback_handler(update, context):
                 (game_id,),
             )
 
-        await admin_games(query)
+        await admin_game_manage(query, game_id)
 
     # حذف لعبة وعروضها
     elif data.startswith("game_delete:"):
@@ -3548,7 +3534,7 @@ async def callback_handler(update, context):
         sent = failed = 0
         raw_entities = context.user_data.get("pending_broadcast_entities", [])
         from telegram import MessageEntity
-        prefix = "📢 إشعار من SERADJ STORE:\\n\\n"
+        prefix = "📢 إشعار من SERADJ STORE:\n\n"
         # Telegram entity offsets use UTF-16 code units, not Python character count.
         prefix_utf16_len = len(prefix.encode("utf-16-le")) // 2
         buttons = context.user_data.get("pending_broadcast_buttons", [])
@@ -4569,9 +4555,9 @@ async def text_handler(update, context):
                 "تقدر تبعث إيموجيات Premium داخل النص مباشرة إذا كانت ظاهرة عندك في تيليغرام.\n\n"
                 "إذا حبيت تزيد أزرار، ابعث كل زر في سطر بهذا الشكل:\n"
                 "رابط | اسم الزر | https://example.com\n"
-                "قسم | اسم الزر | store\n"
+                "قسم | اسم الزر | freefire (يفتح فري فاير مباشرة) أو store\n"
                 "قسم | اسم الزر | back_main\n\n"
-                "الأقسام المدعومة: store و back_main. الحد الأقصى 8 أزرار.\n"
+                "الأقسام المدعومة: freefire و store و back_main. الحد الأقصى 8 أزرار.\n"
                 "إذا ما تحتاجش أزرار ابعث: بدون\n"
                 "للإلغاء ابعث /cancel."
             )
@@ -4583,7 +4569,7 @@ async def text_handler(update, context):
                 for line in text.splitlines():
                     parts = [part.strip() for part in line.split("|", 2)]
                     if len(parts) != 3 or parts[0] not in ("رابط", "قسم") or not parts[1] or not parts[2]:
-                        await message.reply_text("❌ صيغة غير صحيحة. استعمل: رابط | اسم الزر | https://example.com أو قسم | اسم الزر | store")
+                        await message.reply_text("❌ صيغة غير صحيحة. استعمل: رابط | اسم الزر | https://example.com أو قسم | اسم الزر | freefire (يفتح فري فاير مباشرة) أو store")
                         return
                     kind, label, target = parts
                     if kind == "رابط":
@@ -4592,10 +4578,20 @@ async def text_handler(update, context):
                             return
                         buttons.append({"text": label, "url": target})
                     else:
-                        if target not in ("store", "back_main"):
-                            await message.reply_text("❌ الأقسام المدعومة: store و back_main")
+                        if target == "freefire":
+                            with db() as conn:
+                                game_row = conn.execute(
+                                    "SELECT id FROM games WHERE active=1 AND lower(name) LIKE '%free fire%' ORDER BY id LIMIT 1"
+                                ).fetchone()
+                            if not game_row:
+                                await message.reply_text("❌ ما لقيتش خدمة Free Fire مفعّلة في قاعدة البيانات. تأكد من اسم اللعبة في لوحة الإدارة.")
+                                return
+                            buttons.append({"text": label, "callback_data": f"game:{game_row['id']}"})
+                        elif target in ("store", "back_main"):
+                            buttons.append({"text": label, "callback_data": target})
+                        else:
+                            await message.reply_text("❌ الأقسام المدعومة: freefire و store و back_main")
                             return
-                        buttons.append({"text": label, "callback_data": target})
                     if len(buttons) > 8:
                         await message.reply_text("❌ الحد الأقصى 8 أزرار.")
                         return
