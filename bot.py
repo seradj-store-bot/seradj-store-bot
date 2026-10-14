@@ -388,9 +388,7 @@ def init_db():
                 'app store','apple store','telegram premium','telegram','spotify',
                 'youtube premium','youtube','instagram','facebook','discord',
                 'capcut','chatgpt','canva','shahid','osn+','crunchyroll',
-                'imo','tinder','truecaller','google play','google play gift card',
-                'likee','kwai','threads','x premium','twitter','linkedin','twitch',
-                'roblox premium','playstation','steam','itunes'
+                'imo','tinder','truecaller','google play','google play gift card'
             )
             AND (category IS NULL OR trim(category)='' OR category='game')
         """)
@@ -728,9 +726,7 @@ async def show_store(message, user_id, category=None):
                         'app store','apple store','telegram premium','telegram','spotify',
                         'youtube premium','youtube','instagram','facebook','discord',
                         'capcut','chatgpt','canva','shahid','osn+','crunchyroll',
-                        'imo','tinder','truecaller','google play','google play gift card',
-                'likee','kwai','threads','x premium','twitter','linkedin','twitch',
-                'roblox premium','playstation','steam','itunes'
+                        'imo','tinder','truecaller','google play','google play gift card'
                     )
                 ) ORDER BY id
             """).fetchall()
@@ -2230,13 +2226,11 @@ async def callback_handler(update, context):
         if category not in ("game", "app"):
             await query.answer("القسم غير معروف.", show_alert=True)
             return
-        # Remove the category chooser instead of leaving a permanent loading message.
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-        await show_store(query.message, user_id, category)
+        # Keep the original message alive: show_store() sends the catalogue
+        # as a reply to query.message, so deleting it first makes Telegram reject
+        # the follow-up message and the button appears to do nothing.
         await query.answer()
+        await show_store(query.message, user_id, category)
         return
 
     if data == "contact_unset":
@@ -3626,9 +3620,7 @@ async def callback_handler(update, context):
                             'app store','apple store','telegram premium','telegram','spotify',
                             'youtube premium','youtube','instagram','facebook','discord',
                             'capcut','chatgpt','canva','shahid','osn+','crunchyroll',
-                            'imo','tinder','truecaller','google play','google play gift card',
-                'likee','kwai','threads','x premium','twitter','linkedin','twitch',
-                'roblox premium','playstation','steam','itunes'
+                            'imo','tinder','truecaller','google play','google play gift card'
                         )
                     ) ORDER BY id
                 """).fetchall()
@@ -4726,7 +4718,7 @@ async def text_handler(update, context):
             return
 
         if text == "➕ إضافة":
-            await message.reply_text("➕ اختار واش تحب تزيد:", reply_markup=ReplyKeyboardMarkup([["➕ إضافة لعبة", "📱 إضافة تطبيق"], ["➕ إضافة عرض"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
+            await message.reply_text("➕ اختار واش تحب تزيد:", reply_markup=ReplyKeyboardMarkup([["➕ إضافة لعبة", "➕ إضافة عرض"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
             return
         if text == "🛍️ المتجر":
             await message.reply_text("🛍️ إدارة الألعاب والتطبيقات:", reply_markup=ReplyKeyboardMarkup([["🎮 الألعاب", "📱 التطبيقات"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
@@ -4768,14 +4760,14 @@ async def text_handler(update, context):
             )
             return
 
-        if text in ("➕ إضافة لعبة", "📱 إضافة تطبيق"):
+        if text == "➕ إضافة لعبة":
             context.user_data["admin_step"] = "add_game"
-            forced_category = "app" if text == "📱 إضافة تطبيق" else "game"
+            forced_category = "game"
             context.user_data["pending_add_category"] = forced_category
-            example = "Netflix | 🎬 | app" if forced_category == "app" else "Free Fire | 🔥 | game"
+            example = "Free Fire | 🔥 | game"
             await message.reply_text(
                 f"➕ ابعث الاسم | الإيموجي\nمثال: {example}\n\n"
-                "النوع راح يتحدد حسب الخيار اللي ضغطت عليه.\n"
+                "تقدر كذلك تبعث الاسم | الإيموجي | النوع (game أو app). لإضافة تطبيق اكتب app في خانة النوع.\n"
                 "ابعث /cancel للإلغاء."
             )
             return
