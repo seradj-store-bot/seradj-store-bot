@@ -388,7 +388,9 @@ def init_db():
                 'app store','apple store','telegram premium','telegram','spotify',
                 'youtube premium','youtube','instagram','facebook','discord',
                 'capcut','chatgpt','canva','shahid','osn+','crunchyroll',
-                'imo','tinder','truecaller','google play','google play gift card'
+                'imo','tinder','truecaller','google play','google play gift card',
+                'likee','kwai','threads','x premium','twitter','linkedin','twitch',
+                'roblox premium','playstation','steam','itunes'
             )
             AND (category IS NULL OR trim(category)='' OR category='game')
         """)
@@ -726,7 +728,9 @@ async def show_store(message, user_id, category=None):
                         'app store','apple store','telegram premium','telegram','spotify',
                         'youtube premium','youtube','instagram','facebook','discord',
                         'capcut','chatgpt','canva','shahid','osn+','crunchyroll',
-                        'imo','tinder','truecaller','google play','google play gift card'
+                        'imo','tinder','truecaller','google play','google play gift card',
+                'likee','kwai','threads','x premium','twitter','linkedin','twitch',
+                'roblox premium','playstation','steam','itunes'
                     )
                 ) ORDER BY id
             """).fetchall()
@@ -3622,7 +3626,9 @@ async def callback_handler(update, context):
                             'app store','apple store','telegram premium','telegram','spotify',
                             'youtube premium','youtube','instagram','facebook','discord',
                             'capcut','chatgpt','canva','shahid','osn+','crunchyroll',
-                            'imo','tinder','truecaller','google play','google play gift card'
+                            'imo','tinder','truecaller','google play','google play gift card',
+                'likee','kwai','threads','x premium','twitter','linkedin','twitch',
+                'roblox premium','playstation','steam','itunes'
                         )
                     ) ORDER BY id
                 """).fetchall()
@@ -4720,7 +4726,7 @@ async def text_handler(update, context):
             return
 
         if text == "➕ إضافة":
-            await message.reply_text("➕ اختار واش تحب تزيد:", reply_markup=ReplyKeyboardMarkup([["➕ إضافة لعبة", "➕ إضافة عرض"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
+            await message.reply_text("➕ اختار واش تحب تزيد:", reply_markup=ReplyKeyboardMarkup([["➕ إضافة لعبة", "📱 إضافة تطبيق"], ["➕ إضافة عرض"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
             return
         if text == "🛍️ المتجر":
             await message.reply_text("🛍️ إدارة الألعاب والتطبيقات:", reply_markup=ReplyKeyboardMarkup([["🎮 الألعاب", "📱 التطبيقات"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
@@ -4762,14 +4768,14 @@ async def text_handler(update, context):
             )
             return
 
-        if text == "➕ إضافة لعبة":
+        if text in ("➕ إضافة لعبة", "📱 إضافة تطبيق"):
             context.user_data["admin_step"] = "add_game"
-            forced_category = "game"
+            forced_category = "app" if text == "📱 إضافة تطبيق" else "game"
             context.user_data["pending_add_category"] = forced_category
-            example = "Free Fire | 🔥 | game"
+            example = "Netflix | 🎬 | app" if forced_category == "app" else "Free Fire | 🔥 | game"
             await message.reply_text(
                 f"➕ ابعث الاسم | الإيموجي\nمثال: {example}\n\n"
-                "تقدر كذلك تبعث الاسم | الإيموجي | النوع (game أو app). لإضافة تطبيق اكتب app في خانة النوع.\n"
+                "النوع راح يتحدد حسب الخيار اللي ضغطت عليه.\n"
                 "ابعث /cancel للإلغاء."
             )
             return
