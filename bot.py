@@ -2176,24 +2176,19 @@ async def admin_payment_settings(query):
 
 async def callback_handler(update, context):
     query = update.callback_query
-    await query.answer()
-
     data = query.data or ""
     user_id = query.from_user.id
 
-    # Central protection: stop customers from continuing an order flow
-    # through old/stale inline buttons while the store is closed.
+    # Browsing stays available while closed; block only actions that start or
+    # continue placing an order. Check before acknowledging the callback so the
+    # alert is shown reliably (a callback query can only be answered once).
     order_callback_prefixes = (
-        "pay:", "recharge_select:", "recharge_method:", "offer:",
-        "game:", "select_offer:", "payment:", "buy:", "platform:",
+        "pay:", "tiktok_custom:", "tiktok_custom_pay:",
     )
-    if (
-        not is_admin(user_id)
-        and not store_is_open()
-        and data.startswith(order_callback_prefixes)
-    ):
+    if not is_admin(user_id) and not store_is_open() and data.startswith(order_callback_prefixes):
         await query.answer(store_closed_notice(), show_alert=True)
         return
+    await query.answer()
 
     if data == "price_menu_offers":
         if not is_admin(user_id):
@@ -3832,6 +3827,18 @@ async def text_handler(update, context):
             await message.reply_text(f"✅ تم حفظ الإعداد: {value}", reply_markup=ReplyKeyboardMarkup([["🟢 تفعيل أوقات المتجر", "⚪ تعطيل أوقات المتجر"], ["⏰ تعديل وقت الافتتاح", "⏰ تعديل وقت الغلق"], ["📣 تعديل رسالة الافتتاح", "📣 تعديل رسالة الغلق"], ["🔙 إدارة البوت"]], resize_keyboard=True))
         else:
             await message.reply_text("✅ تم حفظ الرسالة الجديدة.", reply_markup=ReplyKeyboardMarkup([["🟢 تفعيل أوقات المتجر", "⚪ تعطيل أوقات المتجر"], ["⏰ تعديل وقت الافتتاح", "⏰ تعديل وقت الغلق"], ["📣 تعديل رسالة الافتتاح", "📣 تعديل رسالة الغلق"], ["🔙 إدارة البوت"]], resize_keyboard=True))
+        return
+
+    if not is_admin(user_id) and not store_is_open() and any(context.user_data.get(key) for key in (
+        "awaiting_tiktok_custom_amount", "awaiting_login_email", "awaiting_login_password",
+        "awaiting_player_id", "awaiting_payment_receipt",
+    )):
+        for key in ("order_draft", "pending_player_id", "awaiting_player_id",
+                    "awaiting_payment_receipt", "awaiting_tiktok_custom_amount",
+                    "awaiting_login_email", "awaiting_login_password", "pending_login_email",
+                    "tiktok_custom_request"):
+            context.user_data.pop(key, None)
+        await message.reply_text(store_closed_notice(), reply_markup=main_keyboard(user_id))
         return
 
     if context.user_data.get("awaiting_tiktok_custom_amount"):
