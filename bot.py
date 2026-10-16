@@ -96,7 +96,6 @@ async def store_schedule_loop(application):
 
 async def post_init(application):
     application.create_task(store_schedule_loop(application), name="store-schedule-loop")
-    application.create_task(marketing_report_loop(application), name="marketing-report-loop")
 
 CANCEL_WORDS = {
     "إلغاء", "الغاء", "❌ إلغاء", "/cancel"
@@ -1128,8 +1127,8 @@ async def select_payment(
     if recharge_method == "login":
         context.user_data["awaiting_login_email"] = True
         prompt = "🔐 أرسل إيميل الحساب المراد شحنه.\nبعدها سيطلب منك كلمة السر.\n\n⚠️ أدخل بيانات الحساب المطلوب شحنه فقط، ولا ترسل بيانات حسابات أخرى."
-    elif recharge_method in ("none", "barcode"):
-        # These methods do not require a player ID/login; for barcode, admin sends the barcode after receiving the order.
+    elif recharge_method == "none":
+        # Some products (e.g. Netflix subscriptions) require no player ID or login.
         context.user_data["pending_player_id"] = ""
         context.user_data.pop("awaiting_player_id", None)
         if method == "balance":
@@ -1325,47 +1324,6 @@ async def document_handler(update, context):
 async def photo_handler(update, context):
     user = update.effective_user
     message = update.effective_message
-
-    # Allow the admin to send a photo as the first message or as a reply in customer support.
-    if user and is_admin(user.id):
-        step = context.user_data.get("admin_step")
-        if step in ("chat_first_message", "chat_reply_message", "barcode_send"):
-            target_id = context.user_data.get("chat_target_id")
-            if not target_id:
-                context.user_data.pop("admin_step", None)
-                await message.reply_text("❌ لم يتم تحديد الزبون. أعد اختيار الزبون من جديد.")
-                return
-            photo = message.photo[-1]
-            caption_text = (message.caption or "").strip()
-            if step == "barcode_send":
-                order_id = context.user_data.get("barcode_order_id")
-                caption = f"📦 كود بار الخاص بطلبك #{order_id} من SERADJ STORE.\nامسح الكود بار لإتمام العملية."
-                if caption_text:
-                    caption += "\n\n" + caption_text
-            else:
-                caption = "💬 صورة من إدارة SERADJ STORE"
-                if caption_text:
-                    caption += "\n\n" + caption_text
-            try:
-                await context.bot.send_photo(chat_id=int(target_id), photo=photo.file_id, caption=caption)
-                with db() as conn:
-                    conn.execute(
-                        "INSERT INTO customer_chats (user_id, is_open, updated_at) VALUES (?, 1, ?) "
-                        "ON CONFLICT(user_id) DO UPDATE SET is_open = 1, updated_at = excluded.updated_at",
-                        (int(target_id), now_text()),
-                    )
-                if step == "barcode_send":
-                    await message.reply_text("✅ تم إرسال الكود بار للزبون بنجاح.")
-                else:
-                    await message.reply_text("✅ تم إرسال الصورة للزبون وفتح المحادثة. تقدر تبعث له نص أو صورة أخرى.")
-            except Exception:
-                logger.exception("تعذر إرسال صورة من الإدارة إلى الزبون")
-                await message.reply_text("❌ تعذر إرسال الصورة. تأكد أن الزبون بدأ البوت من قبل.")
-            context.user_data.pop("admin_step", None)
-            context.user_data.pop("chat_target_id", None)
-            context.user_data.pop("barcode_order_id", None)
-            return
-
     if user and not is_admin(user.id):
         row = get_user_row(user.id)
         if row and int(row["is_banned"] or 0):
@@ -1498,12 +1456,6 @@ async def photo_handler(update, context):
             InlineKeyboardButton(
                 "❌ رفض الطلب",
                 callback_data=f"status:{order_id}:rejected",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📷 إرسال كود بار للزبون",
-                callback_data=f"send_barcode:{order_id}",
             ),
         ],
     ])
@@ -1996,12 +1948,6 @@ async def admin_order_details(query, order_id):
         ],
         [
             InlineKeyboardButton(
-                "📷 إرسال كود بار للزبون",
-                callback_data=f"send_barcode:{order_id}",
-            )
-        ],
-        [
-            InlineKeyboardButton(
                 "🔙 جميع الطلبات",
                 callback_data="adm_orders",
             )
@@ -2173,144 +2119,6 @@ async def show_stats(query):
     )
 
 
-
-# =========================
-# التسويق والتحليل (بدون API)
-# =========================
-
-def _marketing_period_stats(start_text, end_text=None):
-    where = "created_at >= ?"
-    params = [start_text]
-    if end_text:
-        where += " AND created_at < ?"
-        params.append(end_text)
-    with db() as conn:
-        orders = conn.execute(
-            f"SELECT COUNT(*) AS total, "
-            "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed, "
-            "SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending, "
-            "SUM(CASE WHEN status='processing' THEN 1 ELSE 0 END) AS processing, "
-            "SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected, "
-            "COALESCE(SUM(CASE WHEN status='completed' THEN price ELSE 0 END),0) AS revenue "
-            f"FROM orders WHERE {where}", params
-        ).fetchone()
-        users = conn.execute(
-            f"SELECT COUNT(*) FROM users WHERE created_at >= ?" + (" AND created_at < ?" if end_text else ""),
-            params,
-        ).fetchone()[0]
-        top_games = conn.execute(
-            "SELECT COALESCE(g.name, 'لعبة محذوفة') AS game_name, COUNT(o.id) AS order_count, "
-            "COALESCE(SUM(o.price),0) AS revenue FROM orders o "
-            "LEFT JOIN games g ON g.id=o.game_id "
-            f"WHERE {where} AND o.status='completed' "
-            "GROUP BY o.game_id, g.name ORDER BY revenue DESC, order_count DESC LIMIT 5",
-            params,
-        ).fetchall()
-    return orders, int(users or 0), top_games
-
-
-def build_marketing_report(period="today"):
-    now = datetime.now(STORE_TZ)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    if period == "week":
-        start = (today_start - timedelta(days=6)).strftime("%Y-%m-%d %H:%M:%S")
-        end = (today_start + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-        title = "📊 تقرير آخر 7 أيام"
-    else:
-        start = today_start.strftime("%Y-%m-%d %H:%M:%S")
-        end = (today_start + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-        title = "📊 تقرير اليوم"
-    stats, new_users, top_games = _marketing_period_stats(start, end)
-    with db() as conn:
-        all_users = int(conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] or 0)
-        all_completed = int(conn.execute("SELECT COUNT(*) FROM orders WHERE status='completed'").fetchone()[0] or 0)
-        all_revenue = int(conn.execute("SELECT COALESCE(SUM(price),0) FROM orders WHERE status='completed'").fetchone()[0] or 0)
-        cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
-        inactive_count = int(conn.execute(
-            "SELECT COUNT(*) FROM (SELECT user_id, MAX(created_at) AS last_order FROM orders "
-            "WHERE status='completed' GROUP BY user_id HAVING MAX(created_at) < ?)", (cutoff,)
-        ).fetchone()[0] or 0)
-    lines = [title, f"📅 {now.strftime('%Y-%m-%d')}", "",
-             f"👥 مستخدمون جدد خلال الفترة: {new_users}",
-             f"🧾 الطلبات: {int(stats['total'] or 0)}",
-             f"✅ مكتملة: {int(stats['completed'] or 0)}",
-             f"⏳ معلقة: {int(stats['pending'] or 0)}",
-             f"🔄 قيد التنفيذ: {int(stats['processing'] or 0)}",
-             f"❌ مرفوضة: {int(stats['rejected'] or 0)}",
-             f"💰 قيمة الطلبات المكتملة: {int(stats['revenue'] or 0)} دج", "",
-             "🎮 أكثر الألعاب مبيعاً خلال الفترة:"]
-    if top_games:
-        for index, row in enumerate(top_games, 1):
-            lines.append(f"{index}. {row['game_name']} — {row['order_count']} طلب / {int(row['revenue'] or 0)} دج")
-    else:
-        lines.append("ما كاين حتى طلب مكتمل خلال هذه الفترة.")
-    lines.extend(["", "📌 ملخص عام للمتجر:",
-                  f"👥 مجموع المستخدمين: {all_users}",
-                  f"🧾 مجموع الطلبات المكتملة: {all_completed}",
-                  f"💰 مجموع المبيعات المكتملة: {all_revenue} دج",
-                  f"🔕 زبائن سبق لهم الشراء ولم يكملوا طلباً خلال 30 يوماً: {inactive_count}"])
-    return "\n".join(lines)
-
-
-def build_inactive_customers_report():
-    cutoff = (datetime.now(STORE_TZ) - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT u.user_id, COALESCE(NULLIF(u.full_name,''), NULLIF(u.username,''), CAST(u.user_id AS TEXT)) AS display_name, "
-            "MAX(o.created_at) AS last_order FROM users u JOIN orders o ON o.user_id=u.user_id "
-            "WHERE o.status='completed' GROUP BY u.user_id "
-            "HAVING MAX(o.created_at) < ? ORDER BY last_order DESC LIMIT 20", (cutoff,)
-        ).fetchall()
-    if not rows:
-        return "🔔 ما كاين حتى زبون عنده شراء سابق ومتوقف عن الشراء منذ 30 يوماً حسب البيانات المتوفرة."
-    lines = ["🔔 زبائن غير نشطين (آخر 20 زبوناً)", "الشرط: سبق لهم شراء مكتمل، وما كاينش شراء مكتمل خلال 30 يوماً.", ""]
-    for row in rows:
-        lines.append(f"• {row['display_name']} — آخر شراء: {row['last_order'] or 'غير معروف'} — ID: {row['user_id']}")
-    lines.append("\nهذه قائمة للإدارة فقط؛ راجعها قبل أي تواصل ترويجي.")
-    return "\n".join(lines)
-
-
-async def show_marketing_menu(query):
-    enabled = get_setting("marketing_daily_report_enabled", "0") == "1"
-    status = "🟢 مفعّل" if enabled else "⚪ متوقف"
-    await query.edit_message_text(
-        "📊 التسويق والتحليل\n\n"
-        "هذا القسم يحلل بيانات البوت الحالية بدون API مدفوع.\n"
-        "التقرير اليومي يرسل إلى حساب الإدارة فقط.\n\n"
-        f"حالة التقرير اليومي: {status}\n"
-        f"وقت الإرسال: {get_setting('marketing_report_time', '09:00')} (توقيت الجزائر)",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📊 تقرير اليوم", callback_data="marketing_report_today")],
-            [InlineKeyboardButton("📅 تقرير آخر 7 أيام", callback_data="marketing_report_week")],
-            [InlineKeyboardButton("🔔 الزبائن غير النشطين", callback_data="marketing_inactive")],
-            [InlineKeyboardButton("📨 إرسال تقرير الآن", callback_data="marketing_send_daily")],
-            [InlineKeyboardButton("⏯️ تفعيل / إيقاف التقرير اليومي", callback_data="marketing_toggle_daily")],
-            [InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")],
-        ])
-    )
-
-
-async def marketing_report_loop(application):
-    """Send a private daily analytics report to the configured admin when enabled."""
-    while True:
-        try:
-            if get_setting("marketing_daily_report_enabled", "0") == "1" and ADMIN_ID:
-                now = datetime.now(STORE_TZ)
-                try:
-                    send_at = datetime.strptime(get_setting("marketing_report_time", "09:00"), "%H:%M").time()
-                except ValueError:
-                    send_at = datetime.strptime("09:00", "%H:%M").time()
-                today = now.strftime("%Y-%m-%d")
-                if now.time().replace(tzinfo=None) >= send_at and get_setting("marketing_last_report_date", "") != today:
-                    await application.bot.send_message(chat_id=ADMIN_ID, text=build_marketing_report("today"))
-                    set_setting("marketing_last_report_date", today)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Marketing daily report failed")
-        await asyncio.sleep(60)
-
-
 # =========================
 # إعدادات الدفع
 # =========================
@@ -2372,6 +2180,20 @@ async def callback_handler(update, context):
 
     data = query.data or ""
     user_id = query.from_user.id
+
+    # Central protection: stop customers from continuing an order flow
+    # through old/stale inline buttons while the store is closed.
+    order_callback_prefixes = (
+        "pay:", "recharge_select:", "recharge_method:", "offer:",
+        "game:", "select_offer:", "payment:", "buy:", "platform:",
+    )
+    if (
+        not is_admin(user_id)
+        and not store_is_open()
+        and data.startswith(order_callback_prefixes)
+    ):
+        await query.answer(store_closed_notice(), show_alert=True)
+        return
 
     if data == "price_menu_offers":
         if not is_admin(user_id):
@@ -2933,45 +2755,6 @@ async def callback_handler(update, context):
     elif data == "adm_stats":
         await show_stats(query)
 
-    elif data == "marketing_home":
-        if not is_admin(user_id):
-            await query.answer("هذه الخاصية للإدارة فقط.", show_alert=True)
-            return
-        await show_marketing_menu(query)
-
-    elif data == "marketing_report_today":
-        if not is_admin(user_id):
-            await query.answer("هذه الخاصية للإدارة فقط.", show_alert=True)
-            return
-        await query.edit_message_text(build_marketing_report("today"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 التسويق والتحليل", callback_data="marketing_home")]]))
-
-    elif data == "marketing_report_week":
-        if not is_admin(user_id):
-            await query.answer("هذه الخاصية للإدارة فقط.", show_alert=True)
-            return
-        await query.edit_message_text(build_marketing_report("week"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 التسويق والتحليل", callback_data="marketing_home")]]))
-
-    elif data == "marketing_inactive":
-        if not is_admin(user_id):
-            await query.answer("هذه الخاصية للإدارة فقط.", show_alert=True)
-            return
-        await query.edit_message_text(build_inactive_customers_report(), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 التسويق والتحليل", callback_data="marketing_home")]]))
-
-    elif data == "marketing_send_daily":
-        if not is_admin(user_id):
-            await query.answer("هذه الخاصية للإدارة فقط.", show_alert=True)
-            return
-        await context.bot.send_message(chat_id=ADMIN_ID, text=build_marketing_report("today"))
-        await query.edit_message_text("✅ تم إرسال التقرير إلى محادثتك الخاصة مع البوت.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 التسويق والتحليل", callback_data="marketing_home")]]))
-
-    elif data == "marketing_toggle_daily":
-        if not is_admin(user_id):
-            await query.answer("هذه الخاصية للإدارة فقط.", show_alert=True)
-            return
-        enabled = get_setting("marketing_daily_report_enabled", "0") != "1"
-        set_setting("marketing_daily_report_enabled", "1" if enabled else "0")
-        await show_marketing_menu(query)
-
     # إدارة إيموجيات Premium لكل لعبة
     elif data.startswith("premium_game:"):
         game_id = int(data.split(":", 1)[1])
@@ -3044,7 +2827,7 @@ async def callback_handler(update, context):
             methods = conn.execute("SELECT * FROM recharge_methods WHERE game_id=? ORDER BY id", (game_id,)).fetchall()
         if not game:
             await query.edit_message_text("الخدمة غير موجودة."); return
-        buttons = [[InlineKeyboardButton(("🟢 " if m["active"] else "🔴 ")+m["title"]+f" ({ {'id':'ID','login':'تسجيل دخول','none':'بدون معلومات','barcode':'Code Bar'}.get(m['method_type'],'ID') })", callback_data=f"recharge_method_toggle:{m['id']}")] for m in methods]
+        buttons = [[InlineKeyboardButton(("🟢 " if m["active"] else "🔴 ")+m["title"]+f" ({ {'id':'ID','login':'تسجيل دخول','none':'بدون معلومات'}.get(m['method_type'],'ID') })", callback_data=f"recharge_method_toggle:{m['id']}")] for m in methods]
         buttons.append([InlineKeyboardButton("➕ إضافة طريقة شحن", callback_data=f"recharge_method_add:{game_id}")])
         buttons.append([InlineKeyboardButton("🔙 إدارة الألعاب", callback_data="adm_games")])
         await query.edit_message_text(f"🔀 طرق الشحن لـ {game['name']}\nاختر طريقة لتفعيلها/إيقافها أو أضف طريقة جديدة. كل طريقة لها عروض وأسعار مستقلة.", reply_markup=InlineKeyboardMarkup(buttons))
@@ -3053,7 +2836,7 @@ async def callback_handler(update, context):
         game_id = int(data.split(":", 1)[1])
         context.user_data["admin_step"] = "recharge_method_add"
         context.user_data["pending_method_game_id"] = game_id
-        await query.message.reply_text("أرسل الطريقة بهذا الشكل:\nاسم الطريقة | id أو login أو none أو barcode | رسالة طلب المعلومات (اختياري)\n\nمثال: Player ID | id | أرسل ID اللاعب\nمثال: تسجيل دخول | login |\nمثال: بدون معلومات | none |\nمثال: Code Bar | barcode | أرسل ID اللاعب إذا كان مطلوبًا\n\nأرسل /cancel للإلغاء.")
+        await query.message.reply_text("أرسل الطريقة بهذا الشكل:\nاسم الطريقة | id أو login أو none | رسالة طلب المعلومات (اختياري)\n\nمثال: Player ID | id | أرسل ID اللاعب\nمثال: تسجيل دخول | login |\nمثال: بدون معلومات | none |\n\nأرسل /cancel للإلغاء.")
 
     elif data.startswith("recharge_method_toggle:"):
         method_id = int(data.split(":", 1)[1])
@@ -3458,27 +3241,6 @@ async def callback_handler(update, context):
 
         await query.message.reply_text(
             message + "\n\nابعث /cancel للإلغاء."
-        )
-
-    # إرسال كود بار للزبون من تفاصيل الطلب
-    elif data.startswith("send_barcode:"):
-        try:
-            order_id = int(data.split(":", 1)[1])
-        except (ValueError, IndexError):
-            await query.answer("رقم الطلب غير صالح.", show_alert=True)
-            return
-        with db() as conn:
-            order = conn.execute("SELECT user_id FROM orders WHERE id=?", (order_id,)).fetchone()
-        if not order:
-            await query.answer("الطلب غير موجود.", show_alert=True)
-            return
-        context.user_data["admin_step"] = "barcode_send"
-        context.user_data["chat_target_id"] = int(order["user_id"])
-        context.user_data["barcode_order_id"] = order_id
-        await query.message.reply_text(
-            f"📷 أرسل الآن صورة الكود بار الخاصة بالطلب #{order_id}.\n"
-            "تقدر تزيد شرح في تعليق الصورة. راح تتبعث مباشرة للزبون.\n\n"
-            "للإلغاء أرسل /cancel."
         )
 
     # تغيير حالة الطلب وإخبار الزبون
@@ -4500,8 +4262,8 @@ async def text_handler(update, context):
 
         if step == "recharge_method_add":
             parts = [x.strip() for x in text.split("|", 2)]
-            if len(parts) < 2 or not parts[0] or parts[1] not in ("id", "login", "none", "barcode"):
-                await message.reply_text("الصيغة: اسم الطريقة | id أو login أو none أو barcode | رسالة طلب المعلومات (اختياري)")
+            if len(parts) < 2 or not parts[0] or parts[1] not in ("id", "login", "none"):
+                await message.reply_text("الصيغة: اسم الطريقة | id أو login أو none | رسالة طلب المعلومات (اختياري)")
                 return
             game_id = int(context.user_data.get("pending_method_game_id", 0))
             with db() as conn:
@@ -5034,6 +4796,12 @@ async def text_handler(update, context):
     # =========================
 
     if context.user_data.get("awaiting_player_id"):
+        if not is_admin(user_id) and not store_is_open():
+            context.user_data.pop("order_draft", None)
+            context.user_data.pop("awaiting_player_id", None)
+            context.user_data.pop("pending_player_id", None)
+            await message.reply_text(store_closed_notice(), reply_markup=main_keyboard(user_id))
+            return
         await create_order(update, context)
         return
 
@@ -5140,13 +4908,6 @@ async def text_handler(update, context):
     if is_admin(user_id):
         if text == "🛠️ لوحة التحكم":
             await show_admin_panel(update, context)
-            return
-
-        if text == "📊 التسويق والتحليل":
-            await message.reply_text(
-                "📊 التسويق والتحليل — اختر من الأزرار:",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("فتح قسم التسويق والتحليل", callback_data="marketing_home")]])
-            )
             return
 
         if text == "➕ إضافة":
