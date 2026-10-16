@@ -682,11 +682,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
         )
 
-    # While the store is closed, customers cannot enter or browse the bot.
-    if not is_admin(user.id) and not store_is_open():
-        await update.message.reply_text(store_closed_notice())
-        return
-
     # Referral payload is processed once per newly referred account.
     payload = (context.args[0] if context.args else "")
     if payload.startswith("ref_"):
@@ -731,9 +726,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     contact = message.contact if message else None
     if not user or not contact:
-        return
-    if not is_admin(user.id) and not store_is_open():
-        await message.reply_text(store_closed_notice())
         return
     if contact.user_id != user.id:
         await message.reply_text("❌ يجب مشاركة رقمك باستخدام زر Telegram الرسمي، وليس رقم شخص آخر.",
@@ -1332,9 +1324,6 @@ async def document_handler(update, context):
 async def photo_handler(update, context):
     user = update.effective_user
     message = update.effective_message
-    if user and not is_admin(user.id) and not store_is_open():
-        await message.reply_text(store_closed_notice())
-        return
     if user and not is_admin(user.id):
         row = get_user_row(user.id)
         if row and int(row["is_banned"] or 0):
@@ -2190,9 +2179,13 @@ async def callback_handler(update, context):
     data = query.data or ""
     user_id = query.from_user.id
 
-    # Block all customer navigation while the store is closed.
-    # Check before acknowledging the callback so the alert is shown reliably.
-    if not is_admin(user_id) and not store_is_open():
+    # Browsing stays available while closed; block only actions that start or
+    # continue placing an order. Check before acknowledging the callback so the
+    # alert is shown reliably (a callback query can only be answered once).
+    order_callback_prefixes = (
+        "pay:", "tiktok_custom:", "tiktok_custom_pay:",
+    )
+    if not is_admin(user_id) and not store_is_open() and data.startswith(order_callback_prefixes):
         await query.answer(store_closed_notice(), show_alert=True)
         return
     await query.answer()
@@ -2283,10 +2276,6 @@ async def callback_handler(update, context):
     # تعطيل واجهات القروض وطلبات السلفية من التجار؛ منح السلفية متاح للإدارة فقط.
     if data.startswith(("loan_", "loanreq_", "creditpay_", "credit_repay_method:")) or (data.startswith("pay:") and data.endswith(":credit")):
         await query.answer("⛔ نظام القروض والسلفية غير متاح.", show_alert=True)
-        return
-
-    if not is_admin(user_id) and not store_is_open():
-        await message.reply_text(store_closed_notice())
         return
 
     if not is_admin(user_id):
@@ -3778,10 +3767,6 @@ async def text_handler(update, context):
     message = update.effective_message
     user_id = update.effective_user.id
     text = (message.text or "").strip()
-
-    if not is_admin(user_id) and not store_is_open():
-        await message.reply_text(store_closed_notice())
-        return
 
     if not is_admin(user_id):
         row = get_user_row(user_id)
