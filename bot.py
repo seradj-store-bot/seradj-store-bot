@@ -682,6 +682,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
         )
 
+    # While the store is closed, customers cannot enter or browse the bot.
+    if not is_admin(user.id) and not store_is_open():
+        await update.message.reply_text(store_closed_notice())
+        return
+
     # Referral payload is processed once per newly referred account.
     payload = (context.args[0] if context.args else "")
     if payload.startswith("ref_"):
@@ -726,6 +731,9 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     contact = message.contact if message else None
     if not user or not contact:
+        return
+    if not is_admin(user.id) and not store_is_open():
+        await message.reply_text(store_closed_notice())
         return
     if contact.user_id != user.id:
         await message.reply_text("❌ يجب مشاركة رقمك باستخدام زر Telegram الرسمي، وليس رقم شخص آخر.",
@@ -1324,6 +1332,9 @@ async def document_handler(update, context):
 async def photo_handler(update, context):
     user = update.effective_user
     message = update.effective_message
+    if user and not is_admin(user.id) and not store_is_open():
+        await message.reply_text(store_closed_notice())
+        return
     if user and not is_admin(user.id):
         row = get_user_row(user.id)
         if row and int(row["is_banned"] or 0):
@@ -2179,13 +2190,9 @@ async def callback_handler(update, context):
     data = query.data or ""
     user_id = query.from_user.id
 
-    # Browsing stays available while closed; block only actions that start or
-    # continue placing an order. Check before acknowledging the callback so the
-    # alert is shown reliably (a callback query can only be answered once).
-    order_callback_prefixes = (
-        "pay:", "tiktok_custom:", "tiktok_custom_pay:",
-    )
-    if not is_admin(user_id) and not store_is_open() and data.startswith(order_callback_prefixes):
+    # Block all customer navigation while the store is closed.
+    # Check before acknowledging the callback so the alert is shown reliably.
+    if not is_admin(user_id) and not store_is_open():
         await query.answer(store_closed_notice(), show_alert=True)
         return
     await query.answer()
@@ -2276,6 +2283,10 @@ async def callback_handler(update, context):
     # تعطيل واجهات القروض وطلبات السلفية من التجار؛ منح السلفية متاح للإدارة فقط.
     if data.startswith(("loan_", "loanreq_", "creditpay_", "credit_repay_method:")) or (data.startswith("pay:") and data.endswith(":credit")):
         await query.answer("⛔ نظام القروض والسلفية غير متاح.", show_alert=True)
+        return
+
+    if not is_admin(user_id) and not store_is_open():
+        await message.reply_text(store_closed_notice())
         return
 
     if not is_admin(user_id):
@@ -2674,13 +2685,22 @@ async def callback_handler(update, context):
                 await query.answer("تمت معالجة هذا الطلب مسبقًا.", show_alert=True)
                 return
             conn.execute("UPDATE wallet_deposits SET status = ?, processed_at = ? WHERE id = ?", ("approved" if approve else "rejected", now_text(), deposit_id))
+            credited_amount = int(dep["amount"])
+            is_flexy = "flexy" in str(dep["payment_method"] or "").lower() or "فليكسي" in str(dep["payment_method"] or "").lower()
             if approve:
-                conn.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (dep["amount"], dep["user_id"]))
+                # Flexy deposits receive an 15% deduction; other methods are credited in full.
+                credited_amount = int(int(dep["amount"]) * 0.85) if is_flexy else int(dep["amount"])
+                conn.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (credited_amount, dep["user_id"]))
         try:
-            await context.bot.send_message(dep["user_id"], (f"✅ تمت الموافقة على تعبئة #{deposit_id}. أضيف {dep['amount']} DA إلى محفظتك." if approve else f"❌ تم رفض تعبئة الرصيد #{deposit_id}. إذا كان هناك خطأ، تواصل مع الإدارة."))
+            if approve:
+                deduction_note = f"\nاقتطاع فليكسي (15%): {int(dep['amount']) - credited_amount} DA" if is_flexy else ""
+                await context.bot.send_message(dep["user_id"], f"✅ تمت الموافقة على تعبئة #{deposit_id}.\nالمبلغ المدفوع: {dep['amount']} DA{deduction_note}\nالمبلغ المضاف إلى محفظتك: {credited_amount} DA.")
+            else:
+                await context.bot.send_message(dep["user_id"], f"❌ تم رفض تعبئة الرصيد #{deposit_id}. إذا كان هناك خطأ، تواصل مع الإدارة.")
         except Exception:
             logger.exception("تعذر إشعار الزبون بنتيجة التعبئة")
-        await query.edit_message_caption(caption=f"{'✅ تمت الموافقة' if approve else '❌ تم الرفض'} على تعبئة الرصيد #{deposit_id}\nالمبلغ: {dep['amount']} DA\nالزبون: {dep['user_id']}", reply_markup=None)
+        deduction_caption = f"\nالمضاف للمحفظة: {credited_amount} DA (بعد خصم 15%)" if approve and is_flexy else (f"\nالمضاف للمحفظة: {credited_amount} DA" if approve else "")
+        await query.edit_message_caption(caption=f"{'✅ تمت الموافقة' if approve else '❌ تم الرفض'} على تعبئة الرصيد #{deposit_id}\nالمبلغ المدفوع: {dep['amount']} DA{deduction_caption}\nالطريقة: {dep['payment_method']}\nالزبون: {dep['user_id']}", reply_markup=None)
         return
 
     if data.startswith("trader_approve:") or data.startswith("trader_reject:"):
@@ -3768,6 +3788,10 @@ async def text_handler(update, context):
     user_id = update.effective_user.id
     text = (message.text or "").strip()
 
+    if not is_admin(user_id) and not store_is_open():
+        await message.reply_text(store_closed_notice())
+        return
+
     if not is_admin(user_id):
         row = get_user_row(user_id)
         if row and "is_banned" in row.keys() and int(row["is_banned"] or 0):
@@ -3918,7 +3942,7 @@ async def text_handler(update, context):
         context.user_data["deposit_amount"] = amount
         context.user_data.pop("awaiting_deposit_amount", None)
         await message.reply_text(
-            f"💰 مبلغ التعبئة: {amount} DA\nاختر طريقة الدفع:",
+            f"💰 مبلغ التعبئة: {amount} DA\nإذا اخترت Flexy، يُخصم 15% ويُضاف 85% فقط إلى محفظتك ({int(amount * 0.85)} DA).\nاختر طريقة الدفع:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("BaridiMob / CCP", callback_data="deposit_method:baridi")],
                 [InlineKeyboardButton("Flexy", callback_data="deposit_method:flexy")],
