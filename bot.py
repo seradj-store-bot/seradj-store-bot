@@ -126,6 +126,7 @@ ADMIN_PANEL_MENU = [
 ["✨ إدارة إيموجيات Premium", "💰 تعديل الأسعار"],
 ["📂 إدارة البوت", "📨 إرسال إشعار"],
 ["🎁 إدارة متجر النقاط", "💬 مراسلة زبون"],
+["💰 حدود تعبئة الرصيد"],
 ["👥 التحكم في الأفراد", "👥 إدارة التجار"],
 ["🔙 القائمة الرئيسية"],
 ]
@@ -543,6 +544,17 @@ def is_trader(user_id):
     with db() as conn:
         row = conn.execute("SELECT account_type FROM users WHERE user_id = ?", (user_id,)).fetchone()
     return bool(row and row["account_type"] == "trader")
+
+
+def deposit_limits(account_type, method):
+    prefix = "trader" if account_type == "trader" else "customer"
+    method = "flexy" if method == "flexy" else "baridi"
+    try:
+        minimum = int(get_setting(f"deposit_{prefix}_{method}_min", "100"))
+        maximum = int(get_setting(f"deposit_{prefix}_{method}_max", "1000000"))
+    except (TypeError, ValueError):
+        minimum, maximum = 100, 1000000
+    return minimum, maximum
 
 
 def get_trader_credit(user_id):
@@ -1374,9 +1386,18 @@ async def photo_handler(update, context):
     if context.user_data.get("awaiting_deposit_receipt"):
         amount = int(context.user_data.get("deposit_amount", 0))
         method = context.user_data.get("deposit_method", "")
-        if amount < 100 or not method:
+        if not method:
             context.user_data.pop("awaiting_deposit_receipt", None)
             await message.reply_text("❌ انتهت جلسة التعبئة. ابدأ من جديد.")
+            return
+        method_key = "flexy" if "flexy" in method.lower() else "baridi"
+        account_type = "trader" if is_trader(user.id) else "customer"
+        minimum, maximum = deposit_limits(account_type, method_key)
+        if amount < minimum or amount > maximum:
+            context.user_data.pop("awaiting_deposit_receipt", None)
+            context.user_data.pop("deposit_amount", None)
+            context.user_data.pop("deposit_method", None)
+            await message.reply_text(f"❌ مبلغ التعبئة خارج الحدود المسموحة ({minimum} إلى {maximum} DA). ابدأ من جديد.")
             return
         photo = message.photo[-1]
         with db() as conn:
@@ -2666,6 +2687,16 @@ async def callback_handler(update, context):
     if data.startswith("deposit_method:"):
         method = data.split(":", 1)[1]
         if method not in ("baridi", "flexy"):
+            return
+        amount = int(context.user_data.get("deposit_amount", 0) or 0)
+        account_type = "trader" if is_trader(user_id) else "customer"
+        minimum, maximum = deposit_limits(account_type, method)
+        if amount < minimum or amount > maximum:
+            context.user_data.pop("deposit_amount", None)
+            await query.edit_message_text(
+                f"❌ مبلغ التعبئة خارج الحدود المسموحة لحسابك عبر {'Flexy' if method == 'flexy' else 'BaridiMob / CCP'}.\n"
+                f"الحد الأدنى: {minimum} DA\nالحد الأقصى: {maximum} DA\nابدأ التعبئة من جديد بالمبلغ المناسب."
+            )
             return
         context.user_data["deposit_method"] = "BaridiMob / CCP" if method == "baridi" else "Flexy"
         context.user_data["awaiting_deposit_receipt"] = True
@@ -4149,6 +4180,33 @@ async def text_handler(update, context):
     if is_admin(user_id):
         step = context.user_data.get("admin_step")
 
+        if step == "deposit_limits_set":
+            parts = [x.strip() for x in text.split("|")]
+            try:
+                if len(parts) != 4:
+                    raise ValueError
+                parsed = []
+                for part in parts:
+                    pair = part.split("-")
+                    if len(pair) != 2:
+                        raise ValueError
+                    low, high = int(pair[0].strip()), int(pair[1].strip())
+                    if low < 1 or high < low:
+                        raise ValueError
+                    parsed.append((low, high))
+            except ValueError:
+                await message.reply_text("❌ صيغة غير صحيحة. مثال: 100-5000 | 200-3000 | 500-20000 | 500-10000")
+                return
+            keys = [("customer","baridi"),("customer","flexy"),("trader","baridi"),("trader","flexy")]
+            for (account, method), (low, high) in zip(keys, parsed):
+                set_setting(f"deposit_{account}_{method}_min", str(low))
+                set_setting(f"deposit_{account}_{method}_max", str(high))
+            context.user_data.pop("admin_step", None)
+            labels = ["الزبون BaridiMob/CCP", "الزبون Flexy", "التاجر BaridiMob/CCP", "التاجر Flexy"]
+            summary = "\n".join(f"{label}: {low} إلى {high} DA" for label, (low, high) in zip(labels, parsed))
+            await message.reply_text("✅ تم حفظ حدود التعبئة:\n" + summary, reply_markup=admin_keyboard())
+            return
+
         if step == "tiktok_min_quantity":
             try:
                 minimum = int(text.strip().replace(",", "").replace("٬", ""))
@@ -4893,6 +4951,16 @@ async def text_handler(update, context):
 
     if text == "👤 حسابي":
         await show_account(update.effective_message, update.effective_user.id)
+        return
+
+    if text == "💰 حدود تعبئة الرصيد" and is_admin(user_id):
+        context.user_data["admin_step"] = "deposit_limits_set"
+        await message.reply_text(
+            "أرسل الحدود الأربعة بهذا الترتيب، كل حد أدنى-أقصى، وافصل بينها بعلامة |\n"
+            "1) الزبون BaridiMob/CCP | 2) الزبون Flexy | 3) التاجر BaridiMob/CCP | 4) التاجر Flexy\n"
+            "مثال: 100-5000 | 200-3000 | 500-20000 | 500-10000\n"
+            "الأرقام بالدينار الجزائري. أرسل /cancel للإلغاء."
+        )
         return
 
     if text == "💰 تعبئة الرصيد":
