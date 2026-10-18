@@ -4812,6 +4812,7 @@ async def text_handler(update, context):
                 "قسم | اسم الزر | store_category:app (قسم التطبيقات)\n"
                 "قسم | اسم الزر | game:ID (لعبة محددة)\n"
                 "قسم | اسم الزر | offer:GAME_ID:OFFER_ID (عرض محدد)\n"
+                "قسم | اسم الزر | recharge_select:GAME_ID:METHOD_ID:none (طريقة شحن/سيرفر محدد)\n"
                 "قسم | اسم الزر | freefire أو store أو back_main\n\n"
                 "تقدر تستعمل callback_data لأي زر تنقل موجود في البوت. الحد الأقصى 8 أزرار.\n"
                 "إذا ما تحتاجش أزرار ابعث: بدون\n"
@@ -4854,15 +4855,30 @@ async def text_handler(update, context):
                             callback_target = target
                         elif re.fullmatch(r"offer:[0-9]+:[0-9]+(?::(?:android|ios|none))?", target):
                             callback_target = target
+                        elif re.fullmatch(r"recharge_select:[0-9]+:[0-9]+(?::(?:android|ios|none))?", target):
+                            # Directly open a specific recharge method/server inside a game.
+                            parts_target = target.split(":")
+                            game_id, method_id = int(parts_target[1]), int(parts_target[2])
+                            with db() as conn:
+                                valid_method = conn.execute(
+                                    "SELECT 1 FROM games g JOIN recharge_methods rm ON rm.game_id=g.id "
+                                    "WHERE g.id=? AND g.active=1 AND rm.id=? AND rm.active=1",
+                                    (game_id, method_id),
+                                ).fetchone()
+                            if not valid_method:
+                                await message.reply_text("❌ معرّف اللعبة أو طريقة الشحن/السيرفر غير صحيح أو غير مفعّل.")
+                                return
+                            callback_target = target
                         else:
                             allowed_prefixes = (
-                                "store_category:", "game_method:", "game:", "offer:",
+                                "store_category:", "game_method:", "game:", "offer:", "recharge_select:",
                                 "platform:", "method:", "server:", "app:", "back_",
                             )
                             if len(target.encode("utf-8")) > 64 or not target.startswith(allowed_prefixes):
                                 await message.reply_text(
                                     "❌ وجهة القسم غير مدعومة أو طويلة جدًا. استعمل store_category:game أو "
-                                    "store_category:app أو game:ID أو offer:GAME_ID:OFFER_ID، "
+                                    "store_category:app أو game:ID أو offer:GAME_ID:OFFER_ID أو "
+                                    "recharge_select:GAME_ID:METHOD_ID:none، "
                                     "أو callback_data لزر تنقّل موجود في البوت."
                                 )
                                 return
