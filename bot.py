@@ -1,3 +1,4 @@
+import re
 import os
 import html
 import sqlite3
@@ -4807,9 +4808,12 @@ async def text_handler(update, context):
                 "تقدر تبعث إيموجيات Premium داخل النص مباشرة إذا كانت ظاهرة عندك في تيليغرام.\n\n"
                 "إذا حبيت تزيد أزرار، ابعث كل زر في سطر بهذا الشكل:\n"
                 "رابط | اسم الزر | https://example.com\n"
-                "قسم | اسم الزر | freefire (يفتح فري فاير مباشرة) أو store\n"
-                "قسم | اسم الزر | back_main\n\n"
-                "الأقسام المدعومة: freefire و store و back_main. الحد الأقصى 8 أزرار.\n"
+                "قسم | اسم الزر | store_category:game (قسم الألعاب)\n"
+                "قسم | اسم الزر | store_category:app (قسم التطبيقات)\n"
+                "قسم | اسم الزر | game:ID (لعبة محددة)\n"
+                "قسم | اسم الزر | offer:GAME_ID:OFFER_ID (عرض محدد)\n"
+                "قسم | اسم الزر | freefire أو store أو back_main\n\n"
+                "تقدر تستعمل callback_data لأي زر تنقل موجود في البوت. الحد الأقصى 8 أزرار.\n"
                 "إذا ما تحتاجش أزرار ابعث: بدون\n"
                 "للإلغاء ابعث /cancel."
             )
@@ -4838,12 +4842,35 @@ async def text_handler(update, context):
                             if not game_row:
                                 await message.reply_text("❌ ما لقيتش خدمة Free Fire مفعّلة في قاعدة البيانات. تأكد من اسم اللعبة في لوحة الإدارة.")
                                 return
-                            buttons.append({"text": label, "callback_data": f"game:{game_row['id']}"})
-                        elif target in ("store", "back_main"):
-                            buttons.append({"text": label, "callback_data": target})
+                            callback_target = f"game:{game_row['id']}"
+                        elif target in ("store", "back_main", "store_category:game", "store_category:app"):
+                            callback_target = target
+                        elif re.fullmatch(r"game:[0-9]+", target):
+                            game_id = int(target.split(":", 1)[1])
+                            game_row = get_game(game_id)
+                            if not game_row or not game_row["active"]:
+                                await message.reply_text("❌ رقم اللعبة غير صحيح أو اللعبة غير مفعّلة.")
+                                return
+                            callback_target = target
+                        elif re.fullmatch(r"offer:[0-9]+:[0-9]+(?::(?:android|ios|none))?", target):
+                            callback_target = target
                         else:
-                            await message.reply_text("❌ الأقسام المدعومة: freefire و store و back_main")
+                            allowed_prefixes = (
+                                "store_category:", "game_method:", "game:", "offer:",
+                                "platform:", "method:", "server:", "app:", "back_",
+                            )
+                            if len(target.encode("utf-8")) > 64 or not target.startswith(allowed_prefixes):
+                                await message.reply_text(
+                                    "❌ وجهة القسم غير مدعومة أو طويلة جدًا. استعمل store_category:game أو "
+                                    "store_category:app أو game:ID أو offer:GAME_ID:OFFER_ID، "
+                                    "أو callback_data لزر تنقّل موجود في البوت."
+                                )
+                                return
+                            callback_target = target
+                        if len(callback_target.encode("utf-8")) > 64:
+                            await message.reply_text("❌ وجهة الزر طويلة جدًا.")
                             return
+                        buttons.append({"text": label, "callback_data": callback_target})
                     if len(buttons) > 8:
                         await message.reply_text("❌ الحد الأقصى 8 أزرار.")
                         return
