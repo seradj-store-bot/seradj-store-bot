@@ -1727,7 +1727,7 @@ async def admin_games(query):
     for game in games:
         state = "🟢" if game["active"] else "🔴"
         buttons.append([InlineKeyboardButton(
-            f"{state} {game_button_label(game)}",
+            f"{state} [ID: {game['id']}] {game_button_label(game)}",
             callback_data=f"game_manage:{game['id']}",
             **premium_button_kwargs(game['id']),
         )])
@@ -1759,7 +1759,7 @@ async def admin_game_manage(query, game_id):
         [InlineKeyboardButton("🗑️ حذف التطبيق/اللعبة", callback_data=f"game_delete:{game_id}")],
         [InlineKeyboardButton("🔙 قائمة الألعاب والتطبيقات", callback_data="adm_games")],
     ]
-    await query.edit_message_text(f"⚙️ <b>إدارة {game_button_label(game)}</b>\nالحالة: {state}", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
+    await query.edit_message_text(f"⚙️ <b>إدارة {game_button_label(game)}</b>\n🆔 GAME_ID: <code>{game_id}</code>\nالحالة: {state}", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # =========================
@@ -1794,7 +1794,7 @@ async def admin_offers(query, game_id):
 
         buttons.append([
             InlineKeyboardButton(
-                f"{state} {offer['name']} — {offer['method_title'] or 'طريقة قديمة'}",
+                f"{state} [ID: {offer['id']}] {offer['name']} — {offer['method_title'] or 'طريقة قديمة'}",
                 callback_data=f"offer_toggle:{offer['id']}",
             ),
             InlineKeyboardButton(
