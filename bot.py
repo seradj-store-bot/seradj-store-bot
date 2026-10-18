@@ -2873,7 +2873,13 @@ async def callback_handler(update, context):
             methods = conn.execute("SELECT * FROM recharge_methods WHERE game_id=? ORDER BY id", (game_id,)).fetchall()
         if not game:
             await query.edit_message_text("الخدمة غير موجودة."); return
-        buttons = [[InlineKeyboardButton(("🟢 " if m["active"] else "🔴 ")+m["title"]+f" ({ {'id':'ID','login':'تسجيل دخول','none':'بدون معلومات'}.get(m['method_type'],'ID') })", callback_data=f"recharge_method_toggle:{m['id']}")] for m in methods]
+        buttons = []
+        for m in methods:
+            method_label = ("🟢 " if m["active"] else "🔴 ") + m["title"] + f" ({ {'id':'ID','login':'تسجيل دخول','none':'بدون معلومات'}.get(m['method_type'],'ID') })"
+            buttons.append([
+                InlineKeyboardButton(method_label, callback_data=f"recharge_method_toggle:{m['id']}"),
+                InlineKeyboardButton("✏️ تغيير الاسم", callback_data=f"recharge_method_rename:{m['id']}")
+            ])
         buttons.append([InlineKeyboardButton("➕ إضافة طريقة شحن", callback_data=f"recharge_method_add:{game_id}")])
         buttons.append([InlineKeyboardButton("🔙 إدارة الألعاب", callback_data="adm_games")])
         await query.edit_message_text(f"🔀 طرق الشحن لـ {game['name']}\nاختر طريقة لتفعيلها/إيقافها أو أضف طريقة جديدة. كل طريقة لها عروض وأسعار مستقلة.", reply_markup=InlineKeyboardMarkup(buttons))
@@ -2883,6 +2889,17 @@ async def callback_handler(update, context):
         context.user_data["admin_step"] = "recharge_method_add"
         context.user_data["pending_method_game_id"] = game_id
         await query.message.reply_text("أرسل الطريقة بهذا الشكل:\nاسم الطريقة | id أو login أو none | رسالة طلب المعلومات (اختياري)\n\nمثال: Player ID | id | أرسل ID اللاعب\nمثال: تسجيل دخول | login |\nمثال: بدون معلومات | none |\n\nأرسل /cancel للإلغاء.")
+
+    elif data.startswith("recharge_method_rename:"):
+        method_id = int(data.split(":", 1)[1])
+        with db() as conn:
+            method = conn.execute("SELECT title, game_id FROM recharge_methods WHERE id=?", (method_id,)).fetchone()
+        if not method:
+            await query.answer("طريقة الشحن غير موجودة", show_alert=True)
+            return
+        context.user_data["admin_step"] = "recharge_method_rename"
+        context.user_data["pending_rename_method_id"] = method_id
+        await query.message.reply_text(f"✏️ أرسل الاسم الجديد لطريقة الشحن الحالية: {method['title']}\nأرسل /cancel للإلغاء.")
 
     elif data.startswith("recharge_method_toggle:"):
         method_id = int(data.split(":", 1)[1])
@@ -4347,6 +4364,41 @@ async def text_handler(update, context):
                 set_setting("facebook_url", fb)
             context.user_data.pop("admin_step", None)
             await message.reply_text("✅ تم حفظ حسابات التواصل.", reply_markup=admin_keyboard())
+            return
+
+        if step == "recharge_method_rename":
+            new_title = text.strip()
+            if not new_title or len(new_title) > 80:
+                await message.reply_text("❌ الاسم غير صالح. أرسل اسمًا من 1 إلى 80 حرفًا.")
+                return
+            method_id = int(context.user_data.get("pending_rename_method_id", 0))
+            with db() as conn:
+                row = conn.execute("SELECT game_id FROM recharge_methods WHERE id=?", (method_id,)).fetchone()
+                if not row:
+                    await message.reply_text("❌ طريقة الشحن غير موجودة.", reply_markup=admin_keyboard())
+                    context.user_data.pop("admin_step", None)
+                    context.user_data.pop("pending_rename_method_id", None)
+                    return
+                conn.execute("UPDATE recharge_methods SET title=? WHERE id=?", (new_title, method_id))
+                game_id = row["game_id"]
+            context.user_data.pop("admin_step", None)
+            context.user_data.pop("pending_rename_method_id", None)
+            await message.reply_text(f"✅ تم تغيير اسم طريقة الشحن إلى: {new_title}", reply_markup=admin_keyboard())
+            # إظهار إدارة طرق الشحن لتأكيد الاسم الجديد
+            with db() as conn:
+                game = conn.execute("SELECT name FROM games WHERE id=?", (game_id,)).fetchone()
+                methods = conn.execute("SELECT * FROM recharge_methods WHERE game_id=? ORDER BY id", (game_id,)).fetchall()
+            if game:
+                buttons = []
+                for m in methods:
+                    method_label = ("🟢 " if m["active"] else "🔴 ") + m["title"] + f" ({ {'id':'ID','login':'تسجيل دخول','none':'بدون معلومات'}.get(m['method_type'],'ID') })"
+                    buttons.append([
+                        InlineKeyboardButton(method_label, callback_data=f"recharge_method_toggle:{m['id']}"),
+                        InlineKeyboardButton("✏️ تغيير الاسم", callback_data=f"recharge_method_rename:{m['id']}")
+                    ])
+                buttons.append([InlineKeyboardButton("➕ إضافة طريقة شحن", callback_data=f"recharge_method_add:{game_id}")])
+                buttons.append([InlineKeyboardButton("🔙 إدارة الألعاب", callback_data="adm_games")])
+                await message.reply_text(f"🔀 طرق الشحن لـ {game['name']}", reply_markup=InlineKeyboardMarkup(buttons))
             return
 
         if step == "recharge_method_add":
