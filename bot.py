@@ -681,7 +681,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     with db() as conn:
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT OR IGNORE INTO users
             (user_id, username, full_name, created_at)
@@ -694,6 +694,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 now_text(),
             ),
         )
+        is_new_user = cursor.rowcount == 1
+        # Keep profile details up to date when an existing user returns.
+        conn.execute(
+            "UPDATE users SET username=?, full_name=? WHERE user_id=?",
+            (user.username or "", user.full_name or "", user.id),
+        )
+
+    # Notify the admin only once, on the user's first /start registration.
+    if is_new_user and ADMIN_ID:
+        username = f"@{user.username}" if user.username else "غير متوفر"
+        language = getattr(user, "language_code", None) or "غير معروفة"
+        registered_at = datetime.now(STORE_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        registration_message = (
+            f"🆕 تسجيل مستخدم جديد في {STORE_NAME}\n\n"
+            f"👤 الاسم: {user.full_name or 'غير متوفر'}\n"
+            f"🔗 Username: {username}\n"
+            f"🆔 Telegram ID: {user.id}\n"
+            f"🌐 اللغة: {language}\n"
+            f"🤖 بوت: {'نعم' if user.is_bot else 'لا'}\n"
+            f"📅 تاريخ التسجيل: {registered_at}"
+        )
+        try:
+            await context.bot.send_message(chat_id=ADMIN_ID, text=registration_message)
+        except Exception:
+            logger.exception("تعذر إرسال إشعار تسجيل مستخدم جديد للإدارة")
 
     # While the store is closed, customers cannot enter or browse the bot.
     if not is_admin(user.id) and not store_is_open():
