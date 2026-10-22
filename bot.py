@@ -2436,22 +2436,28 @@ async def callback_handler(update, context):
             check = conn.execute("SELECT claimed_by FROM orders WHERE id=?", (order_id,)).fetchone()
             if not check or int(check["claimed_by"] or 0) != user_id:
                 await query.answer("سبقك عضو آخر واستلم الطلب.", show_alert=True); return
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ إتمام الطلب", callback_data=f"order_finish:{order_id}")]])
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ إتمام الطلب", callback_data=f"order_finish:{order_id}"),
+            InlineKeyboardButton("❌ إلغاء الطلب", callback_data=f"order_cancel:{order_id}"),
+        ]])
         try: await query.edit_message_reply_markup(reply_markup=keyboard)
         except Exception: pass
         await query.answer("تم استلام الطلب باسمك!")
         await query.message.reply_text(f"📥 الطلب #{order_id} استلمه: {query.from_user.full_name}")
         return
-    if data.startswith("order_finish:"):
+    if data.startswith("order_finish:") or data.startswith("order_cancel:"):
+        is_cancel = data.startswith("order_cancel:")
         try: order_id = int(data.split(":", 1)[1])
         except (ValueError, IndexError):
             await query.answer("طلب غير صالح.", show_alert=True); return
         with db() as conn:
             row = conn.execute("SELECT claimed_by, status FROM orders WHERE id=?", (order_id,)).fetchone()
             if not row or int(row["claimed_by"] or 0) != user_id:
-                await query.answer("فقط العضو الذي استلم الطلب يمكنه إتمامه.", show_alert=True); return
-        # Reuse the existing order-status processing path to notify the customer and apply rewards.
-        query.data = f"status:{order_id}:completed"
+                await query.answer("فقط العضو الذي استلم الطلب يمكنه تنفيذ هذا الإجراء.", show_alert=True); return
+            if row["status"] in ("completed", "rejected"):
+                await query.answer("تمت معالجة الطلب مسبقًا.", show_alert=True); return
+        # Reuse the existing status processing path: it notifies the customer and applies refunds/rewards.
+        query.data = f"status:{order_id}:{'rejected' if is_cancel else 'completed'}"
         data = query.data
 
     # التحقق من صلاحيات الإدارة
@@ -2490,13 +2496,14 @@ async def callback_handler(update, context):
     )
 
     if data.startswith(admin_actions) and not is_admin(user_id):
-        # Allow only the member who claimed this group order to finish it.
+        # Allow only the member who claimed a group order to complete or cancel it.
         group_finish_allowed = False
-        if data.startswith("status:") and data.endswith(":completed") and query.message.chat.type in ("group", "supergroup"):
+        if (data.startswith("status:") and data.endswith((":completed", ":rejected"))
+                and query.message.chat.type in ("group", "supergroup")):
             try:
-                finish_order_id = int(data.split(":")[1])
+                action_order_id = int(data.split(":")[1])
                 with db() as conn:
-                    claimed = conn.execute("SELECT claimed_by FROM orders WHERE id=?", (finish_order_id,)).fetchone()
+                    claimed = conn.execute("SELECT claimed_by FROM orders WHERE id=?", (action_order_id,)).fetchone()
                 group_finish_allowed = bool(claimed and int(claimed["claimed_by"] or 0) == user_id)
             except Exception:
                 group_finish_allowed = False
@@ -3142,6 +3149,13 @@ async def callback_handler(update, context):
             )
             return
 
+        if query.message.chat.type in ("group", "supergroup") and new_status in ("completed", "rejected"):
+            try:
+                final_text = "✅ الطلب مكتمل" if new_status == "completed" else "❌ الطلب ملغي"
+                await query.edit_message_reply_markup(reply_markup=None)
+                await query.message.reply_text(f"{final_text} — الطلب #{order_id}")
+            except Exception:
+                pass
         await admin_order_details(query, order_id)
 
     # فتح لوحة التحكم الخاصة بلعبة أو تطبيق
