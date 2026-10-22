@@ -154,41 +154,48 @@ def get_setting(key, default=""):
 
 
 async def dispatch_order_to_group(context, order_id, user, draft, player_id, payment_method, price, points_used=0, photo=None):
-    """Send an order to the group configured for its game, falling back to admin DM."""
+    """Route new orders to the configured work group or, when detached, to the owner's DM."""
     game_id = int(draft.get("game_id") or 0)
-    group_id = get_setting(f"order_group_{game_id}", "").strip()
-    is_work_group = bool(group_id)
-    if not group_id:
-        group_id = str(ADMIN_ID) if ADMIN_ID else ""
-    if not group_id:
+    route = get_setting(f"order_group_{game_id}", "").strip()
+    detached = route.upper() == "DM"
+    is_work_group = bool(route) and not detached
+    destination = route if is_work_group else (str(ADMIN_ID) if ADMIN_ID else "")
+    if not destination:
         logger.warning("No order group/admin configured for order %s", order_id)
         return
-    # The claim button is only shown in a configured work group. If the game is
-    # detached, orders may be sent to the owner's private chat for awareness,
-    # but must not expose a group-only claim action there.
-    keyboard = (InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{order_id}")]])
-                if is_work_group else None)
-    caption = (f"🆕 طلب جديد #{order_id}\n\n👤 الزبون: {user.full_name}\n🆔 Telegram ID: {user.id}\n"
-               f"🎮 الخدمة: {draft.get('game_name','غير محددة')}\n📦 العرض: {draft.get('offer_name','غير محدد')}\n"
-               f"📋 معلومات الشحن: {player_id or 'لا تتطلب'}\n📱 الجهاز: {draft.get('platform') or 'غير محدد'}\n"
-               f"💰 السعر: {price} DA\n🎁 النقاط المستخدمة: {points_used}\n💳 الدفع: {payment_method}\n📌 الحالة: قيد الانتظار")
+
+    caption = (f"🆕 طلب جديد #{order_id}\\n\\n👤 الزبون: {user.full_name}\\n🆔 Telegram ID: {user.id}\\n"
+               f"🎮 الخدمة: {draft.get('game_name','غير محددة')}\\n📦 العرض: {draft.get('offer_name','غير محدد')}\\n"
+               f"📋 معلومات الشحن: {player_id or 'لا تتطلب'}\\n📱 الجهاز: {draft.get('platform') or 'غير محدد'}\\n"
+               f"💰 السعر: {price} DA\\n🎁 النقاط المستخدمة: {points_used}\\n💳 الدفع: {payment_method}\\n📌 الحالة: قيد الانتظار")
+
+    if is_work_group:
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{order_id}")]])
+    elif detached:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ إتمام الطلب", callback_data=f"order_finish:{order_id}"),
+            InlineKeyboardButton("❌ إلغاء الطلب", callback_data=f"order_cancel:{order_id}"),
+        ], [InlineKeyboardButton("🔗 إعادة الطلبات إلى المجموعة", callback_data=f"order_attach:{game_id}")]])
+    else:
+        keyboard = None
+
     try:
         if photo:
-            await context.bot.send_photo(chat_id=int(group_id), photo=photo.file_id, caption=caption, reply_markup=keyboard)
+            await context.bot.send_photo(chat_id=int(destination), photo=photo.file_id, caption=caption, reply_markup=keyboard)
         else:
-            await context.bot.send_message(chat_id=int(group_id), text=caption, reply_markup=keyboard)
-        # The group keyboard is visible to everyone, so send the detach control privately to the owner only.
-        if is_work_group and ADMIN_ID and str(group_id) != str(ADMIN_ID):
+            await context.bot.send_message(chat_id=int(destination), text=caption, reply_markup=keyboard)
+
+        if is_work_group and ADMIN_ID and str(destination) != str(ADMIN_ID):
             try:
                 await context.bot.send_message(
                     chat_id=int(ADMIN_ID),
-                    text=f"🔌 التحكم في استقبال الطلبات\n🎮 اللعبة: {draft.get('game_name', 'غير محددة')}\n🧾 الطلب: #{order_id}",
+                    text=f"🔌 التحكم في استقبال الطلبات\\n🎮 اللعبة: {draft.get('game_name', 'غير محددة')}\\n🧾 الطلب: #{order_id}",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔌 عزل الطلبات عن المجموعة", callback_data=f"order_detach:{game_id}")]])
                 )
             except Exception:
                 logger.exception("Could not send owner-only detach button for game %s", game_id)
     except Exception:
-        logger.exception("Failed dispatching order %s to group %s", order_id, group_id)
+        logger.exception("Failed dispatching order %s to destination %s", order_id, destination)
 
 async def set_order_group_command(update, context):
     """In a group, admin runs /setordergroup GAME_ID to route that game's orders here."""
@@ -209,6 +216,7 @@ async def set_order_group_command(update, context):
             await update.effective_message.reply_text("❌ ما لقيتش لعبة بهذا الرقم. شوف أرقام الألعاب بالأمر /ordergames في الخاص.")
             return
         conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (f"order_group_{game_id}", str(chat.id)))
+        conn.execute("DELETE FROM settings WHERE key=?", (f"order_group_backup_{game_id}",))
     await update.effective_message.reply_text(f"✅ تم ربط {game['name']} بهذا القروب. الطلبات الجديدة لهذه اللعبة ستصل هنا.")
 
 async def order_games_command(update, context):
@@ -2291,15 +2299,21 @@ async def callback_handler(update, context):
         except (ValueError, IndexError):
             await query.answer("طلب غير صالح.", show_alert=True)
             return
-        if query.message.chat.type not in ("group", "supergroup"):
-            await query.answer("هذا الإجراء متاح من قروب العمل فقط.", show_alert=True)
+        is_private_detached = query.message.chat.type == "private" and is_admin(user_id)
+        if query.message.chat.type not in ("group", "supergroup") and not is_private_detached:
+            await query.answer("هذا الإجراء متاح للإدارة في الخاص أو لمستلم الطلب في القروب.", show_alert=True)
             return
         with db() as conn:
-            claimed_row = conn.execute("SELECT claimed_by, status FROM orders WHERE id=?", (action_order_id,)).fetchone()
+            claimed_row = conn.execute("SELECT claimed_by, status, game_id FROM orders WHERE id=?", (action_order_id,)).fetchone()
             if not claimed_row:
                 await query.answer("الطلب غير موجود.", show_alert=True)
                 return
-            if int(claimed_row["claimed_by"] or 0) != user_id:
+            if is_private_detached:
+                route = get_setting(f"order_group_{int(claimed_row['game_id'] or 0)}", "").strip()
+                if route.upper() != "DM":
+                    await query.answer("هذا الطلب ليس معزولًا عن المجموعة.", show_alert=True)
+                    return
+            elif int(claimed_row["claimed_by"] or 0) != user_id:
                 await query.answer("فقط العضو الذي استلم الطلب يمكنه تنفيذ هذا الإجراء.", show_alert=True)
                 return
             if claimed_row["status"] in ("completed", "rejected"):
@@ -2339,10 +2353,44 @@ async def callback_handler(update, context):
             await query.answer("اللعبة غير صالحة.", show_alert=True); return
         with db() as conn:
             game = conn.execute("SELECT name FROM games WHERE id=?", (detach_game_id,)).fetchone()
-            conn.execute("DELETE FROM settings WHERE key=?", (f"order_group_{detach_game_id}",))
-        await query.answer("تم عزل المجموعة عن الطلبات الجديدة.", show_alert=True)
-        try: await query.message.reply_text(f"🔌 تم فصل استقبال الطلبات الجديدة للعبة {game['name'] if game else detach_game_id} عن هذه المجموعة.")
-        except Exception: pass
+            current = conn.execute("SELECT value FROM settings WHERE key=?", (f"order_group_{detach_game_id}",)).fetchone()
+            if not current or not str(current["value"] or "").strip() or str(current["value"]).upper() == "DM":
+                await query.answer("ما كاين حتى قروب مربوط بهذه اللعبة.", show_alert=True)
+                return
+            conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (f"order_group_backup_{detach_game_id}", str(current["value"])))
+            conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (f"order_group_{detach_game_id}", "DM"))
+        await query.answer("تم عزل الطلبات عن المجموعة.", show_alert=True)
+        try:
+            await query.message.reply_text(f"🔌 تم عزل الطلبات الجديدة للعبة {game['name'] if game else detach_game_id}. ستصل الطلبات القادمة إلى الخاص مع أزرار التحكم.")
+        except Exception:
+            pass
+        return
+
+    if data.startswith("order_attach:"):
+        if not is_admin(user_id):
+            await query.answer("هذا الزر خاص بمالك المتجر.", show_alert=True)
+            return
+        try:
+            attach_game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("اللعبة غير صالحة.", show_alert=True)
+            return
+        backup = get_setting(f"order_group_backup_{attach_game_id}", "").strip()
+        if not backup:
+            await query.answer("ما لقيتش المجموعة السابقة. اربط المجموعة بالأمر /setordergroup GAME_ID.", show_alert=True)
+            return
+        with db() as conn:
+            conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (f"order_group_{attach_game_id}", backup))
+            conn.execute("DELETE FROM settings WHERE key=?", (f"order_group_backup_{attach_game_id}",))
+            game = conn.execute("SELECT name FROM games WHERE id=?", (attach_game_id,)).fetchone()
+        await query.answer("رجعت الطلبات للمجموعة.", show_alert=True)
+        try:
+            await query.message.reply_text(f"🔗 رجع استقبال الطلبات الجديدة للعبة {game['name'] if game else attach_game_id} إلى المجموعة.")
+        except Exception:
+            pass
         return
 
     if data == "price_menu_offers":
