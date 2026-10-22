@@ -107,7 +107,6 @@ MAIN_MENU = [
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
     ["🛍️ المتجر"],
-    ["🧪 الطلب التجريبي"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
     ["➕ طلب لعبة غير موجودة"],
@@ -119,12 +118,12 @@ ADMIN_MAIN_MENU = [
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
     ["🛍️ المتجر"],
-    ["🧪 الطلب التجريبي"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
 ]
 
 ADMIN_PANEL_MENU = [
+["🧪 الطلب التجريبي"],
 ["➕ إضافة", "🎮 إدارة الألعاب"],
 ["✨ إدارة إيموجيات Premium", "💰 تعديل الأسعار"],
 ["📂 إدارة البوت", "📨 إرسال إشعار"],
@@ -158,12 +157,17 @@ async def dispatch_order_to_group(context, order_id, user, draft, player_id, pay
     """Send an order to the group configured for its game, falling back to admin DM."""
     game_id = int(draft.get("game_id") or 0)
     group_id = get_setting(f"order_group_{game_id}", "").strip()
+    is_work_group = bool(group_id)
     if not group_id:
         group_id = str(ADMIN_ID) if ADMIN_ID else ""
     if not group_id:
         logger.warning("No order group/admin configured for order %s", order_id)
         return
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{order_id}")]])
+    # The claim button is only shown in a configured work group. If the game is
+    # detached, orders may be sent to the owner's private chat for awareness,
+    # but must not expose a group-only claim action there.
+    keyboard = (InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{order_id}")]])
+                if is_work_group else None)
     caption = (f"🆕 طلب جديد #{order_id}\n\n👤 الزبون: {user.full_name}\n🆔 Telegram ID: {user.id}\n"
                f"🎮 الخدمة: {draft.get('game_name','غير محددة')}\n📦 العرض: {draft.get('offer_name','غير محدد')}\n"
                f"📋 معلومات الشحن: {player_id or 'لا تتطلب'}\n📱 الجهاز: {draft.get('platform') or 'غير محدد'}\n"
@@ -174,7 +178,7 @@ async def dispatch_order_to_group(context, order_id, user, draft, player_id, pay
         else:
             await context.bot.send_message(chat_id=int(group_id), text=caption, reply_markup=keyboard)
         # The group keyboard is visible to everyone, so send the detach control privately to the owner only.
-        if ADMIN_ID and str(group_id) != str(ADMIN_ID):
+        if is_work_group and ADMIN_ID and str(group_id) != str(ADMIN_ID):
             try:
                 await context.bot.send_message(
                     chat_id=int(ADMIN_ID),
