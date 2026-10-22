@@ -161,7 +161,7 @@ async def dispatch_order_to_group(context, order_id, user, draft, player_id, pay
     if not group_id:
         logger.warning("No order group/admin configured for order %s", order_id)
         return
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{order_id}")]])
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{order_id}")], [InlineKeyboardButton("🔌 عزل الطلبات عن المجموعة", callback_data=f"order_detach:{game_id}")]])
     caption = (f"🆕 طلب جديد #{order_id}\n\n👤 الزبون: {user.full_name}\n🆔 Telegram ID: {user.id}\n"
                f"🎮 الخدمة: {draft.get('game_name','غير محددة')}\n📦 العرض: {draft.get('offer_name','غير محدد')}\n"
                f"📋 معلومات الشحن: {player_id or 'لا تتطلب'}\n📱 الجهاز: {draft.get('platform') or 'غير محدد'}\n"
@@ -2240,6 +2240,66 @@ async def callback_handler(update, context):
         return
     await query.answer()
 
+    # Normalize group-order actions before entering the main callback routing chain.
+    if data.startswith("order_finish:") or data.startswith("order_cancel:"):
+        is_cancel = data.startswith("order_cancel:")
+        try:
+            action_order_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("طلب غير صالح.", show_alert=True)
+            return
+        if query.message.chat.type not in ("group", "supergroup"):
+            await query.answer("هذا الإجراء متاح من قروب العمل فقط.", show_alert=True)
+            return
+        with db() as conn:
+            claimed_row = conn.execute("SELECT claimed_by, status FROM orders WHERE id=?", (action_order_id,)).fetchone()
+            if not claimed_row:
+                await query.answer("الطلب غير موجود.", show_alert=True)
+                return
+            if int(claimed_row["claimed_by"] or 0) != user_id:
+                await query.answer("فقط العضو الذي استلم الطلب يمكنه تنفيذ هذا الإجراء.", show_alert=True)
+                return
+            if claimed_row["status"] in ("completed", "rejected"):
+                await query.answer("تمت معالجة الطلب مسبقًا.", show_alert=True)
+                return
+        data = f"status:{action_order_id}:{'rejected' if is_cancel else 'completed'}"
+        query.data = data
+
+    if data.startswith("order_release:"):
+        try:
+            release_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("طلب غير صالح.", show_alert=True); return
+        with db() as conn:
+            r = conn.execute("SELECT claimed_by,status FROM orders WHERE id=?", (release_id,)).fetchone()
+            if not r or int(r["claimed_by"] or 0) != user_id:
+                await query.answer("فقط مستلم الطلب يمكنه التنازل عنه.", show_alert=True); return
+            if r["status"] in ("completed", "rejected"):
+                await query.answer("الطلب مغلق بالفعل.", show_alert=True); return
+            conn.execute("UPDATE orders SET claimed_by=NULL, claimed_name=NULL, status='pending' WHERE id=?", (release_id,))
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{release_id}")]])
+        try:
+            await query.edit_message_reply_markup(reply_markup=kb)
+            await query.message.reply_text(f"🔄 تم التنازل عن الطلب #{release_id} وأصبح متاحًا للاستلام من عضو آخر.")
+        except Exception: pass
+        await query.answer("تم التنازل عن الطلب.")
+        return
+
+    if data.startswith("order_detach:"):
+        if not is_admin(user_id):
+            await query.answer("هذا الزر خاص بمالك المتجر.", show_alert=True); return
+        try:
+            detach_game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("اللعبة غير صالحة.", show_alert=True); return
+        with db() as conn:
+            game = conn.execute("SELECT name FROM games WHERE id=?", (detach_game_id,)).fetchone()
+            conn.execute("DELETE FROM settings WHERE key=?", (f"order_group_{detach_game_id}",))
+        await query.answer("تم عزل المجموعة عن الطلبات الجديدة.", show_alert=True)
+        try: await query.message.reply_text(f"🔌 تم فصل استقبال الطلبات الجديدة للعبة {game['name'] if game else detach_game_id} عن هذه المجموعة.")
+        except Exception: pass
+        return
+
     if data == "price_menu_offers":
         if not is_admin(user_id):
             await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
@@ -2425,7 +2485,7 @@ async def callback_handler(update, context):
         if query.message.chat.type not in ("group", "supergroup"):
             await query.answer("استلام الطلب متاح من قروب العمل فقط.", show_alert=True); return
         with db() as conn:
-            row = conn.execute("SELECT claimed_by, status FROM orders WHERE id=?", (order_id,)).fetchone()
+            row = conn.execute("SELECT claimed_by, status, game_id FROM orders WHERE id=?", (order_id,)).fetchone()
             if not row:
                 await query.answer("الطلب غير موجود.", show_alert=True); return
             if row["status"] in ("completed", "rejected"):
@@ -2439,26 +2499,12 @@ async def callback_handler(update, context):
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ إتمام الطلب", callback_data=f"order_finish:{order_id}"),
             InlineKeyboardButton("❌ إلغاء الطلب", callback_data=f"order_cancel:{order_id}"),
-        ]])
+        ], [InlineKeyboardButton("🔄 تنازل عن الطلب", callback_data=f"order_release:{order_id}")]])
         try: await query.edit_message_reply_markup(reply_markup=keyboard)
         except Exception: pass
         await query.answer("تم استلام الطلب باسمك!")
         await query.message.reply_text(f"📥 الطلب #{order_id} استلمه: {query.from_user.full_name}")
         return
-    if data.startswith("order_finish:") or data.startswith("order_cancel:"):
-        is_cancel = data.startswith("order_cancel:")
-        try: order_id = int(data.split(":", 1)[1])
-        except (ValueError, IndexError):
-            await query.answer("طلب غير صالح.", show_alert=True); return
-        with db() as conn:
-            row = conn.execute("SELECT claimed_by, status FROM orders WHERE id=?", (order_id,)).fetchone()
-            if not row or int(row["claimed_by"] or 0) != user_id:
-                await query.answer("فقط العضو الذي استلم الطلب يمكنه تنفيذ هذا الإجراء.", show_alert=True); return
-            if row["status"] in ("completed", "rejected"):
-                await query.answer("تمت معالجة الطلب مسبقًا.", show_alert=True); return
-        # Reuse the existing status processing path: it notifies the customer and applies refunds/rewards.
-        query.data = f"status:{order_id}:{'rejected' if is_cancel else 'completed'}"
-        data = query.data
 
     # التحقق من صلاحيات الإدارة
     admin_actions = (
