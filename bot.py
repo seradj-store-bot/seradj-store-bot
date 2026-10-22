@@ -164,10 +164,10 @@ async def dispatch_order_to_group(context, order_id, user, draft, player_id, pay
         logger.warning("No order group/admin configured for order %s", order_id)
         return
 
-    caption = (f"🆕 طلب جديد #{order_id}\\n\\n👤 الزبون: {user.full_name}\\n🆔 Telegram ID: {user.id}\\n"
-               f"🎮 الخدمة: {draft.get('game_name','غير محددة')}\\n📦 العرض: {draft.get('offer_name','غير محدد')}\\n"
-               f"📋 معلومات الشحن: {player_id or 'لا تتطلب'}\\n📱 الجهاز: {draft.get('platform') or 'غير محدد'}\\n"
-               f"💰 السعر: {price} DA\\n🎁 النقاط المستخدمة: {points_used}\\n💳 الدفع: {payment_method}\\n📌 الحالة: قيد الانتظار")
+    caption = (f"🆕 طلب جديد #{order_id}\n\n👤 الزبون: {user.full_name}\n🆔 Telegram ID: {user.id}\n"
+               f"🎮 الخدمة: {draft.get('game_name','غير محددة')}\n📦 العرض: {draft.get('offer_name','غير محدد')}\n"
+               f"📋 معلومات الشحن: {player_id or 'لا تتطلب'}\n📱 الجهاز: {draft.get('platform') or 'غير محدد'}\n"
+               f"💰 السعر: {price} DA\n🎁 النقاط المستخدمة: {points_used}\n💳 الدفع: {payment_method}\n📌 الحالة: قيد الانتظار")
 
     if is_work_group:
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{order_id}")]])
