@@ -107,6 +107,7 @@ MAIN_MENU = [
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
     ["🛍️ المتجر"],
+    ["🧪 الطلب التجريبي"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
     ["➕ طلب لعبة غير موجودة"],
@@ -118,6 +119,7 @@ ADMIN_MAIN_MENU = [
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
     ["🛍️ المتجر"],
+    ["🧪 الطلب التجريبي"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
 ]
@@ -2250,6 +2252,32 @@ async def callback_handler(update, context):
         return
     await query.answer()
 
+    # Safe demo orders: no charge, no real fulfillment, clearly labeled as test.
+    if data == "test_order_abort":
+        await query.edit_message_text("تم إلغاء الطلب التجريبي.")
+        return
+    if data.startswith("test_order_game:"):
+        try:
+            test_game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.edit_message_text("اختيار لعبة غير صالح.")
+            return
+        if not is_admin(user_id):
+            await query.answer("الطلب التجريبي متاح لمالك المتجر فقط.", show_alert=True)
+            return
+        with db() as conn:
+            game = conn.execute("SELECT id,name FROM games WHERE id=? AND active=1", (test_game_id,)).fetchone()
+            if not game:
+                await query.edit_message_text("اللعبة غير موجودة أو غير مفعّلة.")
+                return
+            cur = conn.execute("INSERT INTO orders (user_id, game_id, offer_id, player_id, payment_method, price, status, created_at, points_awarded, points_used, platform, credit_charged, credit_refunded) VALUES (?, ?, NULL, ?, ?, 0, 'pending', ?, 0, 0, '', 0, 0)", (user_id, test_game_id, '[طلب تجريبي - لا يوجد شحن حقيقي]', 'طلب تجريبي (بدون دفع)', now_text()))
+            test_order_id = cur.lastrowid
+        demo_user = query.from_user
+        draft = {"game_id": test_game_id, "game_name": game["name"], "offer_name": "طلب تجريبي", "platform": "تجريبي"}
+        await dispatch_order_to_group(context, test_order_id, demo_user, draft, "طلب تجريبي - لا تشحن", "طلب تجريبي (بدون دفع)", 0, 0)
+        await query.edit_message_text(f"🧪 تم إنشاء الطلب التجريبي #{test_order_id} للعبة {game['name']}، بلا خصم رصيد وبلا شحن حقيقي.")
+        return
+
     # Normalize group-order actions before entering the main callback routing chain.
     group_order_terminal_action = False
     if data.startswith("order_finish:") or data.startswith("order_cancel:"):
@@ -2274,8 +2302,9 @@ async def callback_handler(update, context):
                 await query.answer("تمت معالجة الطلب مسبقًا.", show_alert=True)
                 return
         group_order_terminal_action = True
+        # Route through the existing status processor, preserving the callback message
+        # and explicit group-action flag for the final group-message update.
         data = f"status:{action_order_id}:{'rejected' if is_cancel else 'completed'}"
-        query.data = data
 
     if data.startswith("order_release:"):
         try:
@@ -4004,6 +4033,17 @@ async def text_handler(update, context):
 
     if text in ("🛠️ لوحة التحكم", "لوحة التحكم", "الإدارة"):
         await show_admin_panel(update, context)
+        return
+
+    if text == "🧪 الطلب التجريبي":
+        with db() as conn:
+            games = conn.execute("SELECT id, name, emoji FROM games WHERE active=1 ORDER BY id").fetchall()
+        if not games:
+            await message.reply_text("ما كاين حتى لعبة مفعّلة للتجربة.")
+            return
+        rows = [[InlineKeyboardButton(f"{g['emoji'] or '🎮'} {g['name']}", callback_data=f"test_order_game:{g['id']}")] for g in games]
+        rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="test_order_abort")])
+        await message.reply_text("🧪 اختار اللعبة لإنشاء طلب تجريبي. لن يتم خصم أي رصيد ولن يتم تنفيذ شحن حقيقي:", reply_markup=InlineKeyboardMarkup(rows))
         return
 
     # إلغاء العملية الحالية
