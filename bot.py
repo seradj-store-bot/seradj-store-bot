@@ -152,6 +152,58 @@ def get_setting(key, default=""):
     return row["value"] if row else default
 
 
+async def dispatch_order_to_group(context, order_id, user, draft, player_id, payment_method, price, points_used=0, photo=None):
+    """Send an order to the group configured for its game, falling back to admin DM."""
+    game_id = int(draft.get("game_id") or 0)
+    group_id = get_setting(f"order_group_{game_id}", "").strip()
+    if not group_id:
+        group_id = str(ADMIN_ID) if ADMIN_ID else ""
+    if not group_id:
+        logger.warning("No order group/admin configured for order %s", order_id)
+        return
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{order_id}")]])
+    caption = (f"🆕 طلب جديد #{order_id}\n\n👤 الزبون: {user.full_name}\n🆔 Telegram ID: {user.id}\n"
+               f"🎮 الخدمة: {draft.get('game_name','غير محددة')}\n📦 العرض: {draft.get('offer_name','غير محدد')}\n"
+               f"📋 معلومات الشحن: {player_id or 'لا تتطلب'}\n📱 الجهاز: {draft.get('platform') or 'غير محدد'}\n"
+               f"💰 السعر: {price} DA\n🎁 النقاط المستخدمة: {points_used}\n💳 الدفع: {payment_method}\n📌 الحالة: قيد الانتظار")
+    try:
+        if photo:
+            await context.bot.send_photo(chat_id=int(group_id), photo=photo.file_id, caption=caption, reply_markup=keyboard)
+        else:
+            await context.bot.send_message(chat_id=int(group_id), text=caption, reply_markup=keyboard)
+    except Exception:
+        logger.exception("Failed dispatching order %s to group %s", order_id, group_id)
+
+async def set_order_group_command(update, context):
+    """In a group, admin runs /setordergroup GAME_ID to route that game's orders here."""
+    if not is_admin(update.effective_user.id):
+        await update.effective_message.reply_text("⛔ الأمر خاص بمالك المتجر.")
+        return
+    chat = update.effective_chat
+    if not chat or chat.type not in ("group", "supergroup"):
+        await update.effective_message.reply_text("استعمل هذا الأمر داخل القروب الذي تريد استقبال الطلبات فيه: /setordergroup GAME_ID")
+        return
+    if not context.args or not context.args[0].isdigit():
+        await update.effective_message.reply_text("استعمال الأمر: /setordergroup GAME_ID\nمثال: /setordergroup 1")
+        return
+    game_id = int(context.args[0])
+    with db() as conn:
+        game = conn.execute("SELECT name FROM games WHERE id=?", (game_id,)).fetchone()
+        if not game:
+            await update.effective_message.reply_text("❌ ما لقيتش لعبة بهذا الرقم. شوف أرقام الألعاب بالأمر /ordergames في الخاص.")
+            return
+        conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (f"order_group_{game_id}", str(chat.id)))
+    await update.effective_message.reply_text(f"✅ تم ربط {game['name']} بهذا القروب. الطلبات الجديدة لهذه اللعبة ستصل هنا.")
+
+async def order_games_command(update, context):
+    if not is_admin(update.effective_user.id):
+        return
+    with db() as conn:
+        rows = conn.execute("SELECT id,name FROM games WHERE active=1 ORDER BY id").fetchall()
+    text = "🎮 أرقام الألعاب لربط القروبات:\n" + ("\n".join(f"{r['id']} — {r['name']}" for r in rows) if rows else "لا توجد ألعاب مفعلة.")
+    await update.effective_message.reply_text(text + "\n\nداخل القروب اكتب: /setordergroup رقم_اللعبة")
+
+
 def set_setting(key, value):
     with db() as conn:
         conn.execute(
@@ -379,6 +431,12 @@ def init_db():
             archived_at TEXT DEFAULT ''
         );
         """)
+        # Safe migrations for group order claiming; preserves existing orders.
+        for column, definition in (("claimed_by", "INTEGER DEFAULT 0"), ("claimed_name", "TEXT DEFAULT ''")):
+            try:
+                conn.execute(f"ALTER TABLE orders ADD COLUMN {column} {definition}")
+            except sqlite3.OperationalError:
+                pass
 
         # Safe migrations for older databases.
         migrations = {
@@ -681,7 +739,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     with db() as conn:
-        cursor = conn.execute(
+        conn.execute(
             """
             INSERT OR IGNORE INTO users
             (user_id, username, full_name, created_at)
@@ -694,31 +752,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 now_text(),
             ),
         )
-        is_new_user = cursor.rowcount == 1
-        # Keep profile details up to date when an existing user returns.
-        conn.execute(
-            "UPDATE users SET username=?, full_name=? WHERE user_id=?",
-            (user.username or "", user.full_name or "", user.id),
-        )
-
-    # Notify the admin only once, on the user's first /start registration.
-    if is_new_user and ADMIN_ID:
-        username = f"@{user.username}" if user.username else "غير متوفر"
-        language = getattr(user, "language_code", None) or "غير معروفة"
-        registered_at = datetime.now(STORE_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        registration_message = (
-            f"🆕 تسجيل مستخدم جديد في {STORE_NAME}\n\n"
-            f"👤 الاسم: {user.full_name or 'غير متوفر'}\n"
-            f"🔗 Username: {username}\n"
-            f"🆔 Telegram ID: {user.id}\n"
-            f"🌐 اللغة: {language}\n"
-            f"🤖 بوت: {'نعم' if user.is_bot else 'لا'}\n"
-            f"📅 تاريخ التسجيل: {registered_at}"
-        )
-        try:
-            await context.bot.send_message(chat_id=ADMIN_ID, text=registration_message)
-        except Exception:
-            logger.exception("تعذر إرسال إشعار تسجيل مستخدم جديد للإدارة")
 
     # While the store is closed, customers cannot enter or browse the bot.
     if not is_admin(user.id) and not store_is_open():
@@ -1229,13 +1262,7 @@ async def create_wallet_order(message, context, player_id, user=None):
         [InlineKeyboardButton("🔄 قيد التنفيذ", callback_data=f"status:{order_id}:processing"), InlineKeyboardButton("✅ مكتمل", callback_data=f"status:{order_id}:completed")],
         [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"status:{order_id}:rejected")],
     ])
-    if ADMIN_ID:
-        try:
-            await context.bot.send_message(ADMIN_ID,
-                f"🆕 طلب جديد #{order_id} (محفظة)\n\nالزبون: {user.full_name}\nTelegram ID: {user.id}\nالخدمة: {draft['game_name']}\nالعرض: {draft['offer_name']}\nمعلومات الشحن: {player_id}\nالجهاز: {draft.get('platform') or 'غير محدد'}\nالسعر بعد الخصم: {price} DA\nالنقاط المستخدمة: {points_used}\nالدفع: رصيد المحفظة\nالحالة: قيد الانتظار",
-                reply_markup=keyboard)
-        except Exception:
-            logger.exception("تعذر إرسال طلب المحفظة للإدارة")
+    await dispatch_order_to_group(context, order_id, user, draft, player_id, "رصيد المحفظة", price, points_used)
     context.user_data.pop("order_draft", None)
     context.user_data.pop("pending_player_id", None)
     context.user_data.pop("awaiting_player_id", None)
@@ -1518,39 +1545,8 @@ async def photo_handler(update, context):
         ],
     ])
 
-    # إرسال صورة الوصل مع معلومات الطلب إلى الأدمن
-    if ADMIN_ID:
-        try:
-            await context.bot.send_photo(
-                chat_id=ADMIN_ID,
-                photo=photo.file_id,
-                caption=(
-                    f"🆕 طلب جديد #{order_id}\n\n"
-                    f"👤 الزبون: {user.full_name}\n"
-                    f"🆔 Telegram ID: {user.id}\n"
-                    f"🎮 الخدمة: {draft['game_name']}\n"
-                    f"📦 العرض: {draft['offer_name']}\n"
-                    f"📋 معلومات الشحن: {player_id or 'لا تتطلب الخدمة معلومات شحن'}\n"
-                    f"📱 الجهاز: {draft.get('platform') or 'غير محدد'}\n"
-                    f"🎁 النقاط المستخدمة: {draft.get('points_used', 0)}\n"
-                    f"💳 الدفع: {draft['method']}\n"
-                    f"💰 السعر: {draft['price']} DA\n"
-                    f"🧾 وصل الدفع: مرفق أعلاه\n"
-                    f"📌 الحالة: قيد الانتظار\n"
-                    f"🕒 الوقت: {now_text()}"
-                ),
-                reply_markup=keyboard,
-            )
-        except Exception as e:
-            logger.exception(
-                "تعذر إرسال وصل الدفع إلى الإدارة"
-            )
-            await message.reply_text(
-                "❌ تعذر إرسال وصل الدفع إلى الإدارة.\n"
-                f"سبب الخطأ: {str(e)[:300]}\n\n"
-                "لم يتم تأكيد الطلب. تواصل مع الإدارة."
-            )
-            return
+    # Send the order to its configured product group (or admin fallback).
+    await dispatch_order_to_group(context, order_id, user, draft, player_id, draft["method"], draft["price"], int(draft.get("points_used", 0)), photo=photo)
 
     # إنهاء حالة الطلب المؤقتة
     context.user_data.pop("order_draft", None)
@@ -2421,6 +2417,43 @@ async def callback_handler(update, context):
         except Exception: pass
         return
 
+    # Group members can claim a pending order; only the first claim succeeds.
+    if data.startswith("order_claim:"):
+        try: order_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("طلب غير صالح.", show_alert=True); return
+        if query.message.chat.type not in ("group", "supergroup"):
+            await query.answer("استلام الطلب متاح من قروب العمل فقط.", show_alert=True); return
+        with db() as conn:
+            row = conn.execute("SELECT claimed_by, status FROM orders WHERE id=?", (order_id,)).fetchone()
+            if not row:
+                await query.answer("الطلب غير موجود.", show_alert=True); return
+            if row["status"] in ("completed", "rejected"):
+                await query.answer("الطلب مغلق بالفعل.", show_alert=True); return
+            if int(row["claimed_by"] or 0):
+                await query.answer("هذا الطلب استلمه عضو آخر بالفعل.", show_alert=True); return
+            conn.execute("UPDATE orders SET claimed_by=?, claimed_name=?, status='processing' WHERE id=? AND COALESCE(claimed_by,0)=0", (user_id, query.from_user.full_name, order_id))
+            check = conn.execute("SELECT claimed_by FROM orders WHERE id=?", (order_id,)).fetchone()
+            if not check or int(check["claimed_by"] or 0) != user_id:
+                await query.answer("سبقك عضو آخر واستلم الطلب.", show_alert=True); return
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ إتمام الطلب", callback_data=f"order_finish:{order_id}")]])
+        try: await query.edit_message_reply_markup(reply_markup=keyboard)
+        except Exception: pass
+        await query.answer("تم استلام الطلب باسمك!")
+        await query.message.reply_text(f"📥 الطلب #{order_id} استلمه: {query.from_user.full_name}")
+        return
+    if data.startswith("order_finish:"):
+        try: order_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("طلب غير صالح.", show_alert=True); return
+        with db() as conn:
+            row = conn.execute("SELECT claimed_by, status FROM orders WHERE id=?", (order_id,)).fetchone()
+            if not row or int(row["claimed_by"] or 0) != user_id:
+                await query.answer("فقط العضو الذي استلم الطلب يمكنه إتمامه.", show_alert=True); return
+        # Reuse the existing order-status processing path to notify the customer and apply rewards.
+        query.data = f"status:{order_id}:completed"
+        data = query.data
+
     # التحقق من صلاحيات الإدارة
     admin_actions = (
         "adm_",
@@ -2457,8 +2490,19 @@ async def callback_handler(update, context):
     )
 
     if data.startswith(admin_actions) and not is_admin(user_id):
-        await query.answer("⛔ غير مسموح لك.", show_alert=True)
-        return
+        # Allow only the member who claimed this group order to finish it.
+        group_finish_allowed = False
+        if data.startswith("status:") and data.endswith(":completed") and query.message.chat.type in ("group", "supergroup"):
+            try:
+                finish_order_id = int(data.split(":")[1])
+                with db() as conn:
+                    claimed = conn.execute("SELECT claimed_by FROM orders WHERE id=?", (finish_order_id,)).fetchone()
+                group_finish_allowed = bool(claimed and int(claimed["claimed_by"] or 0) == user_id)
+            except Exception:
+                group_finish_allowed = False
+        if not group_finish_allowed:
+            await query.answer("⛔ غير مسموح لك.", show_alert=True)
+            return
 
     if data.startswith("offer_price_one:"):
         parts = data.split(":")
@@ -5444,6 +5488,8 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(CommandHandler("ordergames", order_games_command))
+    app.add_handler(CommandHandler("setordergroup", set_order_group_command))
 
     # أزرار Inline
     app.add_handler(CallbackQueryHandler(callback_handler))
