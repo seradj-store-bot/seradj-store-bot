@@ -218,6 +218,7 @@ MAIN_MENU = [
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
     ["🛍️ المتجر"],
+    ["📱 الفليكسي"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
     ["➕ طلب لعبة غير موجودة"],
@@ -229,6 +230,7 @@ ADMIN_MAIN_MENU = [
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
     ["🛍️ المتجر"],
+    ["📱 الفليكسي"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
 ]
@@ -2392,6 +2394,42 @@ async def callback_handler(update, context):
         await query.answer(store_closed_notice(), show_alert=True)
         return
     await query.answer()
+
+    if data == "flexy_menu_back":
+        await query.message.reply_text("القائمة الرئيسية:", reply_markup=main_keyboard(user_id))
+        return
+    if data in ("flexy_wallet_show", "flexy_wallet_history"):
+        with db() as conn:
+            row = conn.execute("SELECT balance FROM flexy_wallets WHERE user_id=?", (user_id,)).fetchone()
+            txs = conn.execute("SELECT amount,event_id,created_at,balance_after FROM flexy_wallet_transactions WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,)).fetchall()
+        balance = int(row["balance"] or 0) if row else 0
+        lines = [f"💰 رصيد مكافآت الفليكسي: {balance} DA", "⚠️ هذا الرصيد منفصل عن محفظة المتجر ولا يُستعمل للشراء داخل البوت."]
+        if data == "flexy_wallet_history":
+            lines += ["", "📜 آخر العمليات:"]
+            lines += [f"+{int(t['amount'])} DA — SMS #{t['event_id']} — {t['created_at']} — الرصيد بعد العملية: {int(t['balance_after'])} DA" for t in txs]
+            if not txs: lines.append("لا توجد عمليات مسجلة بعد.")
+        await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للفليكسي", callback_data="flexy_menu_open")]]))
+        return
+    if data == "flexy_reward_help":
+        await query.edit_message_text("🎁 لاستلام مكافأة الفليكسي، افتح مجموعة تلغرام المخصصة لرسائل SMS واضغط زر «💰 استلام الرصيد» أسفل الرسالة المؤهلة. أول شخص يستلمها يحصل على المكافأة. لا يمكن استلام الرسالة نفسها مرتين.\n\n⚠️ الرصيد هنا مكافآت منفصلة عن محفظة المتجر.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للفليكسي", callback_data="flexy_menu_open")]]))
+        return
+    if data == "flexy_menu_open":
+        buttons = [
+            [InlineKeyboardButton("💰 رصيد مكافآت الفليكسي", callback_data="flexy_wallet_show")],
+            [InlineKeyboardButton("📜 سجل المكافآت", callback_data="flexy_wallet_history")],
+            [InlineKeyboardButton("ℹ️ كيفاش نستلم المكافأة؟", callback_data="flexy_reward_help")],
+        ]
+        if is_admin(user_id): buttons.append([InlineKeyboardButton("📊 إحصائيات الفليكسي (الإدارة)", callback_data="flexy_stats")])
+        buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="flexy_menu_back")])
+        await query.edit_message_text("📱 قسم الفليكسي\nاختار الخدمة لي تحتاجها:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+    if data == "flexy_stats":
+        if not is_admin(user_id):
+            await query.answer("⛔ الإحصائيات خاصة بالإدارة.", show_alert=True); return
+        with db() as conn:
+            stats = conn.execute("SELECT COUNT(*) AS n, COALESCE(SUM(source_amount),0) AS source_total, COALESCE(SUM(CASE WHEN COALESCE(claimed_by,0)<>0 THEN reward_amount ELSE 0 END),0) AS claimed_total, COALESCE(SUM(CASE WHEN COALESCE(claimed_by,0)=0 THEN reward_amount ELSE 0 END),0) AS pending_total FROM flexy_sms_events").fetchone()
+        await query.edit_message_text(f"📊 إحصائيات الفليكسي\n\n📩 عدد رسائل SMS: {int(stats['n'] or 0)}\n💳 مجموع مبالغ الشحن المستخرجة من الرسائل: {int(stats['source_total'] or 0)} DA\n✅ مجموع المكافآت المستلمة: {int(stats['claimed_total'] or 0)} DA\n⏳ مجموع المكافآت غير المستلمة: {int(stats['pending_total'] or 0)} DA", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للفليكسي", callback_data="flexy_menu_open")]]))
+        return
 
     if data.startswith("flexysms_claim:"):
         try: event_id = int(data.split(":", 1)[1])
@@ -5476,6 +5514,18 @@ async def text_handler(update, context):
 
     if text == "📦 طلباتي":
         await show_my_orders(update, context)
+        return
+
+    if text == "📱 الفليكسي":
+        buttons = [
+            [InlineKeyboardButton("💰 رصيد مكافآت الفليكسي", callback_data="flexy_wallet_show")],
+            [InlineKeyboardButton("📜 سجل المكافآت", callback_data="flexy_wallet_history")],
+            [InlineKeyboardButton("ℹ️ كيفاش نستلم المكافأة؟", callback_data="flexy_reward_help")],
+        ]
+        if is_admin(user_id):
+            buttons.append([InlineKeyboardButton("📊 إحصائيات الفليكسي (الإدارة)", callback_data="flexy_stats")])
+        buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="flexy_menu_back")])
+        await message.reply_text("📱 قسم الفليكسي\nاختار الخدمة لي تحتاجها:", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
     if text == "👤 حسابي":
