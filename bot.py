@@ -1,4 +1,5 @@
 import re
+import uuid
 import os
 import html
 import sqlite3
@@ -150,7 +151,11 @@ async def start_sms_bridge(application):
                 if not body:
                     status, payload = 400, {"error": "body required"}
                 else:
-                    fingerprint = hashlib.sha256((sender + "\0" + body + "\0" + stamp).encode()).hexdigest()
+                    # Do not deduplicate by amount or message text: multiple legitimate SMS can
+                    # have the same amount/body. Use the source timestamp when supplied; if it
+                    # is missing, give each forwarded SMS its own fingerprint.
+                    fingerprint_source = (sender + "\0" + body + "\0" + stamp) if stamp else (sender + "\0" + body + "\0" + str(uuid.uuid4()))
+                    fingerprint = hashlib.sha256(fingerprint_source.encode()).hexdigest()
                     source_amount, reward = flexy_sms_reward(body)
                     with db() as conn:
                         cur = conn.execute("INSERT OR IGNORE INTO flexy_sms_events(fingerprint,sender,body,source_amount,reward_amount,created_at) VALUES(?,?,?,?,?,?)", (fingerprint,sender,body,source_amount,reward,now_text()))
@@ -237,6 +242,7 @@ ADMIN_MAIN_MENU = [
 
 ADMIN_PANEL_MENU = [
 ["🧪 الطلب التجريبي"],
+["📩 إعدادات SMS جيزي"],
 ["➕ إضافة", "🎮 إدارة الألعاب"],
 ["✨ إدارة إيموجيات Premium", "💰 تعديل الأسعار"],
 ["📂 إدارة البوت", "📨 إرسال إشعار"],
@@ -5661,7 +5667,7 @@ async def text_handler(update, context):
             await message.reply_text("🛍️ إدارة الألعاب والتطبيقات:", reply_markup=ReplyKeyboardMarkup([["🎮 الألعاب", "📱 التطبيقات"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
             return
         if text == "📂 إدارة البوت":
-            await message.reply_text("📂 إدارة البوت:", reply_markup=ReplyKeyboardMarkup([["📋 كل الطلبات", "🗑️ حذف جميع الطلبات"], ["💳 إعدادات الدفع", "📊 الإحصائيات"], ["📝 إدارة النصوص", "📇 إعدادات التواصل"], ["🕒 أوقات المتجر", "🧹 تصفير الحسابات والطلبات"], ["🔄 تحويل زبون / تاجر"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
+            await message.reply_text("📂 إدارة البوت:", reply_markup=ReplyKeyboardMarkup([["📋 كل الطلبات", "🗑️ حذف جميع الطلبات"], ["💳 إعدادات الدفع", "📊 الإحصائيات"], ["📩 إعدادات SMS جيزي", "📝 إدارة النصوص"], ["📇 إعدادات التواصل"], ["🕒 أوقات المتجر", "🧹 تصفير الحسابات والطلبات"], ["🔄 تحويل زبون / تاجر"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
             return
         if text == "🕒 أوقات المتجر":
             enabled = get_setting("store_hours_enabled", "0") == "1"
