@@ -124,7 +124,8 @@ async def start_sms_bridge(application):
         logger.warning("SMS bridge disabled: SMS_BRIDGE_TOKEN is not configured")
         return
     host = os.getenv("SMS_BRIDGE_HOST", "0.0.0.0")
-    port = int(os.getenv("SMS_BRIDGE_PORT", "8765"))
+    # FadeHost exposes the app on PORT; prefer it over the optional bridge-specific port.
+    port = int(os.getenv("PORT", os.getenv("SMS_BRIDGE_PORT", "8080")))
     async def handle(reader, writer):
         try:
             header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=10)
