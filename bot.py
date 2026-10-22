@@ -574,6 +574,11 @@ def init_db():
             balance_after INTEGER NOT NULL, created_at TEXT NOT NULL,
             UNIQUE(event_id)
         );
+        CREATE TABLE IF NOT EXISTS flexy_wallet_adjustments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+            old_balance INTEGER NOT NULL DEFAULT 0, new_balance INTEGER NOT NULL DEFAULT 0,
+            admin_id INTEGER NOT NULL, note TEXT DEFAULT '', created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS monthly_stats_archive (
             month TEXT PRIMARY KEY,
             users_count INTEGER DEFAULT 0,
@@ -2419,10 +2424,68 @@ async def callback_handler(update, context):
             [InlineKeyboardButton("📜 سجل المكافآت", callback_data="flexy_wallet_history")],
             [InlineKeyboardButton("ℹ️ كيفاش نستلم المكافأة؟", callback_data="flexy_reward_help")],
         ]
-        if is_admin(user_id): buttons.append([InlineKeyboardButton("📊 إحصائيات الفليكسي (الإدارة)", callback_data="flexy_stats")])
+        if is_admin(user_id):
+            buttons.append([InlineKeyboardButton("📊 إحصائيات الفليكسي (الإدارة)", callback_data="flexy_stats")])
+            buttons.append([InlineKeyboardButton("👥 أرصدة الأعضاء / تصفير الرصيد", callback_data="flexy_admin_balances")])
         buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="flexy_menu_back")])
         await query.edit_message_text("📱 قسم الفليكسي\nاختار الخدمة لي تحتاجها:", reply_markup=InlineKeyboardMarkup(buttons))
         return
+    if data == "flexy_admin_balances":
+        if not is_admin(user_id):
+            await query.answer("⛔ هذه الخاصية خاصة بالإدارة.", show_alert=True); return
+        with db() as conn:
+            rows = conn.execute("""SELECT w.user_id, w.balance, u.full_name, u.username
+                FROM flexy_wallets w LEFT JOIN users u ON u.user_id=w.user_id
+                ORDER BY w.balance DESC, w.user_id ASC LIMIT 50""").fetchall()
+        buttons = []
+        for r in rows:
+            label = (r["full_name"] or ("@" + r["username"] if r["username"] else str(r["user_id"])))
+            buttons.append([InlineKeyboardButton(f"{label[:28]} | {int(r['balance'] or 0)} DA", callback_data=f"flexy_admin_user:{int(r['user_id'])}")])
+        buttons.append([InlineKeyboardButton("🔙 رجوع للفليكسي", callback_data="flexy_menu_open")])
+        await query.edit_message_text("👥 أرصدة مكافآت الفليكسي (أعلى 50 حسابًا)\nاختار العضو لعرض رصيده أو تصفيره:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data.startswith("flexy_admin_user:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ هذه الخاصية خاصة بالإدارة.", show_alert=True); return
+        try: target_id = int(data.split(":", 1)[1])
+        except ValueError: return
+        with db() as conn:
+            row = conn.execute("SELECT w.balance, u.full_name, u.username FROM flexy_wallets w LEFT JOIN users u ON u.user_id=w.user_id WHERE w.user_id=?", (target_id,)).fetchone()
+        if not row:
+            await query.answer("لا يوجد رصيد مسجل لهذا العضو.", show_alert=True); return
+        label = row["full_name"] or ("@" + row["username"] if row["username"] else "غير معروف")
+        await query.edit_message_text(f"👤 العضو: {label}\n🆔 Telegram ID: {target_id}\n💰 رصيد مكافآت الفليكسي: {int(row['balance'] or 0)} DA\n\nتقدر تصفّر رصيده فقط؛ سجل المكافآت السابق يبقى محفوظًا.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🧹 تصفير الرصيد", callback_data=f"flexy_admin_reset_ask:{target_id}")], [InlineKeyboardButton("🔙 قائمة الأرصدة", callback_data="flexy_admin_balances")]]))
+        return
+
+    if data.startswith("flexy_admin_reset_ask:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ هذه الخاصية خاصة بالإدارة.", show_alert=True); return
+        try: target_id = int(data.split(":", 1)[1])
+        except ValueError: return
+        await query.edit_message_text(f"⚠️ تأكيد تصفير رصيد مكافآت الفليكسي للعضو {target_id}؟\nسيصبح الرصيد 0 DA، ولن يُحذف سجل المكافآت السابق.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ نعم، صفّر الرصيد", callback_data=f"flexy_admin_reset_do:{target_id}"), InlineKeyboardButton("❌ إلغاء", callback_data=f"flexy_admin_user:{target_id}")]]))
+        return
+
+    if data.startswith("flexy_admin_reset_do:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ هذه الخاصية خاصة بالإدارة.", show_alert=True); return
+        try: target_id = int(data.split(":", 1)[1])
+        except ValueError: return
+        with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT balance FROM flexy_wallets WHERE user_id=?", (target_id,)).fetchone()
+            if not row:
+                conn.rollback()
+                await query.answer("لم يتم العثور على محفظة هذا العضو.", show_alert=True); return
+            old_balance = int(row["balance"] or 0)
+            conn.execute("UPDATE flexy_wallets SET balance=0 WHERE user_id=?", (target_id,))
+            conn.execute("INSERT INTO flexy_wallet_adjustments(user_id,old_balance,new_balance,admin_id,note,created_at) VALUES(?,?,?,?,?,?)", (target_id,old_balance,0,user_id,"تصفير يدوي من الإدارة",now_text()))
+            conn.commit()
+        await query.edit_message_text(f"✅ تم تصفير رصيد العضو {target_id}.\nالرصيد السابق: {old_balance} DA\nالرصيد الحالي: 0 DA.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 قائمة الأرصدة", callback_data="flexy_admin_balances")], [InlineKeyboardButton("📱 قسم الفليكسي", callback_data="flexy_menu_open")]]))
+        try: await context.bot.send_message(chat_id=target_id, text="ℹ️ قامت الإدارة بتعديل رصيد مكافآت الفليكسي الخاص بك. إذا كنت تحتاج تفاصيل، تواصل مع الإدارة.")
+        except Exception: pass
+        return
+
     if data == "flexy_stats":
         if not is_admin(user_id):
             await query.answer("⛔ الإحصائيات خاصة بالإدارة.", show_alert=True); return
@@ -2449,7 +2512,9 @@ async def callback_handler(update, context):
             conn.commit()
         try:
             await query.edit_message_reply_markup(reply_markup=None)
-            await context.bot.send_message(chat_id=event["telegram_chat_id"], text=f"✅ تم استلام مكافأة الرسالة #{event_id} من طرف Telegram ID: {user_id}. قيمة المكافأة: {reward} DA.")
+            claim_name = query.from_user.full_name or "عضو غير معروف"
+            claim_username = f" (@{query.from_user.username})" if query.from_user.username else ""
+            await context.bot.send_message(chat_id=event["telegram_chat_id"], text=f"✅ تم استلام المكافأة!\n👤 الاسم: {claim_name}{claim_username}\n🆔 Telegram ID: {user_id}\n📩 الرسالة: #{event_id}\n💰 قيمة المكافأة: {reward} DA.")
             await context.bot.send_message(chat_id=user_id, text=f"🎉 مبروك! استلمت {reward} DA في محفظة فليكسي الخاصة.\nرصيد فليكسي الخاص: {balance} DA\n⚠️ هذا الرصيد منفصل عن محفظة المتجر ولا يُستعمل للشراء داخل البوت.")
         except Exception: logger.exception("Could not notify SMS claimant %s", user_id)
         return
@@ -5524,6 +5589,7 @@ async def text_handler(update, context):
         ]
         if is_admin(user_id):
             buttons.append([InlineKeyboardButton("📊 إحصائيات الفليكسي (الإدارة)", callback_data="flexy_stats")])
+            buttons.append([InlineKeyboardButton("👥 أرصدة الأعضاء / تصفير الرصيد", callback_data="flexy_admin_balances")])
         buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="flexy_menu_back")])
         await message.reply_text("📱 قسم الفليكسي\nاختار الخدمة لي تحتاجها:", reply_markup=InlineKeyboardMarkup(buttons))
         return
