@@ -161,7 +161,7 @@ async def dispatch_order_to_group(context, order_id, user, draft, player_id, pay
     if not group_id:
         logger.warning("No order group/admin configured for order %s", order_id)
         return
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{order_id}")], [InlineKeyboardButton("🔌 عزل الطلبات عن المجموعة", callback_data=f"order_detach:{game_id}")]])
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{order_id}")]])
     caption = (f"🆕 طلب جديد #{order_id}\n\n👤 الزبون: {user.full_name}\n🆔 Telegram ID: {user.id}\n"
                f"🎮 الخدمة: {draft.get('game_name','غير محددة')}\n📦 العرض: {draft.get('offer_name','غير محدد')}\n"
                f"📋 معلومات الشحن: {player_id or 'لا تتطلب'}\n📱 الجهاز: {draft.get('platform') or 'غير محدد'}\n"
@@ -171,6 +171,16 @@ async def dispatch_order_to_group(context, order_id, user, draft, player_id, pay
             await context.bot.send_photo(chat_id=int(group_id), photo=photo.file_id, caption=caption, reply_markup=keyboard)
         else:
             await context.bot.send_message(chat_id=int(group_id), text=caption, reply_markup=keyboard)
+        # The group keyboard is visible to everyone, so send the detach control privately to the owner only.
+        if ADMIN_ID and str(group_id) != str(ADMIN_ID):
+            try:
+                await context.bot.send_message(
+                    chat_id=int(ADMIN_ID),
+                    text=f"🔌 التحكم في استقبال الطلبات\n🎮 اللعبة: {draft.get('game_name', 'غير محددة')}\n🧾 الطلب: #{order_id}",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔌 عزل الطلبات عن المجموعة", callback_data=f"order_detach:{game_id}")]])
+                )
+            except Exception:
+                logger.exception("Could not send owner-only detach button for game %s", game_id)
     except Exception:
         logger.exception("Failed dispatching order %s to group %s", order_id, group_id)
 
@@ -2241,6 +2251,7 @@ async def callback_handler(update, context):
     await query.answer()
 
     # Normalize group-order actions before entering the main callback routing chain.
+    group_order_terminal_action = False
     if data.startswith("order_finish:") or data.startswith("order_cancel:"):
         is_cancel = data.startswith("order_cancel:")
         try:
@@ -2262,6 +2273,7 @@ async def callback_handler(update, context):
             if claimed_row["status"] in ("completed", "rejected"):
                 await query.answer("تمت معالجة الطلب مسبقًا.", show_alert=True)
                 return
+        group_order_terminal_action = True
         data = f"status:{action_order_id}:{'rejected' if is_cancel else 'completed'}"
         query.data = data
 
@@ -3601,7 +3613,21 @@ async def callback_handler(update, context):
             except Exception:
                 logger.exception("تعذر إرسال إشعار تحديث الطلب إلى الإدارة")
 
-        await admin_order_details(query, order_id)
+        if group_order_terminal_action:
+            try:
+                await query.edit_message_text(
+                    f"{'✅ الطلب مكتمل' if new_status == 'completed' else '❌ الطلب ملغي'} — الطلب #{order_id}"
+                )
+            except Exception:
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                    await query.message.reply_text(
+                        f"{'✅ الطلب مكتمل' if new_status == 'completed' else '❌ الطلب ملغي'} — الطلب #{order_id}"
+                    )
+                except Exception:
+                    logger.exception("Could not update group order message for order %s", order_id)
+        else:
+            await admin_order_details(query, order_id)
 
     # اختيار جهاز الهاتف
     elif data.startswith("platform:"):
