@@ -1,5 +1,4 @@
 import re
-import uuid
 import os
 import html
 import sqlite3
@@ -8,9 +7,6 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import asyncio
-import json
-import hashlib
-
 
 from telegram import (
     Update,
@@ -99,120 +95,8 @@ async def store_schedule_loop(application):
             logger.exception("Store schedule check failed")
         await asyncio.sleep(20)
 
-def flexy_sms_reward(body):
-    """Use extracted DA amount times configured percentage; fall back to fixed reward."""
-    text = str(body or "")
-    numbers = re.findall(r"(?<!\d)(\d{2,7})(?:[.,]\d{1,2})?\s*(?:DA|DZD|دج|DA)?", text, re.I)
-    source_amount = 0
-    if numbers:
-        try:
-            source_amount = int(numbers[-1])
-        except ValueError:
-            source_amount = 0
-    try:
-        ratio = Decimal(get_setting("flexy_sms_ratio", "100"))
-        default = int(get_setting("flexy_sms_default_reward", "100"))
-        reward = int((Decimal(source_amount) * ratio / Decimal(100)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)) if source_amount > 0 else default
-        return source_amount, max(0, reward)
-    except (InvalidOperation, ValueError):
-        return source_amount, 100
-
-
-async def start_sms_bridge(application):
-    """Minimal authenticated HTTP endpoint: POST /sms with JSON {sender, body, timestamp}."""
-    secret = os.getenv("SMS_BRIDGE_TOKEN", "").strip()
-    if not secret:
-        logger.warning("SMS bridge disabled: SMS_BRIDGE_TOKEN is not configured")
-        return
-    host = os.getenv("SMS_BRIDGE_HOST", "0.0.0.0")
-    # FadeHost exposes the app on PORT; prefer it over the optional bridge-specific port.
-    port = int(os.getenv("PORT", os.getenv("SMS_BRIDGE_PORT", "8080")))
-    async def handle(reader, writer):
-        try:
-            header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=10)
-            lines = header.decode("latin1").split("\r\n")
-            method, path, _ = lines[0].split(" ", 2)
-            headers = {}
-            for line in lines[1:]:
-                if ":" in line:
-                    k, v = line.split(":", 1); headers[k.lower().strip()] = v.strip()
-            length = min(int(headers.get("content-length", "0")), 20000)
-            raw = await asyncio.wait_for(reader.readexactly(length), timeout=10) if length else b""
-            status, payload = 200, {"ok": True}
-            if method != "POST" or path != "/sms":
-                status, payload = 404, {"error": "not found"}
-            elif headers.get("authorization", "") != f"Bearer {secret}":
-                status, payload = 401, {"error": "unauthorized"}
-            else:
-                data = json.loads(raw.decode("utf-8"))
-                sender = str(data.get("sender", ""))[:80]
-                body = str(data.get("body", "")).strip()[:4000]
-                stamp = str(data.get("timestamp", ""))[:100]
-                if not body:
-                    status, payload = 400, {"error": "body required"}
-                else:
-                    # Do not deduplicate by amount or message text: multiple legitimate SMS can
-                    # have the same amount/body. Use the source timestamp when supplied; if it
-                    # is missing, give each forwarded SMS its own fingerprint.
-                    fingerprint_source = (sender + "\0" + body + "\0" + stamp) if stamp else (sender + "\0" + body + "\0" + str(uuid.uuid4()))
-                    fingerprint = hashlib.sha256(fingerprint_source.encode()).hexdigest()
-                    source_amount, reward = flexy_sms_reward(body)
-                    with db() as conn:
-                        cur = conn.execute("INSERT OR IGNORE INTO flexy_sms_events(fingerprint,sender,body,source_amount,reward_amount,created_at) VALUES(?,?,?,?,?,?)", (fingerprint,sender,body,source_amount,reward,now_text()))
-                        event_id = cur.lastrowid if cur.rowcount else None
-                    if event_id:
-                        group_id = get_setting("flexy_sms_group_id", "").strip()
-                        if not group_id:
-                            with db() as conn: conn.execute("DELETE FROM flexy_sms_events WHERE id=?", (event_id,))
-                            status, payload = 503, {"error": "SMS group not configured"}
-                        else:
-                            sent = await application.bot.send_message(chat_id=int(group_id), text=f"📩 رسالة تعبئة جيزي جديدة\n\n📱 المرسل: {sender or 'غير معروف'}\n💬 نص الرسالة:\n{body}\n\n💰 مكافأة فليكسي: {reward} DA\n⏳ أول شخص يضغط يستلم المكافأة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💰 استلام الرصيد", callback_data=f"flexysms_claim:{event_id}")]]))
-                            with db() as conn: conn.execute("UPDATE flexy_sms_events SET telegram_chat_id=?,telegram_message_id=? WHERE id=?", (int(group_id),sent.message_id,event_id))
-                    else:
-                        payload = {"ok": True, "duplicate": True}
-            body_out = json.dumps(payload, ensure_ascii=False).encode()
-            reason = {200:"OK",400:"Bad Request",401:"Unauthorized",404:"Not Found",503:"Service Unavailable"}.get(status,"Error")
-            writer.write(f"HTTP/1.1 {status} {reason}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {len(body_out)}\r\nConnection: close\r\n\r\n".encode()+body_out)
-            await writer.drain()
-        except Exception as exc:
-            logger.warning("SMS bridge request failed: %s", exc)
-            try:
-                writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); await writer.drain()
-            except Exception: pass
-        finally:
-            writer.close()
-            try: await writer.wait_closed()
-            except Exception: pass
-    server = await asyncio.start_server(handle, host, port)
-    logger.info("Authenticated SMS bridge listening on %s:%s", host, port)
-    async with server: await server.serve_forever()
-
-
-async def my_flexy_wallet_command(update, context):
-    user_id = update.effective_user.id
-    with db() as conn:
-        row = conn.execute("SELECT balance FROM flexy_wallets WHERE user_id=?", (user_id,)).fetchone()
-        txs = conn.execute("SELECT amount,event_id,created_at,balance_after FROM flexy_wallet_transactions WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,)).fetchall()
-    balance = int(row["balance"] or 0) if row else 0
-    lines = [f"💰 محفظة فليكسي الخاصة: {balance} DA", "⚠️ رصيد منفصل عن محفظة المتجر ولا يمكن استعماله للشراء داخل البوت.", "", "📒 آخر العمليات:"]
-    lines += [f"+{int(t['amount'])} DA — SMS #{t['event_id']} — {t['created_at']} — الرصيد بعد العملية: {int(t['balance_after'])} DA" for t in txs]
-    if not txs: lines.append("لا توجد عمليات مسجلة بعد.")
-    await update.effective_message.reply_text("\n".join(lines))
-
-
-async def set_sms_group_command(update, context):
-    if not is_admin(update.effective_user.id):
-        await update.effective_message.reply_text("⛔ الأمر خاص بمالك المتجر."); return
-    chat = update.effective_chat
-    if not chat or chat.type not in ("group", "supergroup"):
-        await update.effective_message.reply_text("استعمل /setsmsgroup داخل مجموعة تلغرام المستهدفة."); return
-    set_setting("flexy_sms_group_id", str(chat.id))
-    await update.effective_message.reply_text("✅ تم ربط هذه المجموعة باستقبال رسائل SMS جيزي.")
-
-
 async def post_init(application):
     application.create_task(store_schedule_loop(application), name="store-schedule-loop")
-    application.create_task(start_sms_bridge(application), name="flexy-sms-bridge")
 
 CANCEL_WORDS = {
     "إلغاء", "الغاء", "❌ إلغاء", "/cancel"
@@ -223,7 +107,6 @@ MAIN_MENU = [
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
     ["🛍️ المتجر"],
-    ["📱 الفليكسي"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
     ["➕ طلب لعبة غير موجودة"],
@@ -235,14 +118,12 @@ ADMIN_MAIN_MENU = [
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "💰 تعبئة الرصيد"],
     ["🛍️ المتجر"],
-    ["📱 الفليكسي"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
 ]
 
 ADMIN_PANEL_MENU = [
 ["🧪 الطلب التجريبي"],
-["📩 إعدادات SMS جيزي"],
 ["➕ إضافة", "🎮 إدارة الألعاب"],
 ["✨ إدارة إيموجيات Premium", "💰 تعديل الأسعار"],
 ["📂 إدارة البوت", "📨 إرسال إشعار"],
@@ -273,48 +154,46 @@ def get_setting(key, default=""):
 
 
 async def dispatch_order_to_group(context, order_id, user, draft, player_id, payment_method, price, points_used=0, photo=None):
-    """Route new orders to the configured work group or, when detached, to the owner's DM."""
+    """Send an order to the group configured for its game, falling back to admin DM."""
     game_id = int(draft.get("game_id") or 0)
-    route = get_setting(f"order_group_{game_id}", "").strip()
-    detached = route.upper() == "DM"
-    is_work_group = bool(route) and not detached
-    destination = route if is_work_group else (str(ADMIN_ID) if ADMIN_ID else "")
-    if not destination:
+    group_id = get_setting(f"order_group_{game_id}", "").strip()
+    is_work_group = bool(group_id)
+    if not group_id:
+        group_id = str(ADMIN_ID) if ADMIN_ID else ""
+    if not group_id:
         logger.warning("No order group/admin configured for order %s", order_id)
         return
-
+    # In a configured work group, staff can claim the order as before.
+    # When detached, send the owner a private review/complete/cancel keyboard.
+    if is_work_group:
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{order_id}")]])
+    else:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔎 مراجعة الطلب", callback_data=f"order_review:{order_id}")],
+            [InlineKeyboardButton("✅ إتمام الطلب", callback_data=f"order_finish:{order_id}"),
+             InlineKeyboardButton("❌ إلغاء الطلب", callback_data=f"order_cancel:{order_id}")],
+        ])
     caption = (f"🆕 طلب جديد #{order_id}\n\n👤 الزبون: {user.full_name}\n🆔 Telegram ID: {user.id}\n"
                f"🎮 الخدمة: {draft.get('game_name','غير محددة')}\n📦 العرض: {draft.get('offer_name','غير محدد')}\n"
                f"📋 معلومات الشحن: {player_id or 'لا تتطلب'}\n📱 الجهاز: {draft.get('platform') or 'غير محدد'}\n"
                f"💰 السعر: {price} DA\n🎁 النقاط المستخدمة: {points_used}\n💳 الدفع: {payment_method}\n📌 الحالة: قيد الانتظار")
-
-    if is_work_group:
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📥 استلام الطلب", callback_data=f"order_claim:{order_id}")]])
-    elif detached:
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ إتمام الطلب", callback_data=f"order_finish:{order_id}"),
-            InlineKeyboardButton("❌ إلغاء الطلب", callback_data=f"order_cancel:{order_id}"),
-        ], [InlineKeyboardButton("🔗 إعادة الطلبات إلى المجموعة", callback_data=f"order_attach:{game_id}")]])
-    else:
-        keyboard = None
-
     try:
         if photo:
-            await context.bot.send_photo(chat_id=int(destination), photo=photo.file_id, caption=caption, reply_markup=keyboard)
+            await context.bot.send_photo(chat_id=int(group_id), photo=photo.file_id, caption=caption, reply_markup=keyboard)
         else:
-            await context.bot.send_message(chat_id=int(destination), text=caption, reply_markup=keyboard)
-
-        if is_work_group and ADMIN_ID and str(destination) != str(ADMIN_ID):
+            await context.bot.send_message(chat_id=int(group_id), text=caption, reply_markup=keyboard)
+        # The group keyboard is visible to everyone, so send the detach control privately to the owner only.
+        if is_work_group and ADMIN_ID and str(group_id) != str(ADMIN_ID):
             try:
                 await context.bot.send_message(
                     chat_id=int(ADMIN_ID),
-                    text=f"🔌 التحكم في استقبال الطلبات\\n🎮 اللعبة: {draft.get('game_name', 'غير محددة')}\\n🧾 الطلب: #{order_id}",
+                    text=f"🔌 التحكم في استقبال الطلبات\n🎮 اللعبة: {draft.get('game_name', 'غير محددة')}\n🧾 الطلب: #{order_id}",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔌 عزل الطلبات عن المجموعة", callback_data=f"order_detach:{game_id}")]])
                 )
             except Exception:
                 logger.exception("Could not send owner-only detach button for game %s", game_id)
     except Exception:
-        logger.exception("Failed dispatching order %s to destination %s", order_id, destination)
+        logger.exception("Failed dispatching order %s to group %s", order_id, group_id)
 
 async def set_order_group_command(update, context):
     """In a group, admin runs /setordergroup GAME_ID to route that game's orders here."""
@@ -335,7 +214,6 @@ async def set_order_group_command(update, context):
             await update.effective_message.reply_text("❌ ما لقيتش لعبة بهذا الرقم. شوف أرقام الألعاب بالأمر /ordergames في الخاص.")
             return
         conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (f"order_group_{game_id}", str(chat.id)))
-        conn.execute("DELETE FROM settings WHERE key=?", (f"order_group_backup_{game_id}",))
     await update.effective_message.reply_text(f"✅ تم ربط {game['name']} بهذا القروب. الطلبات الجديدة لهذه اللعبة ستصل هنا.")
 
 async def order_games_command(update, context):
@@ -561,29 +439,6 @@ def init_db():
             user_id INTEGER PRIMARY KEY,
             is_open INTEGER DEFAULT 0,
             updated_at TEXT DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS flexy_sms_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fingerprint TEXT NOT NULL UNIQUE,
-            sender TEXT DEFAULT '', body TEXT NOT NULL,
-            source_amount INTEGER DEFAULT 0, reward_amount INTEGER NOT NULL,
-            telegram_chat_id INTEGER DEFAULT 0, telegram_message_id INTEGER DEFAULT 0,
-            claimed_by INTEGER DEFAULT 0, claimed_at TEXT DEFAULT '',
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS flexy_wallets (
-            user_id INTEGER PRIMARY KEY, balance INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS flexy_wallet_transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
-            amount INTEGER NOT NULL, event_id INTEGER NOT NULL,
-            balance_after INTEGER NOT NULL, created_at TEXT NOT NULL,
-            UNIQUE(event_id)
-        );
-        CREATE TABLE IF NOT EXISTS flexy_wallet_adjustments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
-            old_balance INTEGER NOT NULL DEFAULT 0, new_balance INTEGER NOT NULL DEFAULT 0,
-            admin_id INTEGER NOT NULL, note TEXT DEFAULT '', created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS monthly_stats_archive (
             month TEXT PRIMARY KEY,
@@ -2401,148 +2256,10 @@ async def callback_handler(update, context):
 
     # Block all customer navigation while the store is closed.
     # Check before acknowledging the callback so the alert is shown reliably.
-    if not is_admin(user_id) and not store_is_open() and not data.startswith("flexysms_claim:"):
+    if not is_admin(user_id) and not store_is_open():
         await query.answer(store_closed_notice(), show_alert=True)
         return
     await query.answer()
-
-    if data == "flexy_menu_back":
-        await query.message.reply_text("القائمة الرئيسية:", reply_markup=main_keyboard(user_id))
-        return
-    if data in ("flexy_wallet_show", "flexy_wallet_history"):
-        with db() as conn:
-            row = conn.execute("SELECT balance FROM flexy_wallets WHERE user_id=?", (user_id,)).fetchone()
-            txs = conn.execute("SELECT amount,event_id,created_at,balance_after FROM flexy_wallet_transactions WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,)).fetchall()
-        balance = int(row["balance"] or 0) if row else 0
-        lines = [f"💰 رصيد مكافآت الفليكسي: {balance} DA", "⚠️ هذا الرصيد منفصل عن محفظة المتجر ولا يُستعمل للشراء داخل البوت."]
-        if data == "flexy_wallet_history":
-            lines += ["", "📜 آخر العمليات:"]
-            lines += [f"+{int(t['amount'])} DA — SMS #{t['event_id']} — {t['created_at']} — الرصيد بعد العملية: {int(t['balance_after'])} DA" for t in txs]
-            if not txs: lines.append("لا توجد عمليات مسجلة بعد.")
-        await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للفليكسي", callback_data="flexy_menu_open")]]))
-        return
-    if data == "flexy_reward_help":
-        await query.edit_message_text("🎁 لاستلام مكافأة الفليكسي، افتح مجموعة تلغرام المخصصة لرسائل SMS واضغط زر «💰 استلام الرصيد» أسفل الرسالة المؤهلة. أول شخص يستلمها يحصل على المكافأة. لا يمكن استلام الرسالة نفسها مرتين.\n\n⚠️ الرصيد هنا مكافآت منفصلة عن محفظة المتجر.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للفليكسي", callback_data="flexy_menu_open")]]))
-        return
-    if data == "flexy_menu_open":
-        buttons = [
-            [InlineKeyboardButton("💰 رصيد مكافآت الفليكسي", callback_data="flexy_wallet_show")],
-            [InlineKeyboardButton("📜 سجل المكافآت", callback_data="flexy_wallet_history")],
-            [InlineKeyboardButton("ℹ️ كيفاش نستلم المكافأة؟", callback_data="flexy_reward_help")],
-        ]
-        if is_admin(user_id):
-            buttons.append([InlineKeyboardButton("📊 إحصائيات الفليكسي (الإدارة)", callback_data="flexy_stats")])
-            buttons.append([InlineKeyboardButton("👥 أرصدة الأعضاء / تصفير الرصيد", callback_data="flexy_admin_balances")])
-        buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="flexy_menu_back")])
-        await query.edit_message_text("📱 قسم الفليكسي\nاختار الخدمة لي تحتاجها:", reply_markup=InlineKeyboardMarkup(buttons))
-        return
-    if data == "flexy_admin_balances":
-        if not is_admin(user_id):
-            await query.answer("⛔ هذه الخاصية خاصة بالإدارة.", show_alert=True); return
-        with db() as conn:
-            rows = conn.execute("""SELECT w.user_id, w.balance, u.full_name, u.username
-                FROM flexy_wallets w LEFT JOIN users u ON u.user_id=w.user_id
-                ORDER BY w.balance DESC, w.user_id ASC LIMIT 50""").fetchall()
-        buttons = []
-        for r in rows:
-            label = (r["full_name"] or ("@" + r["username"] if r["username"] else str(r["user_id"])))
-            buttons.append([InlineKeyboardButton(f"{label[:28]} | {int(r['balance'] or 0)} DA", callback_data=f"flexy_admin_user:{int(r['user_id'])}")])
-        buttons.append([InlineKeyboardButton("🔙 رجوع للفليكسي", callback_data="flexy_menu_open")])
-        await query.edit_message_text("👥 أرصدة مكافآت الفليكسي (أعلى 50 حسابًا)\nاختار العضو لعرض رصيده أو تصفيره:", reply_markup=InlineKeyboardMarkup(buttons))
-        return
-
-    if data.startswith("flexy_admin_user:"):
-        if not is_admin(user_id):
-            await query.answer("⛔ هذه الخاصية خاصة بالإدارة.", show_alert=True); return
-        try: target_id = int(data.split(":", 1)[1])
-        except ValueError: return
-        with db() as conn:
-            row = conn.execute("SELECT w.balance, u.full_name, u.username FROM flexy_wallets w LEFT JOIN users u ON u.user_id=w.user_id WHERE w.user_id=?", (target_id,)).fetchone()
-        if not row:
-            await query.answer("لا يوجد رصيد مسجل لهذا العضو.", show_alert=True); return
-        label = row["full_name"] or ("@" + row["username"] if row["username"] else "غير معروف")
-        await query.edit_message_text(f"👤 العضو: {label}\n🆔 Telegram ID: {target_id}\n💰 رصيد مكافآت الفليكسي: {int(row['balance'] or 0)} DA\n\nتقدر تصفّر رصيده فقط؛ سجل المكافآت السابق يبقى محفوظًا.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🧹 تصفير الرصيد", callback_data=f"flexy_admin_reset_ask:{target_id}")], [InlineKeyboardButton("🔙 قائمة الأرصدة", callback_data="flexy_admin_balances")]]))
-        return
-
-    if data.startswith("flexy_admin_reset_ask:"):
-        if not is_admin(user_id):
-            await query.answer("⛔ هذه الخاصية خاصة بالإدارة.", show_alert=True); return
-        try: target_id = int(data.split(":", 1)[1])
-        except ValueError: return
-        await query.edit_message_text(f"⚠️ تأكيد تصفير رصيد مكافآت الفليكسي للعضو {target_id}؟\nسيصبح الرصيد 0 DA، ولن يُحذف سجل المكافآت السابق.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ نعم، صفّر الرصيد", callback_data=f"flexy_admin_reset_do:{target_id}"), InlineKeyboardButton("❌ إلغاء", callback_data=f"flexy_admin_user:{target_id}")]]))
-        return
-
-    if data.startswith("flexy_admin_reset_do:"):
-        if not is_admin(user_id):
-            await query.answer("⛔ هذه الخاصية خاصة بالإدارة.", show_alert=True); return
-        try: target_id = int(data.split(":", 1)[1])
-        except ValueError: return
-        with db() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT balance FROM flexy_wallets WHERE user_id=?", (target_id,)).fetchone()
-            if not row:
-                conn.rollback()
-                await query.answer("لم يتم العثور على محفظة هذا العضو.", show_alert=True); return
-            old_balance = int(row["balance"] or 0)
-            conn.execute("UPDATE flexy_wallets SET balance=0 WHERE user_id=?", (target_id,))
-            conn.execute("INSERT INTO flexy_wallet_adjustments(user_id,old_balance,new_balance,admin_id,note,created_at) VALUES(?,?,?,?,?,?)", (target_id,old_balance,0,user_id,"تصفير يدوي من الإدارة",now_text()))
-            conn.commit()
-        await query.edit_message_text(f"✅ تم تصفير رصيد العضو {target_id}.\nالرصيد السابق: {old_balance} DA\nالرصيد الحالي: 0 DA.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 قائمة الأرصدة", callback_data="flexy_admin_balances")], [InlineKeyboardButton("📱 قسم الفليكسي", callback_data="flexy_menu_open")]]))
-        try: await context.bot.send_message(chat_id=target_id, text="ℹ️ قامت الإدارة بتعديل رصيد مكافآت الفليكسي الخاص بك. إذا كنت تحتاج تفاصيل، تواصل مع الإدارة.")
-        except Exception: pass
-        return
-
-    if data == "flexy_stats":
-        if not is_admin(user_id):
-            await query.answer("⛔ الإحصائيات خاصة بالإدارة.", show_alert=True); return
-        with db() as conn:
-            stats = conn.execute("SELECT COUNT(*) AS n, COALESCE(SUM(source_amount),0) AS source_total, COALESCE(SUM(CASE WHEN COALESCE(claimed_by,0)<>0 THEN reward_amount ELSE 0 END),0) AS claimed_total, COALESCE(SUM(CASE WHEN COALESCE(claimed_by,0)=0 THEN reward_amount ELSE 0 END),0) AS pending_total FROM flexy_sms_events").fetchone()
-        await query.edit_message_text(f"📊 إحصائيات الفليكسي\n\n📩 عدد رسائل SMS: {int(stats['n'] or 0)}\n💳 مجموع مبالغ الشحن المستخرجة من الرسائل: {int(stats['source_total'] or 0)} DA\n✅ مجموع المكافآت المستلمة: {int(stats['claimed_total'] or 0)} DA\n⏳ مجموع المكافآت غير المستلمة: {int(stats['pending_total'] or 0)} DA", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للفليكسي", callback_data="flexy_menu_open")]]))
-        return
-
-    if data.startswith("flexysms_claim:"):
-        try: event_id = int(data.split(":", 1)[1])
-        except ValueError: return
-        with db() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            event = conn.execute("SELECT * FROM flexy_sms_events WHERE id=?", (event_id,)).fetchone()
-            if not event or int(event["claimed_by"] or 0):
-                conn.rollback()
-                await query.answer("❌ تم استلام هذه الرسالة من قبل.", show_alert=True); return
-            reward = int(event["reward_amount"] or 0)
-            conn.execute("INSERT OR IGNORE INTO flexy_wallets(user_id,balance) VALUES(?,0)", (user_id,))
-            conn.execute("UPDATE flexy_wallets SET balance=balance+? WHERE user_id=?", (reward,user_id))
-            balance = int(conn.execute("SELECT balance FROM flexy_wallets WHERE user_id=?", (user_id,)).fetchone()[0])
-            conn.execute("UPDATE flexy_sms_events SET claimed_by=?,claimed_at=? WHERE id=? AND claimed_by=0", (user_id,now_text(),event_id))
-            conn.execute("INSERT INTO flexy_wallet_transactions(user_id,amount,event_id,balance_after,created_at) VALUES(?,?,?,?,?)", (user_id,reward,event_id,balance,now_text()))
-            conn.commit()
-        try:
-            await query.edit_message_reply_markup(reply_markup=None)
-            claim_name = query.from_user.full_name or "عضو غير معروف"
-            claim_username = f" (@{query.from_user.username})" if query.from_user.username else ""
-            await context.bot.send_message(chat_id=event["telegram_chat_id"], text=f"✅ تم استلام المكافأة!\n👤 الاسم: {claim_name}{claim_username}\n🆔 Telegram ID: {user_id}\n📩 الرسالة: #{event_id}\n💰 قيمة المكافأة: {reward} DA.")
-            await context.bot.send_message(chat_id=user_id, text=f"🎉 مبروك! استلمت {reward} DA في محفظة فليكسي الخاصة.\nرصيد فليكسي الخاص: {balance} DA\n⚠️ هذا الرصيد منفصل عن محفظة المتجر ولا يُستعمل للشراء داخل البوت.")
-        except Exception: logger.exception("Could not notify SMS claimant %s", user_id)
-        return
-    if data == "flexysms_admin":
-        if not is_admin(user_id):
-            await query.answer("خاص بالإدارة", show_alert=True); return
-        ratio = get_setting("flexy_sms_ratio", "100")
-        default = get_setting("flexy_sms_default_reward", "100")
-        group = get_setting("flexy_sms_group_id", "غير مربوط")
-        await query.edit_message_text(f"📩 إعدادات SMS جيزي\nنسبة الاحتساب: {ratio}%\nالمكافأة الافتراضية عند عدم استخراج مبلغ: {default} DA\nالمجموعة: {group}\n\nاختر الإعداد:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➖ النسبة 5%",callback_data="flexysms_ratio:-5"),InlineKeyboardButton("➕ النسبة 5%",callback_data="flexysms_ratio:5")],[InlineKeyboardButton("✏️ تعديل النسبة",callback_data="flexysms_ratio_custom"),InlineKeyboardButton("✏️ المكافأة الافتراضية",callback_data="flexysms_default_custom")],[InlineKeyboardButton("🔙 رجوع",callback_data="adm_home")]]))
-        return
-    if data.startswith("flexysms_ratio:"):
-        if not is_admin(user_id): return
-        try: ratio=max(0,min(1000,Decimal(get_setting("flexy_sms_ratio","100"))+Decimal(data.split(":")[1])))
-        except Exception: ratio=Decimal(100)
-        set_setting("flexy_sms_ratio",str(ratio.normalize()))
-        await query.edit_message_text(f"✅ نسبة احتساب فليكسي أصبحت {ratio}%",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ إعدادات SMS",callback_data="flexysms_admin")]])); return
-    if data in ("flexysms_ratio_custom","flexysms_default_custom"):
-        if not is_admin(user_id): return
-        context.user_data["flexysms_admin_step"]="ratio" if data.endswith("ratio_custom") else "default"
-        await query.edit_message_text("أرسل النسبة المئوية المطلوبة." if data.endswith("ratio_custom") else "أرسل قيمة المكافأة الافتراضية بالدينار.")
-        return
 
     # Safe demo orders: no charge, no real fulfillment, clearly labeled as test.
     if data == "test_order_abort":
@@ -2579,21 +2296,19 @@ async def callback_handler(update, context):
         except (ValueError, IndexError):
             await query.answer("طلب غير صالح.", show_alert=True)
             return
-        is_private_detached = query.message.chat.type == "private" and is_admin(user_id)
-        if query.message.chat.type not in ("group", "supergroup") and not is_private_detached:
-            await query.answer("هذا الإجراء متاح للإدارة في الخاص أو لمستلم الطلب في القروب.", show_alert=True)
+        is_private = query.message.chat.type == "private"
+        if is_private and not is_admin(user_id):
+            await query.answer("هذا الإجراء خاص بمالك المتجر.", show_alert=True)
+            return
+        if not is_private and query.message.chat.type not in ("group", "supergroup"):
+            await query.answer("هذا الإجراء متاح من الخاص أو قروب العمل.", show_alert=True)
             return
         with db() as conn:
-            claimed_row = conn.execute("SELECT claimed_by, status, game_id FROM orders WHERE id=?", (action_order_id,)).fetchone()
+            claimed_row = conn.execute("SELECT claimed_by, status FROM orders WHERE id=?", (action_order_id,)).fetchone()
             if not claimed_row:
                 await query.answer("الطلب غير موجود.", show_alert=True)
                 return
-            if is_private_detached:
-                route = get_setting(f"order_group_{int(claimed_row['game_id'] or 0)}", "").strip()
-                if route.upper() != "DM":
-                    await query.answer("هذا الطلب ليس معزولًا عن المجموعة.", show_alert=True)
-                    return
-            elif int(claimed_row["claimed_by"] or 0) != user_id:
+            if not is_private and int(claimed_row["claimed_by"] or 0) != user_id:
                 await query.answer("فقط العضو الذي استلم الطلب يمكنه تنفيذ هذا الإجراء.", show_alert=True)
                 return
             if claimed_row["status"] in ("completed", "rejected"):
@@ -2603,6 +2318,46 @@ async def callback_handler(update, context):
         # Route through the existing status processor, preserving the callback message
         # and explicit group-action flag for the final group-message update.
         data = f"status:{action_order_id}:{'rejected' if is_cancel else 'completed'}"
+
+    if data.startswith("order_review:"):
+        try:
+            review_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("رقم الطلب غير صالح.", show_alert=True)
+            return
+        if query.message.chat.type != "private" or not is_admin(user_id):
+            await query.answer("مراجعة الطلب من الخاص متاحة لمالك المتجر فقط.", show_alert=True)
+            return
+        with db() as conn:
+            review = conn.execute(
+                """SELECT o.id, o.user_id, o.player_id, o.payment_method, o.price, o.status,
+                          o.points_used, o.platform, g.name AS game_name, f.name AS offer_name
+                   FROM orders o LEFT JOIN games g ON g.id=o.game_id
+                   LEFT JOIN offers f ON f.id=o.offer_id WHERE o.id=?""",
+                (review_id,),
+            ).fetchone()
+        if not review:
+            await query.answer("الطلب غير موجود.", show_alert=True)
+            return
+        status_names = {"pending": "قيد الانتظار", "processing": "قيد التنفيذ", "completed": "مكتمل", "rejected": "ملغي"}
+        player_info = str(review["player_id"] or "لا يتطلب")
+        if player_info.startswith("LOGIN EMAIL:"):
+            player_info = "شحن بالحساب (بيانات الدخول مخفية في المراجعة)"
+        text_review = (
+            f"🔎 مراجعة الطلب #{review_id}\n\n"
+            f"👤 الزبون: {review['user_id']}\n"
+            f"🎮 اللعبة: {review['game_name'] or 'غير محددة'}\n"
+            f"📦 العرض: {review['offer_name'] or 'غير محدد'}\n"
+            f"📋 معلومات الشحن: {player_info}\n"
+            f"📱 الجهاز: {review['platform'] or 'غير محدد'}\n"
+            f"💰 السعر: {int(review['price'] or 0)} DA\n"
+            f"💳 الدفع: {review['payment_method'] or 'غير محدد'}\n"
+            f"🎁 النقاط المستخدمة: {int(review['points_used'] or 0)}\n"
+            f"📌 الحالة: {status_names.get(review['status'], review['status'])}"
+        )
+        await query.message.reply_text(text_review)
+        await query.answer("تم عرض تفاصيل الطلب.")
+        return
 
     if data.startswith("order_release:"):
         try:
@@ -2633,44 +2388,10 @@ async def callback_handler(update, context):
             await query.answer("اللعبة غير صالحة.", show_alert=True); return
         with db() as conn:
             game = conn.execute("SELECT name FROM games WHERE id=?", (detach_game_id,)).fetchone()
-            current = conn.execute("SELECT value FROM settings WHERE key=?", (f"order_group_{detach_game_id}",)).fetchone()
-            if not current or not str(current["value"] or "").strip() or str(current["value"]).upper() == "DM":
-                await query.answer("ما كاين حتى قروب مربوط بهذه اللعبة.", show_alert=True)
-                return
-            conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                         (f"order_group_backup_{detach_game_id}", str(current["value"])))
-            conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                         (f"order_group_{detach_game_id}", "DM"))
-        await query.answer("تم عزل الطلبات عن المجموعة.", show_alert=True)
-        try:
-            await query.message.reply_text(f"🔌 تم عزل الطلبات الجديدة للعبة {game['name'] if game else detach_game_id}. ستصل الطلبات القادمة إلى الخاص مع أزرار التحكم.")
-        except Exception:
-            pass
-        return
-
-    if data.startswith("order_attach:"):
-        if not is_admin(user_id):
-            await query.answer("هذا الزر خاص بمالك المتجر.", show_alert=True)
-            return
-        try:
-            attach_game_id = int(data.split(":", 1)[1])
-        except (ValueError, IndexError):
-            await query.answer("اللعبة غير صالحة.", show_alert=True)
-            return
-        backup = get_setting(f"order_group_backup_{attach_game_id}", "").strip()
-        if not backup:
-            await query.answer("ما لقيتش المجموعة السابقة. اربط المجموعة بالأمر /setordergroup GAME_ID.", show_alert=True)
-            return
-        with db() as conn:
-            conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                         (f"order_group_{attach_game_id}", backup))
-            conn.execute("DELETE FROM settings WHERE key=?", (f"order_group_backup_{attach_game_id}",))
-            game = conn.execute("SELECT name FROM games WHERE id=?", (attach_game_id,)).fetchone()
-        await query.answer("رجعت الطلبات للمجموعة.", show_alert=True)
-        try:
-            await query.message.reply_text(f"🔗 رجع استقبال الطلبات الجديدة للعبة {game['name'] if game else attach_game_id} إلى المجموعة.")
-        except Exception:
-            pass
+            conn.execute("DELETE FROM settings WHERE key=?", (f"order_group_{detach_game_id}",))
+        await query.answer("تم عزل المجموعة عن الطلبات الجديدة.", show_alert=True)
+        try: await query.message.reply_text(f"🔌 تم فصل استقبال الطلبات الجديدة للعبة {game['name'] if game else detach_game_id} عن هذه المجموعة.")
+        except Exception: pass
         return
 
     if data == "price_menu_offers":
@@ -4353,18 +4074,6 @@ async def text_handler(update, context):
     user_id = update.effective_user.id
     text = (message.text or "").strip()
 
-    sms_step = context.user_data.get("flexysms_admin_step")
-    if is_admin(user_id) and sms_step:
-        try:
-            value = Decimal(text.replace(",", "."))
-            if not value.is_finite() or value < 0 or (sms_step == "ratio" and value > 1000) or (sms_step == "default" and (value > 10000000 or value != value.to_integral_value())): raise ValueError
-            set_setting("flexy_sms_ratio" if sms_step == "ratio" else "flexy_sms_default_reward", str(value.normalize()))
-            context.user_data.pop("flexysms_admin_step", None)
-            await message.reply_text("✅ تم حفظ الإعداد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ إعدادات SMS جيزي", callback_data="flexysms_admin")]]))
-        except Exception:
-            await message.reply_text("❌ قيمة غير صحيحة. أرسل رقمًا صالحًا أو استعمل إلغاء.")
-        return
-
     if not is_admin(user_id) and not store_is_open():
         await message.reply_text(store_closed_notice())
         return
@@ -4377,10 +4086,6 @@ async def text_handler(update, context):
 
     if text in ("🛠️ لوحة التحكم", "لوحة التحكم", "الإدارة"):
         await show_admin_panel(update, context)
-        return
-
-    if text == "📩 نظام SMS جيزي" and is_admin(user_id):
-        await message.reply_text("إعدادات نظام SMS جيزي:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ فتح الإعدادات", callback_data="flexysms_admin")]]))
         return
 
     if text == "🧪 الطلب التجريبي":
@@ -5587,19 +5292,6 @@ async def text_handler(update, context):
         await show_my_orders(update, context)
         return
 
-    if text == "📱 الفليكسي":
-        buttons = [
-            [InlineKeyboardButton("💰 رصيد مكافآت الفليكسي", callback_data="flexy_wallet_show")],
-            [InlineKeyboardButton("📜 سجل المكافآت", callback_data="flexy_wallet_history")],
-            [InlineKeyboardButton("ℹ️ كيفاش نستلم المكافأة؟", callback_data="flexy_reward_help")],
-        ]
-        if is_admin(user_id):
-            buttons.append([InlineKeyboardButton("📊 إحصائيات الفليكسي (الإدارة)", callback_data="flexy_stats")])
-            buttons.append([InlineKeyboardButton("👥 أرصدة الأعضاء / تصفير الرصيد", callback_data="flexy_admin_balances")])
-        buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="flexy_menu_back")])
-        await message.reply_text("📱 قسم الفليكسي\nاختار الخدمة لي تحتاجها:", reply_markup=InlineKeyboardMarkup(buttons))
-        return
-
     if text == "👤 حسابي":
         await show_account(update.effective_message, update.effective_user.id)
         return
@@ -5667,7 +5359,7 @@ async def text_handler(update, context):
             await message.reply_text("🛍️ إدارة الألعاب والتطبيقات:", reply_markup=ReplyKeyboardMarkup([["🎮 الألعاب", "📱 التطبيقات"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
             return
         if text == "📂 إدارة البوت":
-            await message.reply_text("📂 إدارة البوت:", reply_markup=ReplyKeyboardMarkup([["📋 كل الطلبات", "🗑️ حذف جميع الطلبات"], ["💳 إعدادات الدفع", "📊 الإحصائيات"], ["📩 إعدادات SMS جيزي", "📝 إدارة النصوص"], ["📇 إعدادات التواصل"], ["🕒 أوقات المتجر", "🧹 تصفير الحسابات والطلبات"], ["🔄 تحويل زبون / تاجر"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
+            await message.reply_text("📂 إدارة البوت:", reply_markup=ReplyKeyboardMarkup([["📋 كل الطلبات", "🗑️ حذف جميع الطلبات"], ["💳 إعدادات الدفع", "📊 الإحصائيات"], ["📝 إدارة النصوص", "📇 إعدادات التواصل"], ["🕒 أوقات المتجر", "🧹 تصفير الحسابات والطلبات"], ["🔄 تحويل زبون / تاجر"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
             return
         if text == "🕒 أوقات المتجر":
             enabled = get_setting("store_hours_enabled", "0") == "1"
@@ -5977,8 +5669,6 @@ def main():
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CommandHandler("ordergames", order_games_command))
     app.add_handler(CommandHandler("setordergroup", set_order_group_command))
-    app.add_handler(CommandHandler("setsmsgroup", set_sms_group_command))
-    app.add_handler(CommandHandler("myflexywallet", my_flexy_wallet_command))
 
     # أزرار Inline
     app.add_handler(CallbackQueryHandler(callback_handler))
