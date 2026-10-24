@@ -3795,11 +3795,20 @@ async def callback_handler(update, context):
             channel_id = get_setting("order_channel_id", "").strip()
             if channel_id:
                 try:
+                    # Offers store retail prices separately by payment method; there is no
+                    # generic offers.price column. Always publish the regular customer price,
+                    # even when the completed order belongs to a trader.
+                    payment_key = str(order["payment_method"] or "").strip().lower()
+                    if any(token in payment_key for token in ("flexy", "جيزي", "جازي", "mobilis", "موبيليس", "ooredoo", "اوريدو", "أوريدو")):
+                        retail_price_column = "price_flexy"
+                    else:
+                        retail_price_column = "price_baridi"
                     with db() as conn:
                         price_row = conn.execute(
-                            "SELECT price FROM offers WHERE id = ?", (order["offer_id"],)
+                            f"SELECT {retail_price_column} AS retail_price FROM offers WHERE id = ?",
+                            (order["offer_id"],),
                         ).fetchone() if order["offer_id"] else None
-                    public_price = int(price_row["price"] or 0) if price_row else int(order["price"] or 0)
+                    public_price = int(price_row["retail_price"] or 0) if price_row else int(order["price"] or 0)
                     channel_text = (
                         "🎉 عملية شحن ناجحة!\n\n"
                         f"🎮 اللعبة: {game_name}\n"
