@@ -95,8 +95,50 @@ async def store_schedule_loop(application):
             logger.exception("Store schedule check failed")
         await asyncio.sleep(20)
 
+async def marketing_reminder_loop(application):
+    """Deliver persistent reminders; any existing order cancels pending reminders."""
+    while True:
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with db() as conn:
+                conn.execute("""UPDATE marketing_reminders SET cancelled=1
+                    WHERE cancelled=0 AND sent_at='' AND user_id IN
+                    (SELECT DISTINCT user_id FROM orders)""")
+                if get_setting("marketing_reminders_enabled", "1") == "1":
+                    rows = conn.execute("""SELECT r.id,r.user_id,r.sequence_no
+                        FROM marketing_reminders r JOIN users u ON u.user_id=r.user_id
+                        WHERE r.cancelled=0 AND r.sent_at='' AND r.due_at<=?
+                        AND COALESCE(u.is_banned,0)=0
+                        AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id=r.user_id)
+                        ORDER BY r.due_at LIMIT 50""", (now,)).fetchall()
+                else:
+                    rows = []
+            for row in rows:
+                uid = int(row["user_id"])
+                body = get_setting("marketing_reminder_text", "👋 ما زلت ما طلبتش؟ 🛍️ تصفح العروض الآن!")
+                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛍️ تصفّح العروض", callback_data="browse_offers")]])
+                try:
+                    await application.bot.send_message(chat_id=uid, text=body, reply_markup=keyboard)
+                    with db() as conn:
+                        conn.execute("UPDATE marketing_reminders SET sent_at=? WHERE id=? AND sent_at=''", (now_text(), row["id"]))
+                        count = max(0, min(10, int(get_setting("marketing_reminder_count", "2"))))
+                        interval = max(1, int(get_setting("marketing_reminder_interval_minutes", "1440")))
+                        if int(row["sequence_no"]) < count:
+                            due = (datetime.now() + timedelta(minutes=interval)).strftime("%Y-%m-%d %H:%M:%S")
+                            conn.execute("INSERT OR IGNORE INTO marketing_reminders(user_id,sequence_no,due_at) VALUES(?,?,?)",
+                                         (uid, int(row["sequence_no"])+1, due))
+                except Exception as exc:
+                    logger.info("Marketing reminder failed for %s: %s", uid, exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Marketing reminder loop failed")
+        await asyncio.sleep(30)
+
+
 async def post_init(application):
     application.create_task(store_schedule_loop(application), name="store-schedule-loop")
+    application.create_task(marketing_reminder_loop(application), name="marketing-reminder-loop")
 
 CANCEL_WORDS = {
     "إلغاء", "الغاء", "❌ إلغاء", "/cancel"
@@ -570,6 +612,20 @@ def init_db():
                 conn.execute("UPDATE offers SET recharge_method_id=? WHERE game_id=? AND recharge_method_id IS NULL", (cur.lastrowid, g["id"]))
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('whatsapp_number', ?)", (WHATSAPP_NUMBER,))
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('usd_exchange_rate', '254')")
+        conn.execute("""CREATE TABLE IF NOT EXISTS marketing_reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            sequence_no INTEGER NOT NULL,
+            due_at TEXT NOT NULL,
+            sent_at TEXT DEFAULT '',
+            cancelled INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(user_id, sequence_no)
+        )""")
+        conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('marketing_reminders_enabled','1')")
+        conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('marketing_reminder_delay_minutes','60')")
+        conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('marketing_reminder_count','2')")
+        conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('marketing_reminder_interval_minutes','1440')")
+        conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('marketing_reminder_text',?)", ("👋 ما زلت ما طلبتش من SERADJ STORE؟ 🛍️\\nتصفح العروض واختار الخدمة اللي تحتاجها!",))
 
 
 def get_setting(key, default=""):
@@ -812,6 +868,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=ADMIN_ID, text=notification)
         except Exception:
             logger.exception("تعذر إرسال إشعار المشترك الجديد للإدارة")
+
+    # Persist a one-time reminder schedule for accounts that have never ordered.
+    if not is_admin(user.id):
+        try:
+            delay = max(1, min(525600, int(get_setting("marketing_reminder_delay_minutes", "60"))))
+            count = max(0, min(10, int(get_setting("marketing_reminder_count", "2"))))
+            with db() as conn:
+                has_order = conn.execute("SELECT 1 FROM orders WHERE user_id=? LIMIT 1", (user.id,)).fetchone()
+                has_schedule = conn.execute("SELECT 1 FROM marketing_reminders WHERE user_id=? LIMIT 1", (user.id,)).fetchone()
+                if not has_order and not has_schedule and count > 0:
+                    due = (datetime.now() + timedelta(minutes=delay)).strftime("%Y-%m-%d %H:%M:%S")
+                    conn.execute("INSERT OR IGNORE INTO marketing_reminders(user_id,sequence_no,due_at) VALUES(?,?,?)", (user.id, 1, due))
+        except Exception:
+            logger.exception("Could not schedule marketing reminders for user %s", user.id)
 
     # While the store is closed, customers cannot enter or browse the bot.
     if not is_admin(user.id) and not store_is_open():
@@ -2350,6 +2420,13 @@ async def callback_handler(update, context):
         await query.answer(store_closed_notice(), show_alert=True)
         return
     await query.answer()
+
+    if data == "browse_offers":
+        await query.message.reply_text(
+            "🛍️ اختر القسم لتصفح العروض:",
+            reply_markup=ReplyKeyboardMarkup([["🎮 الألعاب", "📱 التطبيقات"], ["🛍️ المتجر"]], resize_keyboard=True)
+        )
+        return
 
     if data.startswith("order_channel_toggle:"):
         if not is_admin(user_id):
@@ -5796,8 +5873,60 @@ async def text_handler(update, context):
             await message.reply_text("🛍️ إدارة الألعاب والتطبيقات:", reply_markup=ReplyKeyboardMarkup([["🎮 الألعاب", "📱 التطبيقات"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
             return
         if text == "📂 إدارة البوت":
-            await message.reply_text("📂 إدارة البوت:", reply_markup=ReplyKeyboardMarkup([["📋 كل الطلبات", "🗑️ حذف جميع الطلبات"], ["💳 إعدادات الدفع", "📊 الإحصائيات"], ["📝 إدارة النصوص", "📇 إعدادات التواصل"], ["🕒 أوقات المتجر", "🧹 تصفير الحسابات والطلبات"], ["🔄 تحويل زبون / تاجر"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
+            await message.reply_text("📂 إدارة البوت:", reply_markup=ReplyKeyboardMarkup([["📋 كل الطلبات", "🗑️ حذف جميع الطلبات"], ["💳 إعدادات الدفع", "📊 الإحصائيات"], ["📝 إدارة النصوص", "📇 إعدادات التواصل"], ["🕒 أوقات المتجر", "🧹 تصفير الحسابات والطلبات"], ["🛍️ التذكير التسويقي"], ["🔄 تحويل زبون / تاجر"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
             return
+        if text == "🛍️ التذكير التسويقي":
+            enabled = get_setting("marketing_reminders_enabled", "1") == "1"
+            await message.reply_text(
+                "🛍️ إعدادات التذكير التسويقي\\n\\n"
+                f"الحالة: {'مفعّل ✅' if enabled else 'متوقف ⏸️'}\\n"
+                f"أول تذكير بعد: {get_setting('marketing_reminder_delay_minutes','60')} دقيقة\\n"
+                f"عدد التذكيرات: {get_setting('marketing_reminder_count','2')}\\n"
+                f"الفاصل بينها: {get_setting('marketing_reminder_interval_minutes','1440')} دقيقة\\n"
+                f"النص الحالي: {get_setting('marketing_reminder_text','')}\\n\\nاختر الإعداد الذي تريد تغييره.",
+                reply_markup=ReplyKeyboardMarkup([
+                    ["🟢 تفعيل التذكير", "⚪ تعطيل التذكير"],
+                    ["⏱️ مدة أول تذكير", "🔢 عدد التذكيرات"],
+                    ["⏳ الفاصل بين التذكيرات", "✏️ نص التذكير"],
+                    ["🔙 إدارة البوت"]
+                ], resize_keyboard=True)
+            )
+            return
+        if text == "🟢 تفعيل التذكير":
+            set_setting("marketing_reminders_enabled", "1")
+            await message.reply_text("✅ تم تفعيل التذكير التسويقي.", reply_markup=admin_keyboard())
+            return
+        if text == "⚪ تعطيل التذكير":
+            set_setting("marketing_reminders_enabled", "0")
+            await message.reply_text("⏸️ تم تعطيل التذكير التسويقي.", reply_markup=admin_keyboard())
+            return
+        reminder_steps = {
+            "⏱️ مدة أول تذكير": ("marketing_reminder_delay_minutes", "أرسل مدة الانتظار بالدقائق (مثال 60)."),
+            "🔢 عدد التذكيرات": ("marketing_reminder_count", "أرسل عدد التذكيرات من 0 إلى 10."),
+            "⏳ الفاصل بين التذكيرات": ("marketing_reminder_interval_minutes", "أرسل الفاصل بين التذكيرات بالدقائق (مثال 1440)."),
+            "✏️ نص التذكير": ("marketing_reminder_text", "أرسل نص رسالة التذكير الجديدة.")
+        }
+        if text in reminder_steps:
+            key, prompt = reminder_steps[text]
+            context.user_data["marketing_reminder_setting"] = key
+            await message.reply_text(prompt + "\\nللإلغاء أرسل /cancel", reply_markup=cancel_keyboard())
+            return
+        if context.user_data.get("marketing_reminder_setting") and is_admin(user_id):
+            key = context.user_data.pop("marketing_reminder_setting")
+            value = text
+            if key != "marketing_reminder_text":
+                try:
+                    number = int(value)
+                    if number < 0 or (key != "marketing_reminder_count" and number < 1) or (key == "marketing_reminder_count" and number > 10):
+                        raise ValueError
+                except ValueError:
+                    context.user_data["marketing_reminder_setting"] = key
+                    await message.reply_text("❌ قيمة غير صحيحة. أرسل رقمًا صالحًا ضمن الحدود المطلوبة.")
+                    return
+            set_setting(key, value)
+            await message.reply_text("✅ تم حفظ إعداد التذكير.", reply_markup=admin_keyboard())
+            return
+
         if text == "🕒 أوقات المتجر":
             enabled = get_setting("store_hours_enabled", "0") == "1"
             opening = get_setting("store_open_time", "09:00")
