@@ -182,6 +182,18 @@ def now_text():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def format_order_amount(value, currency="DA"):
+    """Format stored order amounts without truncating fractional USD prices."""
+    currency = (currency or "DA").upper()
+    try:
+        amount = Decimal(str(value if value is not None else 0))
+        if currency == "USD":
+            return f"{amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,.2f} USD"
+        return f"{amount.quantize(Decimal('1'), rounding=ROUND_HALF_UP):,.0f} {currency}"
+    except (InvalidOperation, ValueError):
+        return f"{value} {currency}"
+
+
 def db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -400,7 +412,8 @@ def init_db():
             reward_points INTEGER DEFAULT 0,
             android_active INTEGER DEFAULT 1,
             ios_active INTEGER DEFAULT 1,
-            active INTEGER DEFAULT 1
+            active INTEGER DEFAULT 1,
+            sort_order INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -410,6 +423,7 @@ def init_db():
             player_id TEXT DEFAULT '',
             payment_method TEXT DEFAULT '',
             price INTEGER DEFAULT 0,
+            currency TEXT DEFAULT 'DA',
             status TEXT DEFAULT 'pending',
             created_at TEXT,
             points_awarded INTEGER DEFAULT 0,
@@ -547,11 +561,12 @@ def init_db():
                 "reward_points": "INTEGER DEFAULT 0",
                 "android_active": "INTEGER DEFAULT 1",
                 "ios_active": "INTEGER DEFAULT 1",
+                "sort_order": "INTEGER DEFAULT 0",
             },
             "orders": {
                 "game_id": "INTEGER", "offer_id": "INTEGER",
                 "player_id": "TEXT DEFAULT ''", "payment_method": "TEXT DEFAULT ''",
-                "price": "INTEGER DEFAULT 0", "status": "TEXT DEFAULT 'pending'",
+                "price": "INTEGER DEFAULT 0", "currency": "TEXT DEFAULT 'DA'", "status": "TEXT DEFAULT 'pending'",
                 "created_at": "TEXT", "points_awarded": "INTEGER DEFAULT 0",
                 "points_used": "INTEGER DEFAULT 0", "platform": "TEXT DEFAULT ''",
                 "wallet_charged": "INTEGER DEFAULT 0", "wallet_refunded": "INTEGER DEFAULT 0",
@@ -568,6 +583,9 @@ def init_db():
                         conn.execute("UPDATE offers SET price_baridi_trader = price_baridi")
                     elif table == "offers" and col == "price_flexy_trader":
                         conn.execute("UPDATE offers SET price_flexy_trader = price_flexy")
+
+        # Preserve the existing order of old offers, while allowing admin reordering.
+        conn.execute("UPDATE offers SET sort_order=id WHERE COALESCE(sort_order,0)=0")
 
         # Defaults for an empty database only; never overwrite existing offers.
         default_games = [
@@ -612,6 +630,14 @@ def init_db():
                 conn.execute("UPDATE offers SET recharge_method_id=? WHERE game_id=? AND recharge_method_id IS NULL", (cur.lastrowid, g["id"]))
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('whatsapp_number', ?)", (WHATSAPP_NUMBER,))
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('usd_exchange_rate', '254')")
+        # Requested USD payment options are pre-created but disabled until configured by admin.
+        for method_name, method_emoji in (("Binance", "🟡"), ("USDT", "💵"), ("Bybit", "🔶"), ("RedotPay", "🔴")):
+            conn.execute(
+                "INSERT INTO custom_payment_methods (name, emoji, currency, instructions, enabled, created_at) "
+                "SELECT ?, ?, 'USD', '⚠️ الإدارة لم تضبط تعليمات الدفع بعد. لا تفعّل هذه الطريقة قبل إدخال بيانات الدفع.', 0, ? "
+                "WHERE NOT EXISTS (SELECT 1 FROM custom_payment_methods WHERE lower(name)=lower(?))",
+                (method_name, method_emoji, now_text(), method_name),
+            )
         conn.execute("""CREATE TABLE IF NOT EXISTS marketing_reminders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -678,7 +704,7 @@ def get_offers(game_id, active_only=True):
                 """
                 SELECT * FROM offers
                 WHERE game_id = ? AND active = 1
-                ORDER BY id
+                ORDER BY CASE WHEN COALESCE(sort_order,0)>0 THEN sort_order ELSE 1000000+id END, id
                 """,
                 (game_id,),
             ).fetchall()
@@ -687,7 +713,7 @@ def get_offers(game_id, active_only=True):
             """
             SELECT * FROM offers
             WHERE game_id = ?
-            ORDER BY id
+            ORDER BY CASE WHEN COALESCE(sort_order,0)>0 THEN sort_order ELSE 1000000+id END, id
             """,
             (game_id,),
         ).fetchall()
@@ -1433,7 +1459,7 @@ async def create_wallet_order(message, context, player_id, user=None):
             return
         conn.execute("UPDATE users SET balance = balance - ?, points = points - ? WHERE user_id = ?", (price, points_used, user.id))
         cursor = conn.execute(
-            "INSERT INTO orders (user_id, game_id, offer_id, player_id, payment_method, price, status, created_at, points_used, platform, wallet_charged) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, 1)",
+            "INSERT INTO orders (user_id, game_id, offer_id, player_id, payment_method, price, currency, status, created_at, points_used, platform, wallet_charged) VALUES (?, ?, ?, ?, ?, ?, 'DA', 'pending', ?, ?, ?, 1)",
             (user.id, draft["game_id"], draft["offer_id"], player_id, "رصيد المحفظة", price, now_text(), points_used, draft.get("platform", "")),
         )
         order_id = cursor.lastrowid
@@ -1695,9 +1721,9 @@ async def photo_handler(update, context):
             """
             INSERT INTO orders (
                 user_id, game_id, offer_id, player_id,
-                payment_method, price, status, created_at, points_used, platform
+                payment_method, price, currency, status, created_at, points_used, platform
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user.id,
@@ -1706,6 +1732,7 @@ async def photo_handler(update, context):
                 player_id,
                 draft["method"],
                 draft["price"],
+                draft.get("currency", "DA"),
                 "pending",
                 now_text(),
                 int(draft.get("points_used", 0)),
@@ -1752,7 +1779,7 @@ async def photo_handler(update, context):
         f"📦 العرض: {draft['offer_name']}\n"
         f"{('🆔 معرف اللاعب: ' + player_id + chr(10)) if player_id else '📋 لا يتطلب هذا العرض ID أو بيانات دخول.' + chr(10)}"
         f"💳 طريقة الدفع: {draft['method']}\n"
-        f"💰 المبلغ: {draft['price']} DA\n"
+        f"💰 المبلغ: {draft['price']} {draft.get('currency', 'DA')}\n"
         "📌 الحالة: قيد الانتظار\n\n"
         "ستتحقق الإدارة من الوصل قبل معالجة طلبك.",
         reply_markup=main_keyboard(user.id),
@@ -1768,7 +1795,7 @@ async def show_my_orders(update, context):
         orders = conn.execute(
             """
             SELECT id, game_id, offer_id, player_id,
-                   payment_method, price, status, created_at
+                   payment_method, price, currency, status, created_at
             FROM orders
             WHERE user_id = ?
             ORDER BY id DESC
@@ -1806,7 +1833,7 @@ async def show_my_orders(update, context):
             f"📦 العرض: {offer_name}\n"
             f"🆔 المعرّف: {order['player_id'] or 'غير محدد'}\n"
             f"💳 الدفع: {order['payment_method'] or 'غير محدد'}\n"
-            f"💰 السعر: {order['price']} DA\n"
+            f"💰 السعر: {format_order_amount(order['price'], order['currency'])}\n"
             f"📌 الحالة: {status_label(order['status'])}\n"
             f"🕒 التاريخ: {order['created_at']}\n"
         )
@@ -1990,7 +2017,7 @@ async def admin_offers(query, game_id):
             SELECT offers.id, offers.name, offers.price_baridi, offers.price_flexy, offers.active, offers.android_active, offers.ios_active, offers.reward_points, recharge_methods.title AS method_title
             FROM offers LEFT JOIN recharge_methods ON recharge_methods.id=offers.recharge_method_id
             WHERE offers.game_id = ?
-            ORDER BY offers.id
+            ORDER BY CASE WHEN COALESCE(offers.sort_order,0)>0 THEN offers.sort_order ELSE 1000000+offers.id END, offers.id
             """,
             (game_id,),
         ).fetchall()
@@ -2026,6 +2053,10 @@ async def admin_offers(query, game_id):
             InlineKeyboardButton(f"🤖 Android: {'متاح' if offer['android_active'] else 'موقوف'}", callback_data=f"offer_platform:{offer['id']}:android"),
             InlineKeyboardButton(f"🍎 iPhone: {'متاح' if offer['ios_active'] else 'موقوف'}", callback_data=f"offer_platform:{offer['id']}:ios"),
             InlineKeyboardButton("🎁 نقاط المكافأة", callback_data=f"edit_reward:{offer['id']}"),
+        ])
+        buttons.append([
+            InlineKeyboardButton("⬆️ تقديم", callback_data=f"offer_move:{offer['id']}:up"),
+            InlineKeyboardButton("⬇️ تأخير", callback_data=f"offer_move:{offer['id']}:down"),
         ])
 
     buttons.append([
@@ -2173,7 +2204,7 @@ async def admin_order_details(query, order_id):
         f"📦 العرض: {order['offer_name'] or 'غير موجود'}\n"
         f"🆔 معرّف اللاعب: {order['player_id'] or 'غير محدد'}\n"
         f"💳 طريقة الدفع: {order['payment_method'] or 'غير محددة'}\n"
-        f"💰 السعر: {order['price']} DA\n"
+        f"💰 السعر: {format_order_amount(order['price'], order['currency'])}\n"
         f"📌 الحالة: {status_label(order['status'])}\n"
         f"🕒 التاريخ: {order['created_at']}"
     )
@@ -2221,7 +2252,7 @@ async def admin_customer_orders(query, target_id):
     lines = [f"👤 <b>{user['full_name'] or user['username'] or target_id}</b>", f"🆔 ID: <code>{target_id}</code>", f"🏷️ نوع الحساب: {'تاجر' if user['account_type']=='trader' else 'زبون عادي'}", f"🧾 عدد الطلبات: {totals['n']}", f"💰 مجموع الطلبات غير المرفوضة: {totals['all_total']} DA", f"✅ مجموع المكتمل: {totals['completed_total']} DA", f"⏳ مجموع المعلّق/قيد التنفيذ: {totals['active_total']} DA"]
     lines.append("\n<b>آخر الطلبات:</b>")
     for order in orders:
-        lines.append(f"\n🧾 #{order['id']} — {order['game_name'] or 'خدمة محذوفة'} / {order['offer_name'] or 'عرض محذوف'}\n💰 {order['price']} DA | {status_label(order['status'])}\n💳 {order['payment_method'] or 'غير محدد'} | {order['created_at'] or ''}")
+        lines.append(f"\n🧾 #{order['id']} — {order['game_name'] or 'خدمة محذوفة'} / {order['offer_name'] or 'عرض محذوف'}\n💰 {format_order_amount(order['price'], order['currency'])} | {status_label(order['status'])}\n💳 {order['payment_method'] or 'غير محدد'} | {order['created_at'] or ''}")
     await query.edit_message_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 قائمة الزبائن", callback_data="adm_customers")]]))
 
 
@@ -2397,10 +2428,13 @@ async def admin_payment_settings(query):
         methods = conn.execute("SELECT * FROM custom_payment_methods ORDER BY id").fetchall()
     for method in methods:
         state = "مفعّلة ✅" if int(method["enabled"] or 0) else "مخفية ❌"
-        buttons.append([InlineKeyboardButton(
-            f"{method['emoji']} {method['name']} ({method['currency']}) — {state}",
-            callback_data=f"custom_pay_toggle:{method['id']}"
-        )])
+        buttons.append([
+            InlineKeyboardButton(
+                f"{method['emoji']} {method['name']} ({method['currency']}) — {state}",
+                callback_data=f"custom_pay_toggle:{method['id']}"
+            ),
+            InlineKeyboardButton("✏️ تعليمات الدفع", callback_data=f"custom_pay_edit:{method['id']}")
+        ])
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -2850,6 +2884,7 @@ async def callback_handler(update, context):
         "game_method:",
         "offers_game:",
         "offer_toggle:",
+        "offer_move:",
         "offer_delete:",
         "add_offer_game:",
         "add_offer_method:",
@@ -3382,6 +3417,34 @@ async def callback_handler(update, context):
     elif data == "adm_offers":
         await admin_choose_manage_game(query)
 
+    # تغيير ترتيب العرض داخل اللعبة
+    elif data.startswith("offer_move:"):
+        try:
+            _, offer_id_text, direction = data.split(":", 2)
+            offer_id = int(offer_id_text)
+            if direction not in ("up", "down"):
+                raise ValueError
+        except (ValueError, TypeError):
+            await query.answer("بيانات الترتيب غير صحيحة.", show_alert=True)
+            return
+        with db() as conn:
+            current = conn.execute("SELECT id, game_id FROM offers WHERE id=?", (offer_id,)).fetchone()
+            if not current:
+                await query.answer("العرض غير موجود.", show_alert=True)
+                return
+            game_id = int(current["game_id"])
+            rows = conn.execute("SELECT id FROM offers WHERE game_id=? ORDER BY CASE WHEN COALESCE(sort_order,0)>0 THEN sort_order ELSE 1000000+id END, id", (game_id,)).fetchall()
+            ids = [int(r["id"]) for r in rows]
+            idx = ids.index(offer_id)
+            target = idx - 1 if direction == "up" else idx + 1
+            if target < 0 or target >= len(ids):
+                await query.answer("العرض موجود بالفعل في هذا الطرف من القائمة.", show_alert=True)
+                return
+            ids[idx], ids[target] = ids[target], ids[idx]
+            conn.executemany("UPDATE offers SET sort_order=? WHERE id=?", [(position, item_id) for position, item_id in enumerate(ids, start=1)])
+        await query.answer("✅ تم تحديث ترتيب العروض.")
+        await admin_offers(query, game_id)
+
     # تغيير اسم عرض من لوحة التحكم
     elif data.startswith("offer_rename:"):
         try:
@@ -3809,6 +3872,27 @@ async def callback_handler(update, context):
         context.user_data["admin_step"] = "custom_payment_name"
         await query.message.reply_text("أرسل طريقة الدفع بهذا الشكل:\nاسم الطريقة | الإيموجي | USD أو DZD\nمثال: Binance | 🟡 | USD\nثم سأطلب منك تعليمات الدفع. للإلغاء /cancel")
 
+    elif data.startswith("custom_pay_edit:"):
+        if not is_admin(user_id):
+            return
+        try:
+            custom_id = int(data.split(":", 1)[1])
+        except ValueError:
+            await query.answer("معرّف طريقة الدفع غير صحيح.", show_alert=True)
+            return
+        with db() as conn:
+            method_row = conn.execute("SELECT name, instructions FROM custom_payment_methods WHERE id=?", (custom_id,)).fetchone()
+        if not method_row:
+            await query.answer("طريقة الدفع غير موجودة.", show_alert=True)
+            return
+        context.user_data["admin_step"] = "custom_payment_edit_instructions"
+        context.user_data["pending_custom_payment_edit_id"] = custom_id
+        await query.message.reply_text(
+            f"✏️ تعليمات الدفع لطريقة {method_row['name']} الحالية:\n{method_row['instructions'] or 'غير محددة'}\n\n"
+            "أرسل التعليمات الجديدة (رقم الحساب أو العنوان أو خطوات الدفع). أرسل /cancel للإلغاء."
+        )
+        await query.answer()
+
     elif data.startswith("custom_pay_toggle:"):
         if not is_admin(user_id):
             return
@@ -3947,7 +4031,7 @@ async def callback_handler(update, context):
                 f"🎮 اللعبة: {game_name}\n"
                 f"📦 العرض: {offer_name}\n"
                 f"👤 بيانات اللاعب: {player_text}\n"
-                f"💰 المبلغ: {int(order['price'] or 0):,} DA\n"
+                f"💰 المبلغ: {format_order_amount(order['price'], order['currency'])}\n"
                 f"💳 طريقة الدفع: {payment_method}\n\n"
                 "✅ تم إتمام طلبك بنجاح.\n"
                 + (f"🎁 تمت إضافة {reward_points_granted} نقطة مكافأة إلى حسابك.\n" if reward_points_granted else "")
@@ -3959,7 +4043,7 @@ async def callback_handler(update, context):
                 f"🔢 رقم الطلب: {order_ref}\n"
                 f"🎮 اللعبة: {game_name}\n"
                 f"📦 العرض: {offer_name}\n"
-                f"💰 المبلغ: {int(order['price'] or 0):,} DA\n"
+                f"💰 المبلغ: {format_order_amount(order['price'], order['currency'])}\n"
                 f"💳 طريقة الدفع: {payment_method}\n\n"
                 "📌 تمت معالجة الطلب على أنه مرفوض. "
                 "إذا كان لديك استفسار، يرجى التواصل مع الإدارة.\n"
@@ -4069,7 +4153,7 @@ async def callback_handler(update, context):
                         f"👤 Telegram ID للزبون: {customer_id}\n"
                         f"🎮 اللعبة: {game_name}\n"
                         f"📦 العرض: {offer_name}\n"
-                        f"💰 المبلغ: {int(order['price'] or 0):,} DA\n"
+                        f"💰 المبلغ: {format_order_amount(order['price'], order['currency'])}\n"
                         f"💳 الدفع: {payment_method}\n"
                         f"📌 الحالة الجديدة: {status_text}"
                     ),
@@ -4728,7 +4812,7 @@ async def text_handler(update, context):
         await message.reply_text(
             "✅ تم استلام بيانات الحساب.\n\n"
             f"🎮 اللعبة: {draft['game_name']}\n📦 العرض: {draft['offer_name']}\n"
-            f"💳 طريقة الدفع: {draft['method']}\n💰 المبلغ: {draft['price']} DA\n\n"
+            f"💳 طريقة الدفع: {draft['method']}\n💰 المبلغ: {draft['price']} {draft.get('currency', 'DA')}\n\n"
             "📸 الآن أرسل صورة وصل الدفع لإتمام الطلب.\nلإلغاء العملية أرسل /cancel"
         )
         return
@@ -4935,6 +5019,19 @@ async def text_handler(update, context):
             set_setting("usd_exchange_rate", format(rate.normalize(), "f"))
             context.user_data.pop("admin_step", None)
             await message.reply_text(f"✅ تم حفظ سعر الدولار: 1 USD = {rate} DA. ستتحدث أسعار طرق الدفع بالدولار تلقائيًا.", reply_markup=admin_keyboard())
+            return
+
+        if step == "custom_payment_edit_instructions":
+            custom_id = context.user_data.get("pending_custom_payment_edit_id")
+            if not custom_id:
+                context.user_data.pop("admin_step", None)
+                await message.reply_text("❌ انتهت عملية تعديل التعليمات. أعد المحاولة من إعدادات الدفع.")
+                return
+            with db() as conn:
+                conn.execute("UPDATE custom_payment_methods SET instructions=? WHERE id=?", (text[:3500], int(custom_id)))
+            context.user_data.pop("pending_custom_payment_edit_id", None)
+            context.user_data.pop("admin_step", None)
+            await message.reply_text("✅ تم حفظ تعليمات الدفع. يمكنك الآن تفعيل الطريقة من إعدادات الدفع.", reply_markup=admin_keyboard())
             return
 
         if step == "custom_payment_name":
@@ -5296,8 +5393,8 @@ async def text_handler(update, context):
                 conn.execute(
                     """
                     INSERT INTO offers
-                    (game_id, recharge_method_id, name, price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, reward_points, active)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    (game_id, recharge_method_id, name, price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, reward_points, active, sort_order)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, (SELECT COALESCE(MAX(sort_order),0)+1 FROM offers WHERE game_id=?))
                     """,
                     (
                         game_id,
@@ -5308,6 +5405,7 @@ async def text_handler(update, context):
                         price_baridi_trader,
                         price_flexy_trader,
                         reward_points,
+                        game_id,
                     ),
                 )
 
