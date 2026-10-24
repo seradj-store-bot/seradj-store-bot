@@ -109,6 +109,7 @@ MAIN_MENU = [
     ["🛍️ المتجر"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
+    ["🏪 ترقية الحساب إلى تاجر"],
     ["➕ طلب لعبة غير موجودة"],
 ]
 
@@ -120,6 +121,7 @@ ADMIN_MAIN_MENU = [
     ["🛍️ المتجر"],
     ["🎁 إشتري بنقاطي", "🎯 الإحالة والنقاط"],
     ["📞 اتصل بالإدارة", "🔐 السياسات والخصوصية"],
+    ["🏪 ترقية الحساب إلى تاجر"],
 ]
 
 ADMIN_PANEL_MENU = [
@@ -760,7 +762,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     with db() as conn:
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT OR IGNORE INTO users
             (user_id, username, full_name, created_at)
@@ -773,6 +775,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 now_text(),
             ),
         )
+        is_new_user = cursor.rowcount == 1
+
+    # Notify the admin only on the user's first registration, not on every /start.
+    if is_new_user and ADMIN_ID and user.id != ADMIN_ID:
+        username_text = f"@{user.username}" if user.username else "غير موجود"
+        language_text = getattr(user, "language_code", None) or "غير متوفر"
+        user_link = f"tg://user?id={user.id}"
+        notification = (
+            "🆕 دخل مشترك جديد إلى البوت\n\n"
+            f"👤 الاسم: {user.full_name or 'غير متوفر'}\n"
+            f"🔗 username: {username_text}\n"
+            f"🆔 Telegram ID: {user.id}\n"
+            f"🌐 اللغة: {language_text}\n"
+            f"🤖 حساب آلي: {'نعم' if user.is_bot else 'لا'}\n"
+            f"🔎 فتح الحساب: {user_link}"
+        )
+        try:
+            await context.bot.send_message(chat_id=ADMIN_ID, text=notification)
+        except Exception:
+            logger.exception("تعذر إرسال إشعار المشترك الجديد للإدارة")
 
     # While the store is closed, customers cannot enter or browse the bot.
     if not is_admin(user.id) and not store_is_open():
@@ -4086,6 +4108,48 @@ async def text_handler(update, context):
 
     if text in ("🛠️ لوحة التحكم", "لوحة التحكم", "الإدارة"):
         await show_admin_panel(update, context)
+        return
+
+    if text in ("🏪 ترقية الحساب إلى تاجر", "ترقية الحساب", "طلب حساب تاجر"):
+        if is_admin(user_id):
+            await message.reply_text("أنت مالك المتجر، ولا تحتاج إلى طلب ترقية.")
+            return
+        with db() as conn:
+            row = conn.execute("SELECT account_type, trader_requested, username, full_name FROM users WHERE user_id=?", (user_id,)).fetchone()
+            if not row:
+                await message.reply_text("أرسل /start أولاً لتسجيل حسابك.")
+                return
+            if row["account_type"] == "trader":
+                await message.reply_text("✅ حسابك مفعّل كتاجر بالفعل.")
+                return
+            if int(row["trader_requested"] or 0):
+                await message.reply_text("⏳ طلب الترقية تاعك راهو عند الإدارة، استنى الرد.")
+                return
+            conn.execute("UPDATE users SET trader_requested=1 WHERE user_id=?", (user_id,))
+        username_text = f"@{row['username']}" if row["username"] else "غير موجود"
+        admin_text = (
+            "🏪 طلب جديد لترقية حساب إلى تاجر\n\n"
+            f"👤 الاسم: {row['full_name'] or 'غير متوفر'}\n"
+            f"🔗 username: {username_text}\n"
+            f"🆔 Telegram ID: {user_id}\n"
+            f"🔎 فتح الحساب: tg://user?id={user_id}"
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=admin_text,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ قبول الترقية", callback_data=f"trader_approve:{user_id}"),
+                    InlineKeyboardButton("❌ رفض", callback_data=f"trader_reject:{user_id}"),
+                ]]),
+            )
+        except Exception:
+            logger.exception("تعذر إرسال طلب ترقية التاجر للإدارة")
+            with db() as conn:
+                conn.execute("UPDATE users SET trader_requested=0 WHERE user_id=?", (user_id,))
+            await message.reply_text("تعذر إرسال الطلب للإدارة حالياً. حاول مرة أخرى لاحقاً.")
+            return
+        await message.reply_text("✅ تم إرسال طلبك للإدارة. ستصلك رسالة عند قبول الطلب أو رفضه.")
         return
 
     if text == "🧪 الطلب التجريبي":
