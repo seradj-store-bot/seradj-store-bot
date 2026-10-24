@@ -3810,14 +3810,29 @@ async def callback_handler(update, context):
                         ).fetchone() if order["offer_id"] else None
                     public_price = int(price_row["retail_price"] or 0) if price_row else int(order["price"] or 0)
                     channel_text = (
-                        "🎉 عملية شحن ناجحة!\n\n"
+                        "🎉 تم إكمال طلبك بنجاح!\n\n"
+                        f"🔢 رقم الطلب: {order_ref}\n"
                         f"🎮 اللعبة: {game_name}\n"
                         f"📦 العرض: {offer_name}\n"
-                        f"💰 السعر: {public_price:,} DA\n"
-                        "✅ الحالة: تم الشحن بنجاح\n\n"
-                        "❤️ شكراً لثقتكم بـ SERADJ STORE!"
+                        f"💰 المبلغ: {public_price:,} DA\n"
+                        f"💳 طريقة الدفع: {payment_method}\n\n"
+                        "✅ تم إتمام طلبك بنجاح.\n"
+                        + (f"🎁 تمت إضافة {reward_points_granted} نقطة مكافأة إلى حسابك.\n" if reward_points_granted else "")
+                        + "❤️ شكراً لثقتك بـ SERADJ STORE!"
                     )
-                    await context.bot.send_message(chat_id=channel_id, text=channel_text)
+                    # The channel CTA opens the store bot directly; no customer data is published.
+                    bot_username = get_setting("bot_username", "").strip().lstrip("@")
+                    if not bot_username:
+                        me = await context.bot.get_me()
+                        bot_username = (me.username or "").strip().lstrip("@")
+                        if bot_username:
+                            set_setting("bot_username", bot_username)
+                    channel_markup = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🚀 اشحن وانطلق!", url=f"https://t.me/{bot_username}")]
+                    ]) if bot_username else None
+                    await context.bot.send_message(
+                        chat_id=channel_id, text=channel_text, reply_markup=channel_markup
+                    )
                 except Exception:
                     logger.exception("تعذر نشر الطلب المكتمل في قناة المتجر")
 
