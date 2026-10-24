@@ -1875,6 +1875,10 @@ async def admin_offers(query, game_id):
                 callback_data=f"offer_toggle:{offer['id']}",
             ),
             InlineKeyboardButton(
+                "✏️ تغيير الاسم",
+                callback_data=f"offer_rename:{offer['id']}",
+            ),
+            InlineKeyboardButton(
                 "💰 تعديل السعر",
                 callback_data=f"edit_offer:{offer['id']}",
             ),
@@ -3250,6 +3254,26 @@ async def callback_handler(update, context):
     elif data == "adm_offers":
         await admin_choose_manage_game(query)
 
+    # تغيير اسم عرض من لوحة التحكم
+    elif data.startswith("offer_rename:"):
+        try:
+            offer_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("معرّف العرض غير صالح.", show_alert=True)
+            return
+        with db() as conn:
+            offer = conn.execute("SELECT id, name, game_id FROM offers WHERE id=?", (offer_id,)).fetchone()
+        if not offer:
+            await query.answer("العرض غير موجود.", show_alert=True)
+            return
+        context.user_data["editing_offer_name"] = int(offer_id)
+        await query.message.reply_text(
+            f"✏️ أرسل الاسم الجديد للعرض الحالي: {offer['name']}\n\n"
+            "سيُطبّق الاسم الجديد في قوائم اللعبة والطلبات الجديدة، دون تغيير الأسعار أو النقاط.\n"
+            "أرسل /cancel للإلغاء."
+        )
+        await query.answer()
+
     # إعدادات الدفع
     elif data == "adm_payment":
         await admin_payment_settings(query)
@@ -4338,6 +4362,7 @@ async def text_handler(update, context):
         context.user_data.pop("editing_game_description", None)
         context.user_data.pop("editing_game_prompt", None)
         context.user_data.pop("editing_game_name", None)
+        context.user_data.pop("editing_offer_name", None)
         context.user_data.pop("awaiting_game_request", None)
         context.user_data.pop("person_loan_grant_target", None)
         context.user_data.pop("person_balance_target", None)
@@ -4608,6 +4633,36 @@ async def text_handler(update, context):
             conn.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, target))
         await message.reply_text(f"✅ تمت إضافة {amount} DA إلى رصيد المشترك {target}.")
         return
+
+    # حفظ اسم العرض الجديد
+    if is_admin(user_id):
+        offer_id = context.user_data.get("editing_offer_name")
+        if offer_id is not None:
+            new_name = text.strip()
+            if not new_name or len(new_name) > 100:
+                await message.reply_text("❌ الاسم غير صالح. أرسل اسمًا من 1 إلى 100 حرف، أو /cancel للإلغاء.")
+                return
+            try:
+                with db() as conn:
+                    offer = conn.execute("SELECT id, game_id FROM offers WHERE id=?", (int(offer_id),)).fetchone()
+                    if not offer:
+                        context.user_data.pop("editing_offer_name", None)
+                        await message.reply_text("❌ العرض غير موجود أو تم حذفه.")
+                        return
+                    duplicate = conn.execute(
+                        "SELECT id FROM offers WHERE game_id=? AND lower(name)=lower(?) AND id<>?",
+                        (int(offer["game_id"]), new_name, int(offer_id)),
+                    ).fetchone()
+                    if duplicate:
+                        await message.reply_text("❌ يوجد عرض آخر بهذا الاسم في اللعبة نفسها. أرسل اسمًا مختلفًا أو /cancel.")
+                        return
+                    conn.execute("UPDATE offers SET name=? WHERE id=?", (new_name, int(offer_id)))
+                context.user_data.pop("editing_offer_name", None)
+                await message.reply_text("✅ تم تغيير اسم العرض بنجاح. الأسعار ونقاط المكافأة لم تتغير.")
+            except Exception:
+                logger.exception("فشل تغيير اسم العرض")
+                await message.reply_text("❌ حدث خطأ أثناء تغيير اسم العرض.")
+            return
 
     # حفظ اسم اللعبة أو التطبيق الجديد
     if is_admin(user_id):
