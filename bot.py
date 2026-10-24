@@ -1229,10 +1229,16 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None):
         )])
     with db() as conn:
         custom_methods = conn.execute(
-            "SELECT m.* FROM custom_payment_methods m LEFT JOIN offer_payment_methods o ON o.method_id=m.id AND o.offer_id=? WHERE m.enabled=1 AND COALESCE(o.enabled,1)=1 ORDER BY m.id",
+            "SELECT m.*, o.enabled AS offer_method_enabled FROM custom_payment_methods m LEFT JOIN offer_payment_methods o ON o.method_id=m.id AND o.offer_id=? WHERE m.enabled=1 ORDER BY m.id",
             (offer_id,),
         ).fetchall()
     for custom_method in custom_methods:
+        method_currency = (custom_method["currency"] or "USD").upper()
+        if method_currency == "USD":
+            if get_setting("usd_payments_enabled", "0") != "1":
+                continue
+        elif custom_method["offer_method_enabled"] is not None and not int(custom_method["offer_method_enabled"] or 0):
+            continue
         try:
             currency = (custom_method["currency"] or "USD").upper()
             if currency == "USD":
@@ -1339,10 +1345,16 @@ async def select_payment(
         with db() as conn:
             custom_method = conn.execute("SELECT * FROM custom_payment_methods WHERE id=? AND enabled=1", (custom_id,)).fetchone()
             offer_method = conn.execute("SELECT enabled FROM offer_payment_methods WHERE offer_id=? AND method_id=?", (offer_id, custom_id)).fetchone()
-        if not custom_method or (offer_method and not int(offer_method["enabled"] or 0)):
+        if not custom_method:
             await query.edit_message_text("❌ طريقة الدفع هذه غير متاحة حالياً.")
             return
         currency = (custom_method["currency"] or "USD").upper()
+        if currency == "USD" and get_setting("usd_payments_enabled", "0") != "1":
+            await query.edit_message_text("❌ طرق الدفع بالدولار متوقفة مؤقتًا.")
+            return
+        if currency != "USD" and offer_method and not int(offer_method["enabled"] or 0):
+            await query.edit_message_text("❌ طريقة الدفع هذه غير متاحة لهذا العرض.")
+            return
         base_dzd = Decimal(offer_price(offer, "baridi", query.from_user.id))
         if currency == "USD":
             try:
@@ -2007,79 +2019,50 @@ async def admin_game_manage(query, game_id):
 
 async def admin_offers(query, game_id):
     with db() as conn:
-        game = conn.execute(
-            "SELECT name, emoji FROM games WHERE id = ?",
-            (game_id,),
-        ).fetchone()
-
+        game = conn.execute("SELECT name, emoji FROM games WHERE id = ?", (game_id,)).fetchone()
         offers = conn.execute(
-            """
-            SELECT offers.id, offers.name, offers.price_baridi, offers.price_flexy, offers.active, offers.android_active, offers.ios_active, offers.reward_points, recharge_methods.title AS method_title
-            FROM offers LEFT JOIN recharge_methods ON recharge_methods.id=offers.recharge_method_id
-            WHERE offers.game_id = ?
-            ORDER BY CASE WHEN COALESCE(offers.sort_order,0)>0 THEN offers.sort_order ELSE 1000000+offers.id END, offers.id
-            """,
+            """SELECT id, name, active FROM offers WHERE game_id = ?
+               ORDER BY CASE WHEN COALESCE(sort_order,0)>0 THEN sort_order ELSE 1000000+id END, id""",
             (game_id,),
         ).fetchall()
-
     if not game:
         await query.edit_message_text("❌ اللعبة غير موجودة.")
         return
-
     buttons = []
-
     for offer in offers:
         state = "🟢" if offer["active"] else "🔴"
-
-        buttons.append([
-            InlineKeyboardButton(
-                f"{state} [ID: {offer['id']}] {offer['name']} — {offer['method_title'] or 'طريقة قديمة'}",
-                callback_data=f"offer_toggle:{offer['id']}",
-            ),
-            InlineKeyboardButton(
-                "✏️ تغيير الاسم",
-                callback_data=f"offer_rename:{offer['id']}",
-            ),
-            InlineKeyboardButton(
-                "💰 تعديل السعر",
-                callback_data=f"edit_offer:{offer['id']}",
-            ),
-            InlineKeyboardButton(
-                "🗑️",
-                callback_data=f"offer_delete:{offer['id']}",
-            ),
-        ])
-        buttons.append([
-            InlineKeyboardButton(f"🤖 Android: {'متاح' if offer['android_active'] else 'موقوف'}", callback_data=f"offer_platform:{offer['id']}:android"),
-            InlineKeyboardButton(f"🍎 iPhone: {'متاح' if offer['ios_active'] else 'موقوف'}", callback_data=f"offer_platform:{offer['id']}:ios"),
-            InlineKeyboardButton("🎁 نقاط المكافأة", callback_data=f"edit_reward:{offer['id']}"),
-        ])
-        buttons.append([
-            InlineKeyboardButton("⬆️ تقديم", callback_data=f"offer_move:{offer['id']}:up"),
-            InlineKeyboardButton("⬇️ تأخير", callback_data=f"offer_move:{offer['id']}:down"),
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            "🔙 اختيار لعبة أخرى",
-            callback_data="adm_offers",
-        )
-    ])
-
-    text = (
-        f"{game['emoji']} <b>عروض {game['name']}</b>\n\n"
-        "🟢 العرض مفعّل\n"
-        "🔴 العرض متوقف\n\n"
-        "اضغط على اسم العرض لتفعيله أو إيقافه."
-    )
-
+        buttons.append([InlineKeyboardButton(
+            f"{state} {offer['name']}  ·  إدارة العرض",
+            callback_data=f"offer_manage:{offer['id']}"
+        )])
+    buttons.append([InlineKeyboardButton("🔙 اختيار لعبة أخرى", callback_data="adm_offers")])
+    text = f"{game['emoji']} <b>عروض {game['name']}</b>\n\nاختر أي عرض لفتح جميع إعداداته.\n🟢 مفعّل | 🔴 متوقف"
     if not offers:
         text += "\n\nما كاين حتى عرض لهذه اللعبة حاليا."
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
+
+async def admin_offer_manage(query, offer_id):
+    with db() as conn:
+        offer = conn.execute("""SELECT o.*, g.name AS game_name, g.emoji AS game_emoji,
+            r.title AS method_title FROM offers o LEFT JOIN games g ON g.id=o.game_id
+            LEFT JOIN recharge_methods r ON r.id=o.recharge_method_id WHERE o.id=?""", (offer_id,)).fetchone()
+    if not offer:
+        await query.edit_message_text("❌ العرض غير موجود.")
+        return
+    state = "🟢 مفعّل" if offer['active'] else "🔴 متوقف"
+    buttons = [
+        [InlineKeyboardButton("⏸️ إيقاف العرض" if offer['active'] else "🟢 تفعيل العرض", callback_data=f"offer_toggle:{offer_id}")],
+        [InlineKeyboardButton("✏️ تغيير الاسم", callback_data=f"offer_rename:{offer_id}"), InlineKeyboardButton("💰 تعديل الأسعار", callback_data=f"edit_offer:{offer_id}")],
+        [InlineKeyboardButton(f"🤖 Android: {'متاح' if offer['android_active'] else 'موقوف'}", callback_data=f"offer_platform:{offer_id}:android"), InlineKeyboardButton(f"🍎 iPhone: {'متاح' if offer['ios_active'] else 'موقوف'}", callback_data=f"offer_platform:{offer_id}:ios")],
+        [InlineKeyboardButton(f"🎁 نقاط المكافأة: {offer['reward_points']}", callback_data=f"edit_reward:{offer_id}")],
+        [InlineKeyboardButton("⬆️ تقديم العرض", callback_data=f"offer_move:{offer_id}:up"), InlineKeyboardButton("⬇️ تأخير العرض", callback_data=f"offer_move:{offer_id}:down")],
+        [InlineKeyboardButton("🗑️ حذف العرض", callback_data=f"offer_delete:{offer_id}")],
+        [InlineKeyboardButton("🔙 قائمة العروض", callback_data=f"offers_game:{offer['game_id']}")],
+    ]
     await query.edit_message_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons),
+        f"📦 <b>إدارة العرض</b>\n\n{offer['game_emoji']} {offer['game_name']}\nالعرض: <b>{offer['name']}</b>\nطريقة الشحن: {offer['method_title'] or 'طريقة قديمة'}\nالحالة: {state}\n\nاختر الإجراء المطلوب:",
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 
@@ -2407,14 +2390,17 @@ async def admin_payment_settings(query):
     baridi = get_setting("baridi_details", "غير محددة")
     flexy = get_setting("flexy_details", "غير محددة")
     rate = get_setting("usd_exchange_rate", "254")
+    usd_on = get_setting("usd_payments_enabled", "0") == "1"
     text = (
         "💳 <b>إعدادات الدفع</b>\n\n"
         f"🏦 <b>BaridiMob / CCP:</b>\n{html.escape(baridi)}\n\n"
         f"📱 <b>Flexy:</b>\n{html.escape(flexy)}\n\n"
-        f"💵 سعر الدولار: 1 USD = {html.escape(str(rate))} DA\n\n"
+        f"💵 سعر الدولار: 1 USD = {html.escape(str(rate))} DA\n"
         f"حالة الطرق الأساسية:\n🏦 BaridiMob / CCP: {'مفعّل ✅' if get_setting('payment_baridi_enabled', '1') == '1' else 'مخفي ❌'}\n"
         f"📱 Flexy: {'مفعّل ✅' if get_setting('payment_flexy_enabled', '1') == '1' else 'مخفي ❌'}\n\n"
-        "طرق الدفع الرقمية المضافة:"
+        f"🌐 <b>طرق الدفع بالدولار ككل:</b> {'مفعّلة ✅' if usd_on else 'مخفية ❌'}\n"
+        "زر واحد يتحكم في ظهور/إخفاء جميع طرق الدفع بالدولار عند الزبائن.\n\n"
+        "طرق الدفع الرقمية (تعديل التعليمات لكل طريقة فقط):"
     )
     buttons = [
         [InlineKeyboardButton("🏦 تعديل BaridiMob / CCP", callback_data="pay_settings:baridi")],
@@ -2422,19 +2408,18 @@ async def admin_payment_settings(query):
         [InlineKeyboardButton(f"{'🙈 إخفاء' if get_setting('payment_baridi_enabled','1')=='1' else '👁️ إظهار'} BaridiMob / CCP", callback_data="pay_toggle:baridi")],
         [InlineKeyboardButton(f"{'🙈 إخفاء' if get_setting('payment_flexy_enabled','1')=='1' else '👁️ إظهار'} Flexy", callback_data="pay_toggle:flexy")],
         [InlineKeyboardButton("💱 تعديل سعر الدولار", callback_data="pay_usd_rate")],
+        [InlineKeyboardButton(f"{'🙈 إخفاء كل طرق الدولار' if usd_on else '👁️ إظهار كل طرق الدولار'}", callback_data="usd_pay_toggle_all")],
         [InlineKeyboardButton("➕ إضافة طريقة دفع جديدة", callback_data="custom_pay_add")],
     ]
     with db() as conn:
         methods = conn.execute("SELECT * FROM custom_payment_methods ORDER BY id").fetchall()
     for method in methods:
-        state = "مفعّلة ✅" if int(method["enabled"] or 0) else "مخفية ❌"
-        buttons.append([
-            InlineKeyboardButton(
-                f"{method['emoji']} {method['name']} ({method['currency']}) — {state}",
-                callback_data=f"custom_pay_toggle:{method['id']}"
-            ),
-            InlineKeyboardButton("✏️ تعليمات الدفع", callback_data=f"custom_pay_edit:{method['id']}")
-        ])
+        currency = (method["currency"] or "USD").upper()
+        state = "مفعّلة ضمن المجموعة ✅" if currency == "USD" and usd_on else ("مخفية ضمن المجموعة ❌" if currency == "USD" else ("مفعّلة ✅" if int(method["enabled"] or 0) else "مخفية ❌"))
+        buttons.append([InlineKeyboardButton(
+            f"{method['emoji']} {method['name']} ({currency}) — {state}",
+            callback_data=f"custom_pay_info:{method['id']}"
+        ), InlineKeyboardButton("✏️ تعليمات", callback_data=f"custom_pay_edit:{method['id']}")])
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -2884,6 +2869,7 @@ async def callback_handler(update, context):
         "game_method:",
         "offers_game:",
         "offer_toggle:",
+        "offer_manage:",
         "offer_move:",
         "offer_delete:",
         "add_offer_game:",
@@ -3417,6 +3403,14 @@ async def callback_handler(update, context):
     elif data == "adm_offers":
         await admin_choose_manage_game(query)
 
+    elif data.startswith("offer_manage:"):
+        try:
+            offer_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("معرّف العرض غير صالح.", show_alert=True)
+            return
+        await admin_offer_manage(query, offer_id)
+
     # تغيير ترتيب العرض داخل اللعبة
     elif data.startswith("offer_move:"):
         try:
@@ -3443,7 +3437,7 @@ async def callback_handler(update, context):
             ids[idx], ids[target] = ids[target], ids[idx]
             conn.executemany("UPDATE offers SET sort_order=? WHERE id=?", [(position, item_id) for position, item_id in enumerate(ids, start=1)])
         await query.answer("✅ تم تحديث ترتيب العروض.")
-        await admin_offers(query, game_id)
+        await admin_offer_manage(query, offer_id)
 
     # تغيير اسم عرض من لوحة التحكم
     elif data.startswith("offer_rename:"):
@@ -3502,7 +3496,7 @@ async def callback_handler(update, context):
             conn.execute(f"UPDATE offers SET {col} = CASE WHEN {col} = 1 THEN 0 ELSE 1 END WHERE id = ?", (offer_id,))
             row = conn.execute("SELECT game_id FROM offers WHERE id = ?", (offer_id,)).fetchone()
         if row:
-            await admin_offers(query, row["game_id"])
+            await admin_offer_manage(query, offer_id)
 
     # تغيير طريقة الشحن بالتناوب: ID -> تسجيل الدخول -> بدون معلومات شحن
     elif data.startswith("game_method:"):
@@ -3711,11 +3705,9 @@ async def callback_handler(update, context):
             ).fetchone()
 
         if row:
-            await admin_offers(query, row["game_id"])
+            await admin_offer_manage(query, offer_id)
         else:
-            await query.edit_message_text(
-                "❌ العرض غير موجود."
-            )
+            await query.edit_message_text("❌ العرض غير موجود.")
 
     # حذف عرض
     elif data.startswith("offer_delete:"):
@@ -3815,6 +3807,8 @@ async def callback_handler(update, context):
         if custom_methods:
             price_buttons.append([InlineKeyboardButton("— طرق الدفع المخصصة لهذا العرض —", callback_data=f"offer_payments_info:{offer_id}")])
             for cm in custom_methods:
+                if (cm["currency"] or "USD").upper() == "USD":
+                    continue  # USD methods are managed together globally.
                 is_on = offer_method_states.get(int(cm["id"]), 1)
                 price_buttons.append([InlineKeyboardButton(f"{'✅' if is_on else '🚫'} {cm['emoji']} {cm['name']} — {'إيقاف لهذا العرض' if is_on else 'تفعيل لهذا العرض'}", callback_data=f"offer_pay_toggle:{offer_id}:{cm['id']}")])
         await query.message.reply_text(
@@ -3856,6 +3850,8 @@ async def callback_handler(update, context):
             [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         for cm in custom_methods:
+            if (cm["currency"] or "USD").upper() == "USD":
+                continue  # USD methods are managed together globally.
             is_on = offer_method_states.get(int(cm["id"]), 1)
             price_buttons.append([InlineKeyboardButton(f"{'✅' if is_on else '🚫'} {cm['emoji']} {cm['name']} — {'إيقاف لهذا العرض' if is_on else 'تفعيل لهذا العرض'}", callback_data=f"offer_pay_toggle:{offer_id}:{cm['id']}")])
         await query.message.reply_text(f"💰 تعديل سعر العرض: {offer['name']}\n\nالأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\nتاجر Baridi {price_row['price_baridi_trader']} DA | Flexy {price_row['price_flexy_trader']} DA\n\nيمكنك تفعيل أو إيقاف طرق الدفع المخصصة لهذا العرض:", reply_markup=InlineKeyboardMarkup(price_buttons))
@@ -3893,6 +3889,32 @@ async def callback_handler(update, context):
         )
         await query.answer()
 
+    elif data == "usd_pay_toggle_all":
+        if not is_admin(user_id):
+            return
+        new_state = "0" if get_setting("usd_payments_enabled", "0") == "1" else "1"
+        set_setting("usd_payments_enabled", new_state)
+        # All USD methods are controlled as one group; no per-method enable/disable is needed.
+        with db() as conn:
+            conn.execute("UPDATE custom_payment_methods SET enabled=? WHERE upper(currency)='USD'", (int(new_state),))
+        await query.answer("تم إخفاء جميع طرق الدولار." if new_state == "0" else "تم إظهار جميع طرق الدولار.")
+        await admin_payment_settings(query)
+
+    elif data.startswith("custom_pay_info:"):
+        if not is_admin(user_id):
+            return
+        try:
+            custom_id = int(data.split(":", 1)[1])
+        except ValueError:
+            return
+        with db() as conn:
+            method = conn.execute("SELECT name, currency, instructions FROM custom_payment_methods WHERE id=?", (custom_id,)).fetchone()
+        if not method:
+            await query.answer("طريقة الدفع غير موجودة.", show_alert=True)
+            return
+        await query.answer()
+        await query.message.reply_text(f"💳 {method['name']} ({method['currency']})\n\n{method['instructions'] or 'لم تتم إضافة تعليمات بعد.'}")
+
     elif data.startswith("custom_pay_toggle:"):
         if not is_admin(user_id):
             return
@@ -3901,9 +3923,12 @@ async def callback_handler(update, context):
         except ValueError:
             return
         with db() as conn:
-            row = conn.execute("SELECT enabled FROM custom_payment_methods WHERE id=?", (custom_id,)).fetchone()
+            row = conn.execute("SELECT enabled, currency FROM custom_payment_methods WHERE id=?", (custom_id,)).fetchone()
             if not row:
                 await query.answer("طريقة الدفع غير موجودة.", show_alert=True)
+                return
+            if (row["currency"] or "USD").upper() == "USD":
+                await query.answer("طرق الدولار تُدار كلها من الزر الجماعي.", show_alert=True)
                 return
             conn.execute("UPDATE custom_payment_methods SET enabled=? WHERE id=?", (0 if int(row["enabled"] or 0) else 1, custom_id))
         await admin_payment_settings(query)
@@ -5050,11 +5075,12 @@ async def text_handler(update, context):
                 context.user_data.pop("admin_step", None)
                 await message.reply_text("❌ انتهت عملية الإضافة. ابدأ من جديد.")
                 return
+            initial_enabled = 1 if pending["currency"] != "USD" or get_setting("usd_payments_enabled", "0") == "1" else 0
             with db() as conn:
-                conn.execute("INSERT INTO custom_payment_methods (name, emoji, currency, instructions, enabled, created_at) VALUES (?, ?, ?, ?, 1, ?)", (pending["name"], pending["emoji"], pending["currency"], text[:3500], now_text()))
+                conn.execute("INSERT INTO custom_payment_methods (name, emoji, currency, instructions, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?)", (pending["name"], pending["emoji"], pending["currency"], text[:3500], initial_enabled, now_text()))
             context.user_data.pop("pending_custom_payment", None)
             context.user_data.pop("admin_step", None)
-            await message.reply_text("✅ تمت إضافة طريقة الدفع وتفعيلها. ستظهر مع العروض الجديدة، ويمكنك إخفاؤها من إعدادات الدفع.", reply_markup=admin_keyboard())
+            await message.reply_text("✅ تمت إضافة طريقة الدفع. طرق الدولار تتحكم في ظهورها كلها معًا من إعدادات الدفع، أما طرق DZD فتُدار كل طريقة على حدة.", reply_markup=admin_keyboard())
             return
 
         if step == "deposit_limits_set":
