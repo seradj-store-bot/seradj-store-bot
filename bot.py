@@ -131,6 +131,7 @@ ADMIN_PANEL_MENU = [
 ["📂 إدارة البوت", "📨 إرسال إشعار"],
 ["🎁 إدارة متجر النقاط", "💬 مراسلة زبون"],
 ["💰 حدود تعبئة الرصيد"],
+["📢 إعدادات النشر للقناة"],
 ["👥 التحكم في الأفراد", "👥 إدارة التجار"],
 ["🔙 القائمة الرئيسية"],
 ]
@@ -1449,6 +1450,18 @@ async def photo_handler(update, context):
             await message.reply_text("🚫 حسابك محظور من استعمال البوت.")
             return
 
+    if context.user_data.get("awaiting_order_receipt"):
+        if not user or not is_admin(user.id):
+            context.user_data.pop("awaiting_order_receipt", None)
+            return
+        receipt_order_id = int(context.user_data.pop("awaiting_order_receipt"))
+        context.user_data[f"order_receipt_photo:{receipt_order_id}"] = message.photo[-1].file_id
+        await message.reply_text(
+            f"✅ تم حفظ صورة الوصل للطلب #{receipt_order_id}. اختر إتمام الطلب بالصورة:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ إتمام وإرسال الوصل", callback_data=f"order_finish_with_receipt:{receipt_order_id}")], [InlineKeyboardButton("❌ إلغاء الخطوة", callback_data=f"order_finish_back:{receipt_order_id}")]])
+        )
+        return
+
     if context.user_data.get("awaiting_credit_receipt"):
         context.user_data.pop("awaiting_credit_receipt", None)
         context.user_data.pop("awaiting_credit_repay_amount", None)
@@ -2283,6 +2296,24 @@ async def callback_handler(update, context):
         return
     await query.answer()
 
+    if data.startswith("order_channel_toggle:"):
+        if not is_admin(user_id):
+            await query.answer("خاص بالإدارة.", show_alert=True)
+            return
+        enabled = data.split(":", 1)[1] == "1"
+        set_setting("order_channel_enabled", "1" if enabled else "0")
+        await query.edit_message_text("✅ تم تفعيل نشر الطلبات في القناة." if enabled else "⏸️ تم إيقاف النشر في القناة.")
+        return
+    if data == "order_channel_clear:1":
+        if not is_admin(user_id):
+            await query.answer("خاص بالإدارة.", show_alert=True)
+            return
+        set_setting("order_channel_id", "")
+        set_setting("order_channel_enabled", "0")
+        context.user_data.pop("awaiting_order_channel_id", None)
+        await query.edit_message_text("🗑️ تم حذف القناة وإيقاف النشر.")
+        return
+
     # Safe demo orders: no charge, no real fulfillment, clearly labeled as test.
     if data == "test_order_abort":
         await query.edit_message_text("تم إلغاء الطلب التجريبي.")
@@ -2309,9 +2340,63 @@ async def callback_handler(update, context):
         await query.edit_message_text(f"🧪 تم إنشاء الطلب التجريبي #{test_order_id} للعبة {game['name']}، بلا خصم رصيد وبلا شحن حقيقي.")
         return
 
-    # Normalize group-order actions before entering the main callback routing chain.
-    group_order_terminal_action = False
-    if data.startswith("order_finish:") or data.startswith("order_cancel:"):
+    # Receipt is optional: ask admin whether to attach a receipt before completion.
+    if data.startswith("order_finish:"):
+        try:
+            finish_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("رقم الطلب غير صالح.", show_alert=True)
+            return
+        if query.message.chat.type == "private" and not is_admin(user_id):
+            await query.answer("هذا الإجراء خاص بمالك المتجر.", show_alert=True)
+            return
+        if query.message.chat.type != "private":
+            # Preserve the existing claimed-order completion workflow in work groups.
+            pass
+        else:
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📷 إرفاق وصل الشحن", callback_data=f"order_receipt:{finish_id}")],
+            [InlineKeyboardButton("⏭️ إتمام بدون صورة", callback_data=f"order_finish_now:{finish_id}")],
+            [InlineKeyboardButton("↩️ رجوع", callback_data=f"order_finish_back:{finish_id}")],
+            ]))
+            return
+
+    if data.startswith("order_receipt:"):
+        try:
+            receipt_order_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return
+        if query.message.chat.type != "private" or not is_admin(user_id):
+            await query.answer("هذا الإجراء خاص بمالك المتجر.", show_alert=True)
+            return
+        context.user_data["awaiting_order_receipt"] = receipt_order_id
+        await query.message.reply_text(f"📷 ابعث صورة وصل الشحن للطلب #{receipt_order_id}.\nللإلغاء أرسل /cancel_receipt.")
+        return
+
+    if data.startswith("order_finish_back:"):
+        try:
+            context.user_data.pop(f"order_receipt_photo:{int(data.split(':',1)[1])}", None)
+        except (ValueError, IndexError):
+            pass
+        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔎 مراجعة الطلب", callback_data=f"order_review:{data.split(':',1)[1]}")],
+            [InlineKeyboardButton("✅ إتمام الطلب", callback_data=f"order_finish:{data.split(':',1)[1]}")],
+            [InlineKeyboardButton("❌ إلغاء الطلب", callback_data=f"order_cancel:{data.split(':',1)[1]}")],
+        ]))
+        return
+
+    if data.startswith("order_finish_now:") or data.startswith("order_finish_with_receipt:"):
+        finish_id = int(data.split(":", 1)[1])
+        if query.message.chat.type != "private" or not is_admin(user_id):
+            await query.answer("هذا الإجراء خاص بمالك المتجر.", show_alert=True)
+            return
+        group_order_terminal_action = True
+        data = f"status:{finish_id}:completed"
+    else:
+        group_order_terminal_action = False
+
+    # Normalize group-order cancellation before entering the main callback routing chain.
+    if data.startswith("order_cancel:"):
         is_cancel = data.startswith("order_cancel:")
         try:
             action_order_id = int(data.split(":", 1)[1])
@@ -3684,11 +3769,17 @@ async def callback_handler(update, context):
                     cta_markup = InlineKeyboardMarkup([
                         [InlineKeyboardButton("🚀 اشحن وانطلق!", url=f"https://t.me/{bot_username}")]
                     ])
-                await context.bot.send_message(
-                    chat_id=customer_id,
-                    text=customer_notice,
-                    reply_markup=cta_markup or main_keyboard(customer_id),
-                )
+                receipt_file_id = context.user_data.pop(f"order_receipt_photo:{order_id}", None)
+                if receipt_file_id:
+                    await context.bot.send_photo(
+                        chat_id=customer_id, photo=receipt_file_id, caption=customer_notice,
+                        reply_markup=cta_markup or main_keyboard(customer_id),
+                    )
+                else:
+                    await context.bot.send_message(
+                        chat_id=customer_id, text=customer_notice,
+                        reply_markup=cta_markup or main_keyboard(customer_id),
+                    )
             else:
                 await context.bot.send_message(
                     chat_id=customer_id,
@@ -3697,6 +3788,29 @@ async def callback_handler(update, context):
                 )
         except Exception:
             logger.exception("تعذر إرسال تحديث الطلب أو زر الشحن إلى الزبون (ID=%s)", customer_id)
+
+        # Publish a generic successful-order example to the configured channel.
+        # Always use the regular customer price, including orders placed by traders.
+        if new_status == "completed" and order["status"] != "completed" and get_setting("order_channel_enabled", "0") == "1":
+            channel_id = get_setting("order_channel_id", "").strip()
+            if channel_id:
+                try:
+                    with db() as conn:
+                        price_row = conn.execute(
+                            "SELECT price FROM offers WHERE id = ?", (order["offer_id"],)
+                        ).fetchone() if order["offer_id"] else None
+                    public_price = int(price_row["price"] or 0) if price_row else int(order["price"] or 0)
+                    channel_text = (
+                        "🎉 عملية شحن ناجحة!\n\n"
+                        f"🎮 اللعبة: {game_name}\n"
+                        f"📦 العرض: {offer_name}\n"
+                        f"💰 السعر: {public_price:,} DA\n"
+                        "✅ الحالة: تم الشحن بنجاح\n\n"
+                        "❤️ شكراً لثقتكم بـ SERADJ STORE!"
+                    )
+                    await context.bot.send_message(chat_id=channel_id, text=channel_text)
+                except Exception:
+                    logger.exception("تعذر نشر الطلب المكتمل في قناة المتجر")
 
         # Also notify the store owner/admin about every status change.
         if ADMIN_ID and int(ADMIN_ID) != int(customer_id):
@@ -4108,6 +4222,29 @@ async def text_handler(update, context):
 
     if text in ("🛠️ لوحة التحكم", "لوحة التحكم", "الإدارة"):
         await show_admin_panel(update, context)
+        return
+
+    if text == "📢 إعدادات النشر للقناة" and is_admin(user_id):
+        enabled = get_setting("order_channel_enabled", "0") == "1"
+        channel = get_setting("order_channel_id", "") or "غير محددة"
+        await message.reply_text(
+            f"📢 إعدادات نشر الطلبات\n\nالقناة الحالية: {channel}\nالنشر: {'مفعّل ✅' if enabled else 'متوقف ⏸️'}\n\nأرسل معرف القناة أو @username لتغييرها في أي وقت.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("▶️ تفعيل النشر", callback_data="order_channel_toggle:1"), InlineKeyboardButton("⏸️ إيقاف النشر", callback_data="order_channel_toggle:0")],
+                [InlineKeyboardButton("🗑️ حذف القناة", callback_data="order_channel_clear:1")],
+            ])
+        )
+        context.user_data["awaiting_order_channel_id"] = True
+        return
+
+    if context.user_data.get("awaiting_order_channel_id") and is_admin(user_id):
+        channel_id = text.strip()
+        if not (channel_id.startswith("@") or channel_id.lstrip("-").isdigit()):
+            await message.reply_text("❌ أرسل @username للقناة أو رقم ID مثل -1001234567890.")
+            return
+        set_setting("order_channel_id", channel_id)
+        context.user_data.pop("awaiting_order_channel_id", None)
+        await message.reply_text("✅ تم حفظ القناة. تأكد أن البوت مشرف فيها ويملك صلاحية نشر الرسائل.")
         return
 
     if text in ("🏪 ترقية الحساب إلى تاجر", "ترقية الحساب", "طلب حساب تاجر"):
