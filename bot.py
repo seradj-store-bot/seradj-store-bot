@@ -179,7 +179,7 @@ async def dispatch_order_to_group(context, order_id, user, draft, player_id, pay
     caption = (f"🆕 طلب جديد #{order_id}\n\n👤 الزبون: {user.full_name}\n🆔 Telegram ID: {user.id}\n"
                f"🎮 الخدمة: {draft.get('game_name','غير محددة')}\n📦 العرض: {draft.get('offer_name','غير محدد')}\n"
                f"📋 معلومات الشحن: {player_id or 'لا تتطلب'}\n📱 الجهاز: {draft.get('platform') or 'غير محدد'}\n"
-               f"💰 السعر: {price} DA\n🎁 النقاط المستخدمة: {points_used}\n💳 الدفع: {payment_method}\n📌 الحالة: قيد الانتظار")
+               f"💰 السعر: {price} {draft.get('currency', 'DA')}\n🎁 النقاط المستخدمة: {points_used}\n💳 الدفع: {payment_method}\n📌 الحالة: قيد الانتظار")
     try:
         if photo:
             await context.bot.send_photo(chat_id=int(group_id), photo=photo.file_id, caption=caption, reply_markup=keyboard)
@@ -3665,17 +3665,60 @@ async def callback_handler(update, context):
         context.user_data["pending_offer_id"] = offer_id
         with db() as conn:
             price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
+            custom_methods = conn.execute("SELECT * FROM custom_payment_methods ORDER BY id").fetchall()
+            offer_method_states = {int(r["method_id"]): int(r["enabled"] or 0) for r in conn.execute("SELECT method_id, enabled FROM offer_payment_methods WHERE offer_id=?", (offer_id,)).fetchall()}
+        price_buttons = [
+            [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
+            [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy_trader")],
+            [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
+        ]
+        if custom_methods:
+            price_buttons.append([InlineKeyboardButton("— طرق الدفع المخصصة لهذا العرض —", callback_data=f"offer_payments_info:{offer_id}")])
+            for cm in custom_methods:
+                is_on = offer_method_states.get(int(cm["id"]), 1)
+                price_buttons.append([InlineKeyboardButton(f"{'✅' if is_on else '🚫'} {cm['emoji']} {cm['name']} — {'إيقاف لهذا العرض' if is_on else 'تفعيل لهذا العرض'}", callback_data=f"offer_pay_toggle:{offer_id}:{cm['id']}")])
         await query.message.reply_text(
             f"💰 تعديل سعر العرض: {offer['name']}\n\n"
             f"الأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\n"
             f"تاجر Baridi {price_row['price_baridi_trader']} DA | تاجر Flexy {price_row['price_flexy_trader']} DA\n\n"
             "اختار السعر اللي تحب تبدله فقط؛ باقي الأسعار تبقى كما هي:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
-                [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy_trader")],
-                [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
-            ])
+            reply_markup=InlineKeyboardMarkup(price_buttons)
         )
+
+    elif data.startswith("offer_pay_toggle:"):
+        if not is_admin(user_id):
+            return
+        try:
+            _, offer_id_text, method_id_text = data.split(":", 2)
+            offer_id, method_id = int(offer_id_text), int(method_id_text)
+        except (ValueError, TypeError):
+            await query.answer("بيانات غير صحيحة.", show_alert=True)
+            return
+        with db() as conn:
+            exists = conn.execute("SELECT 1 FROM offers WHERE id=?", (offer_id,)).fetchone()
+            method_row = conn.execute("SELECT id FROM custom_payment_methods WHERE id=?", (method_id,)).fetchone()
+            if not exists or not method_row:
+                await query.answer("العرض أو طريقة الدفع غير موجودة.", show_alert=True)
+                return
+            row = conn.execute("SELECT enabled FROM offer_payment_methods WHERE offer_id=? AND method_id=?", (offer_id, method_id)).fetchone()
+            new_state = 0 if row and int(row["enabled"] or 0) else 1
+            conn.execute("INSERT INTO offer_payment_methods (offer_id, method_id, enabled) VALUES (?, ?, ?) ON CONFLICT(offer_id, method_id) DO UPDATE SET enabled=excluded.enabled", (offer_id, method_id, new_state))
+        await query.answer("تم تحديث طريقة الدفع لهذا العرض.")
+        # Refresh the offer's price/payment controls
+        with db() as conn:
+            offer = conn.execute("SELECT name FROM offers WHERE id=?", (offer_id,)).fetchone()
+            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
+            custom_methods = conn.execute("SELECT * FROM custom_payment_methods ORDER BY id").fetchall()
+            offer_method_states = {int(r["method_id"]): int(r["enabled"] or 0) for r in conn.execute("SELECT method_id, enabled FROM offer_payment_methods WHERE offer_id=?", (offer_id,)).fetchall()}
+        price_buttons = [
+            [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
+            [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy_trader")],
+            [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
+        ]
+        for cm in custom_methods:
+            is_on = offer_method_states.get(int(cm["id"]), 1)
+            price_buttons.append([InlineKeyboardButton(f"{'✅' if is_on else '🚫'} {cm['emoji']} {cm['name']} — {'إيقاف لهذا العرض' if is_on else 'تفعيل لهذا العرض'}", callback_data=f"offer_pay_toggle:{offer_id}:{cm['id']}")])
+        await query.message.reply_text(f"💰 تعديل سعر العرض: {offer['name']}\n\nالأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\nتاجر Baridi {price_row['price_baridi_trader']} DA | Flexy {price_row['price_flexy_trader']} DA\n\nيمكنك تفعيل أو إيقاف طرق الدفع المخصصة لهذا العرض:", reply_markup=InlineKeyboardMarkup(price_buttons))
 
     elif data == "pay_usd_rate":
         if not is_admin(user_id):
