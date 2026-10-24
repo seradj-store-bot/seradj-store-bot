@@ -380,6 +380,21 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS custom_payment_methods (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            emoji TEXT DEFAULT '💳',
+            currency TEXT NOT NULL DEFAULT 'USD',
+            instructions TEXT DEFAULT '',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS offer_payment_methods (
+            offer_id INTEGER NOT NULL,
+            method_id INTEGER NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (offer_id, method_id)
+        );
         CREATE TABLE IF NOT EXISTS point_offers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
@@ -554,6 +569,7 @@ def init_db():
                 cur = conn.execute("INSERT INTO recharge_methods (game_id,title,method_type,prompt,active) VALUES (?,?,?,?,1)", (g["id"], title, old_type, g["player_prompt"] or ""))
                 conn.execute("UPDATE offers SET recharge_method_id=? WHERE game_id=? AND recharge_method_id IS NULL", (cur.lastrowid, g["id"]))
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('whatsapp_number', ?)", (WHATSAPP_NUMBER,))
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('usd_exchange_rate', '254')")
 
 
 def get_setting(key, default=""):
@@ -1115,6 +1131,28 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None):
             f"📱 Flexy — {offer_price(offer, 'flexy', user_id)} DA",
             callback_data=f"pay:{game_id}:{offer_id}:flexy",
         )])
+    with db() as conn:
+        custom_methods = conn.execute(
+            "SELECT m.* FROM custom_payment_methods m LEFT JOIN offer_payment_methods o ON o.method_id=m.id AND o.offer_id=? WHERE m.enabled=1 AND COALESCE(o.enabled,1)=1 ORDER BY m.id",
+            (offer_id,),
+        ).fetchall()
+    for custom_method in custom_methods:
+        try:
+            currency = (custom_method["currency"] or "USD").upper()
+            if currency == "USD":
+                rate = Decimal(get_setting("usd_exchange_rate", "254"))
+                if rate <= 0:
+                    rate = Decimal("254")
+                usd_price = (Decimal(offer_price(offer, "baridi", user_id)) / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                label_price = f"{usd_price} USD"
+            else:
+                label_price = f"{offer_price(offer, 'baridi', user_id)} DA"
+        except Exception:
+            label_price = f"{offer_price(offer, 'baridi', user_id)} DA"
+        buttons.append([InlineKeyboardButton(
+            f"{custom_method['emoji']} {custom_method['name']} — {label_price}",
+            callback_data=f"pay:{game_id}:{offer_id}:custom_{custom_method['id']}"
+        )])
     buttons += [
         [InlineKeyboardButton(
             f"🎁 استخدام النقاط: {'مفعّل' if context and context.user_data.get('use_points_for_order') else 'غير مفعّل'}",
@@ -1196,6 +1234,32 @@ async def select_payment(
             return
         method_name = "قرض التاجر"
         details = f"الدين الحالي: {debt} DA\nالمتاح من سقف القرض: {limit_amount-debt} DA\nأجل التسديد: {term_days} يومًا"
+    elif method.startswith("custom_"):
+        try:
+            custom_id = int(method.split("_", 1)[1])
+        except (ValueError, IndexError):
+            await query.edit_message_text("❌ طريقة الدفع غير صحيحة.")
+            return
+        with db() as conn:
+            custom_method = conn.execute("SELECT * FROM custom_payment_methods WHERE id=? AND enabled=1", (custom_id,)).fetchone()
+            offer_method = conn.execute("SELECT enabled FROM offer_payment_methods WHERE offer_id=? AND method_id=?", (offer_id, custom_id)).fetchone()
+        if not custom_method or (offer_method and not int(offer_method["enabled"] or 0)):
+            await query.edit_message_text("❌ طريقة الدفع هذه غير متاحة حالياً.")
+            return
+        currency = (custom_method["currency"] or "USD").upper()
+        base_dzd = Decimal(offer_price(offer, "baridi", query.from_user.id))
+        if currency == "USD":
+            try:
+                rate = Decimal(get_setting("usd_exchange_rate", "254"))
+                if not rate.is_finite() or rate <= 0:
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError):
+                rate = Decimal("254")
+            price = float((base_dzd / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        else:
+            price = int(base_dzd)
+        method_name = f"{custom_method['emoji']} {custom_method['name']}"
+        details = custom_method["instructions"] or "تواصل مع الإدارة لمعرفة تعليمات الدفع."
     elif method == "balance":
         with db() as conn:
             row = conn.execute("SELECT balance FROM users WHERE user_id = ?", (query.from_user.id,)).fetchone()
@@ -1221,11 +1285,11 @@ async def select_payment(
 
     base_price = price
     points_used = 0
-    if context.user_data.get("use_points_for_order"):
+    if context.user_data.get("use_points_for_order") and not (method.startswith("custom_") and currency == "USD"):
         with db() as conn:
             points_row = conn.execute("SELECT points FROM users WHERE user_id = ?", (query.from_user.id,)).fetchone()
         available_points = int(points_row["points"] or 0) if points_row else 0
-        points_used = min(available_points, base_price)
+        points_used = min(available_points, int(base_price))
         price = max(0, base_price - points_used)
         if points_used:
             details += f"\n🎁 خصم النقاط: {points_used} DA"
@@ -1240,6 +1304,7 @@ async def select_payment(
         "base_price": base_price,
         "points_used": points_used,
         "payment_type": method,
+        "currency": currency if method.startswith("custom_") else "DA",
         "platform": context.user_data.get("selected_platform", ""),
     }
 
@@ -1272,7 +1337,7 @@ async def select_payment(
         f"📦 العرض: {offer['name']}\n"
         f"🔀 طريقة الشحن: {selected_method['title'] if selected_method else 'الطريقة الافتراضية'}\n"
         f"💳 الدفع: {method_name}\n"
-        f"💰 السعر: {price} DA\n\n"
+        f"💰 السعر: {price} {currency if method.startswith('custom_') else 'DA'}\n\n"
         f"💳 معلومات الدفع:\n{details}\n\n"
         f"{prompt}\n\nللإلغاء أرسل /cancel"
     )
@@ -1367,7 +1432,7 @@ async def create_order(update, context):
         f"📦 العرض: {draft['offer_name']}\n"
         f"{('🆔 معرف اللاعب: ' + player_id + chr(10)) if not draft.get('login_mode') else '🔐 تم استلام بيانات الحساب.' + chr(10)}"
         f"💳 طريقة الدفع: {draft['method']}\n"
-        f"💰 المبلغ: {draft['price']} DA\n\n"
+        f"💰 المبلغ: {draft['price']} {draft.get('currency', 'DA')}\n\n"
         "📸 الآن أرسل صورة وصل الدفع لإتمام الطلب.\n\n"
         "⚠️ تأكد أن الصورة واضحة وتظهر معلومات العملية.\n"
         "لإلغاء العملية أرسل /cancel"
@@ -2240,48 +2305,34 @@ async def show_stats(query):
 async def admin_payment_settings(query):
     baridi = get_setting("baridi_details", "غير محددة")
     flexy = get_setting("flexy_details", "غير محددة")
-
+    rate = get_setting("usd_exchange_rate", "254")
     text = (
         "💳 <b>إعدادات الدفع</b>\n\n"
-        f"🏦 <b>BaridiMob / CCP:</b>\n{baridi}\n\n"
-        f"📱 <b>Flexy:</b>\n{flexy}\n\n"
-        f"\n\nحالة الطرق:\n🏦 BaridiMob / CCP: {'مفعّل ✅' if get_setting('payment_baridi_enabled', '1') == '1' else 'مخفي ❌'}\n📱 Flexy: {'مفعّل ✅' if get_setting('payment_flexy_enabled', '1') == '1' else 'مخفي ❌'}\n\nاختار طريقة الدفع لتعديل معلوماتها أو تغيير ظهورها للزبائن."
+        f"🏦 <b>BaridiMob / CCP:</b>\n{html.escape(baridi)}\n\n"
+        f"📱 <b>Flexy:</b>\n{html.escape(flexy)}\n\n"
+        f"💵 سعر الدولار: 1 USD = {html.escape(str(rate))} DA\n\n"
+        f"حالة الطرق الأساسية:\n🏦 BaridiMob / CCP: {'مفعّل ✅' if get_setting('payment_baridi_enabled', '1') == '1' else 'مخفي ❌'}\n"
+        f"📱 Flexy: {'مفعّل ✅' if get_setting('payment_flexy_enabled', '1') == '1' else 'مخفي ❌'}\n\n"
+        "طرق الدفع الرقمية المضافة:"
     )
-
     buttons = [
-        [
-            InlineKeyboardButton(
-                "🏦 تعديل BaridiMob / CCP",
-                callback_data="pay_settings:baridi",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📱 تعديل Flexy",
-                callback_data="pay_settings:flexy",
-            )
-        ],
-        [InlineKeyboardButton(
-            f"{'🙈 إخفاء' if get_setting('payment_baridi_enabled', '1') == '1' else '👁️ إظهار'} BaridiMob / CCP",
-            callback_data="pay_toggle:baridi",
-        )],
-        [InlineKeyboardButton(
-            f"{'🙈 إخفاء' if get_setting('payment_flexy_enabled', '1') == '1' else '👁️ إظهار'} Flexy",
-            callback_data="pay_toggle:flexy",
-        )],
-        [
-            InlineKeyboardButton(
-                "🔙 رجوع",
-                callback_data="adm_home",
-            )
-        ],
+        [InlineKeyboardButton("🏦 تعديل BaridiMob / CCP", callback_data="pay_settings:baridi")],
+        [InlineKeyboardButton("📱 تعديل Flexy", callback_data="pay_settings:flexy")],
+        [InlineKeyboardButton(f"{'🙈 إخفاء' if get_setting('payment_baridi_enabled','1')=='1' else '👁️ إظهار'} BaridiMob / CCP", callback_data="pay_toggle:baridi")],
+        [InlineKeyboardButton(f"{'🙈 إخفاء' if get_setting('payment_flexy_enabled','1')=='1' else '👁️ إظهار'} Flexy", callback_data="pay_toggle:flexy")],
+        [InlineKeyboardButton("💱 تعديل سعر الدولار", callback_data="pay_usd_rate")],
+        [InlineKeyboardButton("➕ إضافة طريقة دفع جديدة", callback_data="custom_pay_add")],
     ]
-
-    await query.edit_message_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        )
+    with db() as conn:
+        methods = conn.execute("SELECT * FROM custom_payment_methods ORDER BY id").fetchall()
+    for method in methods:
+        state = "مفعّلة ✅" if int(method["enabled"] or 0) else "مخفية ❌"
+        buttons.append([InlineKeyboardButton(
+            f"{method['emoji']} {method['name']} ({method['currency']}) — {state}",
+            callback_data=f"custom_pay_toggle:{method['id']}"
+        )])
+    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # =========================
@@ -3626,6 +3677,33 @@ async def callback_handler(update, context):
             ])
         )
 
+    elif data == "pay_usd_rate":
+        if not is_admin(user_id):
+            return
+        context.user_data["admin_step"] = "set_usd_exchange_rate"
+        await query.message.reply_text("أرسل سعر الدولار بالدينار الجزائري. مثال: 254\nيعني 1 USD = 254 DA. أرسل /cancel للإلغاء.")
+
+    elif data == "custom_pay_add":
+        if not is_admin(user_id):
+            return
+        context.user_data["admin_step"] = "custom_payment_name"
+        await query.message.reply_text("أرسل طريقة الدفع بهذا الشكل:\nاسم الطريقة | الإيموجي | USD أو DZD\nمثال: Binance | 🟡 | USD\nثم سأطلب منك تعليمات الدفع. للإلغاء /cancel")
+
+    elif data.startswith("custom_pay_toggle:"):
+        if not is_admin(user_id):
+            return
+        try:
+            custom_id = int(data.split(":", 1)[1])
+        except ValueError:
+            return
+        with db() as conn:
+            row = conn.execute("SELECT enabled FROM custom_payment_methods WHERE id=?", (custom_id,)).fetchone()
+            if not row:
+                await query.answer("طريقة الدفع غير موجودة.", show_alert=True)
+                return
+            conn.execute("UPDATE custom_payment_methods SET enabled=? WHERE id=?", (0 if int(row["enabled"] or 0) else 1, custom_id))
+        await admin_payment_settings(query)
+
     # تشغيل/إخفاء طرق الدفع للزبائن
     elif data.startswith("pay_toggle:"):
         method = data.split(":", 1)[1]
@@ -4725,6 +4803,42 @@ async def text_handler(update, context):
 
     if is_admin(user_id):
         step = context.user_data.get("admin_step")
+
+        if step == "set_usd_exchange_rate":
+            try:
+                rate = Decimal(text.strip().replace(",", "."))
+                if not rate.is_finite() or rate <= 0 or rate > Decimal("10000000"):
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError):
+                await message.reply_text("❌ السعر غير صحيح. أرسل رقمًا أكبر من صفر، مثال: 254. أو /cancel للإلغاء.")
+                return
+            set_setting("usd_exchange_rate", format(rate.normalize(), "f"))
+            context.user_data.pop("admin_step", None)
+            await message.reply_text(f"✅ تم حفظ سعر الدولار: 1 USD = {rate} DA. ستتحدث أسعار طرق الدفع بالدولار تلقائيًا.", reply_markup=admin_keyboard())
+            return
+
+        if step == "custom_payment_name":
+            parts = [part.strip() for part in text.split("|")]
+            if len(parts) != 3 or not parts[0] or not parts[1] or parts[2].upper() not in ("USD", "DZD", "DA"):
+                await message.reply_text("❌ الصيغة غير صحيحة. مثال: Binance | 🟡 | USD")
+                return
+            context.user_data["pending_custom_payment"] = {"name": parts[0][:80], "emoji": parts[1][:12], "currency": "DZD" if parts[2].upper() in ("DZD", "DA") else "USD"}
+            context.user_data["admin_step"] = "custom_payment_instructions"
+            await message.reply_text("أرسل الآن تعليمات الدفع التي ستظهر للزبون (رقم الحساب، الرابط، أو خطوات الدفع).")
+            return
+
+        if step == "custom_payment_instructions":
+            pending = context.user_data.get("pending_custom_payment") or {}
+            if not pending:
+                context.user_data.pop("admin_step", None)
+                await message.reply_text("❌ انتهت عملية الإضافة. ابدأ من جديد.")
+                return
+            with db() as conn:
+                conn.execute("INSERT INTO custom_payment_methods (name, emoji, currency, instructions, enabled, created_at) VALUES (?, ?, ?, ?, 1, ?)", (pending["name"], pending["emoji"], pending["currency"], text[:3500], now_text()))
+            context.user_data.pop("pending_custom_payment", None)
+            context.user_data.pop("admin_step", None)
+            await message.reply_text("✅ تمت إضافة طريقة الدفع وتفعيلها. ستظهر مع العروض الجديدة، ويمكنك إخفاؤها من إعدادات الدفع.", reply_markup=admin_keyboard())
+            return
 
         if step == "deposit_limits_set":
             parts = [x.strip() for x in text.split("|")]
