@@ -3997,6 +3997,7 @@ async def callback_handler(update, context):
                 """SELECT o.user_id, o.game_id, o.offer_id, o.player_id, o.payment_method,
                           o.status, o.points_awarded, o.points_used, o.wallet_charged,
                           o.wallet_refunded, o.credit_charged, o.credit_refunded, o.price,
+                          o.currency,
                           g.name AS game_name, f.name AS offer_name
                    FROM orders o
                    LEFT JOIN games g ON g.id = o.game_id
