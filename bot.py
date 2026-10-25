@@ -1508,17 +1508,32 @@ async def _cart_checkout(query, context):
     if not cart or not cart.get("items"):
         await query.edit_message_text("🛒 السلة فارغة."); return
     buttons = []
-    buttons.append([InlineKeyboardButton("🎟️ اختيار قسيمة تخفيض", callback_data="cart_coupon_list")])
-    chosen_coupon = context.user_data.get("cart_coupon")
-    if chosen_coupon:
-        buttons.append([InlineKeyboardButton(f"❌ إزالة القسيمة ({chosen_coupon['discount']} دج)", callback_data="cart_coupon_remove")])
+    # Coupons are customer-only and exactly one coupon may be attached to an order.
+    if points_enabled(query.from_user.id):
+        chosen_coupon = context.user_data.get("cart_coupon")
+        if chosen_coupon:
+            buttons.append([InlineKeyboardButton(
+                f"🎟️ القسيمة المختارة: -{int(chosen_coupon['discount'])} دج (قسيمة واحدة فقط)",
+                callback_data="cart_coupon_list"
+            )])
+            buttons.append([InlineKeyboardButton(
+                "❌ إزالة القسيمة", callback_data="cart_coupon_remove"
+            )])
+        else:
+            buttons.append([InlineKeyboardButton(
+                "🎟️ استعمال قسيمة تخفيض", callback_data="cart_coupon_list"
+            )])
     if get_setting("payment_baridi_enabled", "1") == "1":
         buttons.append([InlineKeyboardButton(f"💳 BaridiMob / CCP — {_cart_total(cart, 'baridi', query.from_user.id)} DA", callback_data="cart_pay:baridi")])
     if get_setting("payment_flexy_enabled", "1") == "1":
         buttons.append([InlineKeyboardButton(f"📱 Flexy — {_cart_total(cart, 'flexy', query.from_user.id)} DA", callback_data="cart_pay:flexy")])
     buttons.append([InlineKeyboardButton("💰 الدفع من رصيد المحفظة", callback_data="cart_pay:balance")])
     buttons.append([InlineKeyboardButton("🔙 رجوع للسلة", callback_data="cart_view")])
-    await query.edit_message_text("💳 اختر طريقة الدفع للسلة كاملة. عند اختيار الدفع تبدأ مهلة 15 دقيقة.", reply_markup=InlineKeyboardMarkup(buttons))
+    checkout_text = "💳 اختر طريقة الدفع للسلة كاملة. عند اختيار الدفع تبدأ مهلة 15 دقيقة."
+    chosen_coupon = context.user_data.get("cart_coupon") if points_enabled(query.from_user.id) else None
+    if chosen_coupon:
+        checkout_text += f"\n\n🎟️ القسيمة المختارة: تخفيض {int(chosen_coupon['discount'])} دج. مسموح بقسيمة واحدة فقط لكل طلب."
+    await query.edit_message_text(checkout_text, reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def _cart_start_payment(query, context, payment_type):
@@ -2881,6 +2896,9 @@ async def callback_handler(update, context):
         )
         return
     if data == "cart_coupon_list":
+        if not points_enabled(user_id):
+            context.user_data.pop('cart_coupon', None)
+            await query.answer("القسائم متاحة للزبائن فقط.", show_alert=True); return
         cart=context.user_data.get('cart')
         if not cart or not cart.get('items'):
             await query.answer("السلة فارغة.",show_alert=True); return
@@ -2893,10 +2911,15 @@ async def callback_handler(update, context):
         await query.answer()
         await query.edit_message_text("🎟️ اختر قسيمة صالحة لهذا الطلب. سيتم التحقق مجددًا من السعر النهائي قبل اعتمادها.",reply_markup=InlineKeyboardMarkup(rows)); return
     if data.startswith("cart_coupon_set:"):
+        if not points_enabled(user_id):
+            context.user_data.pop('cart_coupon', None)
+            await query.answer("القسائم متاحة للزبائن فقط.", show_alert=True); return
         cid=int(data.split(':',1)[1]); rows=_valid_coupons(user_id)
         c=next((r for r in rows if int(r['id'])==cid),None)
         if not c:
             await query.answer("القسيمة منتهية أو مستعملة.",show_alert=True); return
+        # One selected coupon per order: replace any previous selection, never stack.
+        context.user_data.pop('cart_coupon', None)
         context.user_data['cart_coupon']={'id':cid,'discount':int(c['discount_amount']),'minimum':int(c['min_order'])}
         await query.answer("تم اختيار القسيمة.")
         await _cart_checkout(query,context); return
