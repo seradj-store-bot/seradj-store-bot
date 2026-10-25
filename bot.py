@@ -156,9 +156,10 @@ MAIN_MENU = [
 ]
 
 ADMIN_MAIN_MENU = [
+    ["🛠️ لوحة التحكم"],
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "🛍️ المتجر", "💰 تعبئة الرصيد"],
-    ["📦 طلباتي", "➕ طلب لعبة غير موجودة", "🏪 ترقية الحساب إلى تاجر"],
+    ["📦 طلباتي", "➕ طلب لعبة غير موجودة"],
     ["🎯 الإحالة", "⭐ نقاطي"],
     ["🔐 السياسات والخصوصية", "📞 اتصل بالإدارة"],
 ]
@@ -1143,7 +1144,7 @@ async def show_account(message, user_id):
 
 # ====== عرض عروض اللعبة ======
 
-async def open_game(query, game_id, platform=None, recharge_method_id=None, price_mode="all"):
+async def open_game(query, game_id, platform=None, recharge_method_id=None, price_mode="choose"):
     user_id = query.from_user.id
     game = get_game(game_id)
 
@@ -1200,31 +1201,36 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None, pric
 
     buttons = []
 
-    for offer in offers:
-        if price_mode == "usd":
-            try:
-                rate = Decimal(get_setting("usd_exchange_rate", "254"))
-                if not rate.is_finite() or rate <= 0: rate = Decimal("254")
-            except Exception:
-                rate = Decimal("254")
-            usd_price = (Decimal(offer_price(offer, "baridi", user_id)) / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            price_label = f"💵 {usd_price} USD"
-        elif price_mode == "flexy":
-            price_label = f"📱 {offer_price(offer, 'flexy', user_id)} DA"
-        elif price_mode == "baridi":
-            price_label = f"💳 {offer_price(offer, 'baridi', user_id)} DA"
-        else:
-            price_label = f"💳 {offer_price(offer, 'baridi', user_id)} DA | 📱 {offer_price(offer, 'flexy', user_id)} DA"
-        buttons.append([InlineKeyboardButton(f"{offer['name']} | {price_label}", callback_data=f"offer:{game_id}:{offer['id']}:{platform or 'none'}")])
+    # لا نعرض أسعارًا مختلطة عند الدخول؛ يختار المستخدم طريقة العرض أولاً.
+    if price_mode != "choose":
+        for offer in offers:
+            if price_mode == "usd":
+                try:
+                    rate = Decimal(get_setting("usd_exchange_rate", "254"))
+                    if not rate.is_finite() or rate <= 0: rate = Decimal("254")
+                except Exception:
+                    rate = Decimal("254")
+                usd_price = (Decimal(offer_price(offer, "baridi", user_id)) / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                price_label = f"💵 {usd_price} USD"
+            elif price_mode == "flexy":
+                price_label = f"📱 {offer_price(offer, 'flexy', user_id)} DA"
+            elif price_mode == "baridi":
+                price_label = f"💳 {offer_price(offer, 'baridi', user_id)} DA"
+            else:
+                price_label = f"💳 {offer_price(offer, 'baridi', user_id)} DA | 📱 {offer_price(offer, 'flexy', user_id)} DA"
+            buttons.append([InlineKeyboardButton(f"{offer['name']} | {price_label}", callback_data=f"offer:{game_id}:{offer['id']}:{platform or 'none'}")])
 
     # Separate price-list filters: BaridiMob, Flexy, and USD.
     price_buttons = [
-        InlineKeyboardButton("💳 أسعار بريدي موب", callback_data=f"price_view:{game_id}:baridi:{platform or 'none'}:{context_method_id}"),
-        InlineKeyboardButton("📱 أسعار فليكسي", callback_data=f"price_view:{game_id}:flexy:{platform or 'none'}:{context_method_id}"),
+        InlineKeyboardButton("💳 أسعار بريدي موب و CCP", callback_data=f"price_view:{game_id}:baridi:{platform or 'none'}:{context_method_id}"),
+        InlineKeyboardButton("📱 أسعار الفليكسي", callback_data=f"price_view:{game_id}:flexy:{platform or 'none'}:{context_method_id}"),
     ]
     # USD price viewing is independent from whether USD payment is currently enabled.
     price_buttons.append(InlineKeyboardButton("💵 أسعار USD", callback_data=f"price_view:{game_id}:usd:{platform or 'none'}:{context_method_id}"))
-    buttons.insert(0, price_buttons)
+    # Put each price category on its own row for clearer navigation.
+    buttons.insert(0, [price_buttons[1]])
+    buttons.insert(0, [price_buttons[0]])
+    buttons.insert(2, [price_buttons[2]])
 
     # TikTok: let the customer request a custom coin quantity in addition to preset offers.
     if (game["name"] or "").strip().lower() == "tiktok":
@@ -1253,8 +1259,8 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None, pric
         f"{game['emoji']} {game['name']}\n\n"
         f"{description + chr(10) + chr(10) if description else ''}"
         f"📱 الجهاز: {'Android' if platform == 'android' else 'iPhone (iOS)' if platform == 'ios' else 'غير مطلوب'}\n"
-        "اختر العرض المناسب:\n"
-        f"💳 BaridiMob / CCP و 📱 Flexy — الأسعار حسب فئتك ({'تاجر' if is_trader(user_id) else 'زبون عادي'}).",
+        + ("اختر طريقة عرض الأسعار من الأزرار أعلاه؛ ستظهر أسعار الطريقة المختارة فقط.\n" if price_mode == "choose" else "اختر العرض المناسب من الأسعار المعروضة فقط.\n")
+        + f"الأسعار حسب فئتك ({'تاجر' if is_trader(user_id) else 'زبون عادي'}).",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
@@ -2206,10 +2212,10 @@ async def show_points_shop(message, user_id):
         offers = conn.execute("SELECT * FROM point_offers WHERE active=1 ORDER BY id").fetchall()
     points = int(user_row["points"] or 0) if user_row else 0
     buttons = [[InlineKeyboardButton(f"🎁 {o['title']} — {o['points_cost']} نقطة" + (f" (المتبقي {o['stock']})" if int(o['stock'] or -1) >= 0 else ""), callback_data=f"points_buy:{o['id']}")] for o in offers if int(o['stock'] if o['stock'] is not None else -1) != 0]
-    buttons.append([InlineKeyboardButton("🎟️ شراء قسائم التخفيض", callback_data="coupon_shop")])
+    buttons.insert(0, [InlineKeyboardButton("🎟️ شراء قسائم التخفيض بالنقاط", callback_data="coupon_shop")])
     buttons.append([InlineKeyboardButton("📋 قسائمي", callback_data="coupon_mine")])
     buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back_main")])
-    text = f"🎁 متجر النقاط\nرصيدك: {points} نقطة\n\n" + ("\n".join(f"• {o['title']}: {o['description']}" for o in offers) if offers else "لا توجد عروض بالنقاط حالياً.")
+    text = f"🎁 متجر النقاط\nرصيدك: {points} نقطة\n\nالنقاط ليس لها قيمة نقدية مباشرة؛ تستعمل لشراء عروض النقاط أو قسائم التخفيض فقط.\n\n" + ("\n".join(f"• {o['title']}: {o['description']}" for o in offers) if offers else "لا توجد عروض نقاط أخرى حالياً. يمكنك شراء قسائم التخفيض من الزر أعلاه.")
     await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -2822,13 +2828,19 @@ async def callback_handler(update, context):
             await query.answer("القسائم متاحة للزبائن فقط.", show_alert=True); return
         amount=int(data.split(":",1)[1]); cfg=COUPON_TYPES.get(amount)
         if not cfg: return
-        with db() as conn:
-            u=conn.execute("SELECT points FROM users WHERE user_id=?",(user_id,)).fetchone()
-            if not u or int(u['points'] or 0)<cfg['points']:
-                await query.answer(f"تحتاج {cfg['points']} نقطة لشراء هذه القسيمة.",show_alert=True); return
-            purchased=datetime.now(); expires=purchased+timedelta(days=cfg['days'])
-            conn.execute("UPDATE users SET points=points-? WHERE user_id=?",(cfg['points'],user_id))
-            conn.execute("INSERT INTO user_coupons(user_id,discount_amount,points_cost,min_order,purchased_at,expires_at,status) VALUES(?,?,?,?,?,?,'available')",(user_id,amount,cfg['points'],cfg['minimum'],purchased.strftime('%Y-%m-%d %H:%M:%S'),expires.strftime('%Y-%m-%d %H:%M:%S')))
+        try:
+            with db() as conn:
+                u=conn.execute("SELECT points FROM users WHERE user_id=?",(user_id,)).fetchone()
+                if not u:
+                    await query.answer("ما لقيناش حسابك في قاعدة البيانات. ابعث /start ثم عاود.",show_alert=True); return
+                if int(u['points'] or 0)<cfg['points']:
+                    await query.answer(f"رصيدك غير كافٍ. تحتاج {cfg['points']} نقطة، وعندك {int(u['points'] or 0)} نقطة.",show_alert=True); return
+                purchased=datetime.now(); expires=purchased+timedelta(days=cfg['days'])
+                conn.execute("UPDATE users SET points=points-? WHERE user_id=?",(cfg['points'],user_id))
+                conn.execute("INSERT INTO user_coupons(user_id,discount_amount,points_cost,min_order,purchased_at,expires_at,status) VALUES(?,?,?,?,?,?,'available')",(user_id,amount,cfg['points'],cfg['minimum'],purchased.strftime('%Y-%m-%d %H:%M:%S'),expires.strftime('%Y-%m-%d %H:%M:%S')))
+        except Exception:
+            logger.exception("Coupon purchase failed for user %s", user_id)
+            await query.answer("حدث خطأ أثناء شراء القسيمة. لم نتمكن من إتمام العملية؛ حاول مرة أخرى.",show_alert=True); return
         await query.answer("تم شراء القسيمة بنجاح ✅")
         await query.edit_message_text(f"✅ اشتريت قسيمة تخفيض {amount} دج.\nصلاحيتها {cfg['days']} يومًا من هذه اللحظة، وتنتهي {expires.strftime('%Y-%m-%d %H:%M:%S')}.\nتُستخدم مرة واحدة لطلب قيمته أكثر من {cfg['minimum']} دج، ولا تُمنح نقاط مكافأة على الطلب الذي تُستخدم فيه.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 قسائمي",callback_data="coupon_mine")],[InlineKeyboardButton("🎟️ متجر القسائم",callback_data="coupon_shop")]])); return
     if data == "cart_coupon_list":
@@ -4710,9 +4722,7 @@ async def callback_handler(update, context):
         except ValueError:
             return
         platform = parts[3] if parts[3] in ("android", "ios") else None
-        if parts[2] == "usd" and get_setting("usd_payments_enabled", "0") != "1":
-            await query.answer("عرض أسعار USD غير مفعّل حاليًا.", show_alert=True)
-            return
+        # Allow viewing USD price estimates even when USD payment is disabled.
         await open_game(query, game_id, platform, method_id, parts[2])
 
     # اختيار جهاز الهاتف
