@@ -39,6 +39,9 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Runtime timers for 15-minute checkout sessions.
+CART_TIMEOUT_TASKS = {}
+
 STORE_TZ = ZoneInfo("Africa/Algiers")
 DEFAULT_OPEN_MESSAGE = "🟢 تم فتح متجر SERADJ STORE!\nتقدروا الآن تطلبوا خدماتكم بكل سهولة 🛍️"
 DEFAULT_CLOSE_MESSAGE = "🔴 تم غلق متجر SERADJ STORE مؤقتًا.\nتقدروا تتصفحوا المتجر، والطلبات الجديدة ترجع عند الافتتاح القادم."
@@ -431,6 +434,14 @@ def init_db():
             platform TEXT DEFAULT '',
             credit_charged INTEGER DEFAULT 0,
             credit_refunded INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            offer_id INTEGER NOT NULL,
+            offer_name TEXT NOT NULL DEFAULT '',
+            quantity INTEGER NOT NULL DEFAULT 1,
+            unit_price INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -974,6 +985,9 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else 0
+    task = CART_TIMEOUT_TASKS.pop(uid, None)
+    if task and not task.done(): task.cancel()
     context.user_data.clear()
 
     await update.message.reply_text(
@@ -1256,6 +1270,8 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None):
             callback_data=f"pay:{game_id}:{offer_id}:custom_{custom_method['id']}"
         )])
     buttons += [
+        [InlineKeyboardButton("🛒 إضافة إلى السلة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}")],
+        [InlineKeyboardButton("🛒 عرض السلة", callback_data="cart_view")],
         [InlineKeyboardButton(
             f"🎁 استخدام النقاط: {'مفعّل' if context and context.user_data.get('use_points_for_order') else 'غير مفعّل'}",
             callback_data=f"points_toggle:{game_id}:{offer_id}:{platform or 'none'}",
@@ -1279,6 +1295,170 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None):
         + f"🏷️ فئة السعر: {'تاجر' if is_trader(user_id) else 'زبون عادي'}\n\nاختر طريقة الدفع:",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
+
+
+# ====== سلة المشتريات والمهلة الزمنية ======
+def _cart_method_info(game_id, offer_id):
+    game = get_game(game_id)
+    offer = next((x for x in get_offers(game_id) if int(x["id"]) == int(offer_id)), None)
+    if not game or not offer:
+        return None, None, None
+    with db() as conn:
+        method = conn.execute("SELECT * FROM recharge_methods WHERE id=?", (offer["recharge_method_id"],)).fetchone() if offer["recharge_method_id"] else None
+    kind = (method["method_type"] if method else game["recharge_method"]) or "id"
+    return game, offer, kind
+
+
+def _cart_total(cart, payment_type, user_id):
+    total = 0
+    for item in cart["items"]:
+        _, offer, _ = _cart_method_info(cart["game_id"], item["offer_id"])
+        if not offer:
+            continue
+        pay_key = "flexy" if payment_type == "flexy" else "baridi"
+        total += int(offer_price(offer, pay_key, user_id)) * int(item["quantity"])
+    return total
+
+
+def _cart_text(cart, user_id, payment_type=None):
+    game = get_game(cart["game_id"])
+    lines = ["🛒 سلة مشترياتك", f"🎮 اللعبة: {game['name'] if game else '—'}", ""]
+    total = 0
+    for item in cart["items"]:
+        _, offer, _ = _cart_method_info(cart["game_id"], item["offer_id"])
+        if not offer:
+            continue
+        unit = int(offer_price(offer, "flexy" if payment_type == "flexy" else "baridi", user_id)) if payment_type else 0
+        subtotal = unit * int(item["quantity"])
+        total += subtotal
+        lines.append(f"• {offer['name']} × {item['quantity']}" + (f" — {subtotal} DA" if payment_type else ""))
+    if payment_type:
+        lines += ["", f"💰 المجموع: {total} DA"]
+    lines += ["", "تقدر تزيد أو تنقص الكمية أو تحذف أي عرض."]
+    return "\n".join(lines)
+
+
+async def _expire_cart_checkout(context, user_id, token):
+    try:
+        await asyncio.sleep(15 * 60)
+        user_data = context.application.user_data.get(user_id, {})
+        if user_data.get("cart_checkout_token") != token:
+            return
+        user_data.pop("cart_checkout_token", None)
+        user_data["expired_order_checkout"] = True
+        for key in ("order_draft", "pending_player_id", "awaiting_player_id", "awaiting_login_email", "awaiting_login_password", "pending_login_email", "awaiting_payment_receipt", "cart_checkout_active"):
+            user_data.pop(key, None)
+        try:
+            await context.bot.send_message(chat_id=user_id, text="⏰ انتهت مهلة الدفع (15 دقيقة)، وتم إلغاء العملية تلقائيًا. ابدأ طلبًا جديدًا إذا ما زلت ترغب في الشراء.", reply_markup=main_keyboard(user_id))
+        except Exception:
+            logger.exception("تعذر إرسال إشعار انتهاء مهلة السلة للمستخدم %s", user_id)
+    finally:
+        CART_TIMEOUT_TASKS.pop(user_id, None)
+
+
+async def _begin_cart_timer(context, user_id):
+    context.user_data.pop("expired_order_checkout", None)
+    old = CART_TIMEOUT_TASKS.pop(user_id, None)
+    if old and not old.done():
+        old.cancel()
+    token = f"{user_id}:{datetime.now().timestamp()}"
+    context.user_data["cart_checkout_token"] = token
+    context.user_data["cart_checkout_active"] = True
+    CART_TIMEOUT_TASKS[user_id] = asyncio.create_task(_expire_cart_checkout(context, user_id, token))
+
+
+async def _cart_add(query, context, game_id, offer_id, platform):
+    game, offer, kind = _cart_method_info(game_id, offer_id)
+    if not game or not offer:
+        await query.answer("العرض غير متوفر.", show_alert=True); return
+    if platform == "android" and not int(offer["android_active"] or 0):
+        await query.answer("العرض غير متوفر على Android.", show_alert=True); return
+    if platform == "ios" and not int(offer["ios_active"] or 0):
+        await query.answer("العرض غير متوفر على iPhone.", show_alert=True); return
+    cart = context.user_data.get("cart")
+    method_id = int(offer["recharge_method_id"] or 0)
+    if cart and (int(cart["game_id"]) != int(game_id) or int(cart.get("recharge_method_id", 0)) != method_id or cart.get("platform", "") != (platform if platform != "none" else "")):
+        await query.answer("السلة تقبل عروض نفس اللعبة ونفس طريقة الشحن والجهاز فقط. أفرغ السلة أو أكمل الطلب الحالي أولًا.", show_alert=True); return
+    if not cart:
+        cart = {"game_id": int(game_id), "recharge_method_id": method_id, "method_type": kind, "platform": platform if platform != "none" else "", "items": []}
+        context.user_data["cart"] = cart
+    existing = next((x for x in cart["items"] if int(x["offer_id"]) == int(offer_id)), None)
+    if existing:
+        existing["quantity"] = min(99, int(existing["quantity"]) + 1)
+    else:
+        cart["items"].append({"offer_id": int(offer_id), "quantity": 1})
+    await query.answer("تمت إضافة العرض إلى السلة ✅")
+    await query.edit_message_text(_cart_text(cart, query.from_user.id), reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛒 عرض السلة", callback_data="cart_view")],
+        [InlineKeyboardButton("🔙 مواصلة التسوق", callback_data=f"recharge_select:{game_id}:{method_id}:{platform}")]
+    ]))
+
+
+async def _cart_view(query, context):
+    cart = context.user_data.get("cart")
+    if not cart or not cart.get("items"):
+        await query.edit_message_text("🛒 السلة فارغة.")
+        return
+    rows = []
+    for item in cart["items"]:
+        _, offer, _ = _cart_method_info(cart["game_id"], item["offer_id"])
+        if offer:
+            oid = int(item["offer_id"])
+            rows.append([InlineKeyboardButton(f"➖ {offer['name']}", callback_data=f"cart_dec:{oid}"), InlineKeyboardButton(f"{item['quantity']} ×", callback_data="cart_view"), InlineKeyboardButton("➕", callback_data=f"cart_inc:{oid}"), InlineKeyboardButton("🗑️", callback_data=f"cart_del:{oid}")])
+    rows += [[InlineKeyboardButton("💳 متابعة للدفع", callback_data="cart_checkout")], [InlineKeyboardButton("🧹 إفراغ السلة", callback_data="cart_clear")]]
+    await query.edit_message_text(_cart_text(cart, query.from_user.id), reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def _cart_checkout(query, context):
+    cart = context.user_data.get("cart")
+    if not cart or not cart.get("items"):
+        await query.edit_message_text("🛒 السلة فارغة."); return
+    buttons = []
+    if get_setting("payment_baridi_enabled", "1") == "1":
+        buttons.append([InlineKeyboardButton(f"💳 BaridiMob / CCP — {_cart_total(cart, 'baridi', query.from_user.id)} DA", callback_data="cart_pay:baridi")])
+    if get_setting("payment_flexy_enabled", "1") == "1":
+        buttons.append([InlineKeyboardButton(f"📱 Flexy — {_cart_total(cart, 'flexy', query.from_user.id)} DA", callback_data="cart_pay:flexy")])
+    buttons.append([InlineKeyboardButton("💰 الدفع من رصيد المحفظة", callback_data="cart_pay:balance")])
+    buttons.append([InlineKeyboardButton("🔙 رجوع للسلة", callback_data="cart_view")])
+    await query.edit_message_text("💳 اختر طريقة الدفع للسلة كاملة. عند اختيار الدفع تبدأ مهلة 15 دقيقة.", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def _cart_start_payment(query, context, payment_type):
+    cart = context.user_data.get("cart")
+    if not cart or not cart.get("items"):
+        await query.edit_message_text("🛒 السلة فارغة."); return
+    if payment_type not in ("baridi", "flexy", "balance"):
+        await query.answer("طريقة الدفع غير مدعومة للسلة حاليًا.", show_alert=True); return
+    game = get_game(cart["game_id"])
+    total = _cart_total(cart, payment_type, query.from_user.id)
+    if payment_type == "balance":
+        with db() as conn:
+            row = conn.execute("SELECT balance FROM users WHERE user_id=?", (query.from_user.id,)).fetchone()
+        if not row or int(row["balance"] or 0) < total:
+            await query.edit_message_text(f"❌ رصيد المحفظة غير كافٍ. المجموع {total} DA. عبّئ محفظتك ثم حاول مجددًا."); return
+        method_name = "رصيد المحفظة"
+    else:
+        method_name = "BaridiMob / CCP" if payment_type == "baridi" else "Flexy"
+    names = []
+    for item in cart["items"]:
+        _, offer, _ = _cart_method_info(cart["game_id"], item["offer_id"])
+        if offer:
+            names.append(f"{offer['name']} × {item['quantity']}")
+    context.user_data["order_draft"] = {"cart_mode": True, "cart_items": [dict(x) for x in cart["items"]], "game_id": cart["game_id"], "offer_id": cart["items"][0]["offer_id"], "game_name": game["name"] if game else "", "offer_name": " + ".join(names), "method": method_name, "price": total, "base_price": total, "points_used": 0, "payment_type": payment_type, "currency": "DA", "platform": cart.get("platform", ""), "login_mode": cart.get("method_type") == "login"}
+    await _begin_cart_timer(context, query.from_user.id)
+    if cart.get("method_type") == "login":
+        context.user_data["awaiting_login_email"] = True
+        prompt = "🔐 أرسل إيميل الحساب الذي تملكه أو لديك إذن بشحنه. سيطلب البوت كلمة السر بعدها."
+    elif cart.get("method_type") == "none":
+        context.user_data["pending_player_id"] = ""
+        if payment_type == "balance":
+            await create_wallet_order(query.message, context, "", user=query.from_user); return
+        context.user_data["awaiting_payment_receipt"] = True
+        prompt = "📸 أرسل صورة وصل الدفع لإتمام الطلب."
+    else:
+        context.user_data["awaiting_player_id"] = True
+        prompt = "🆔 أرسل Player ID الخاص بنفس اللاعب."
+    await query.edit_message_text(_cart_text(cart, query.from_user.id, payment_type) + f"\n\n💳 طريقة الدفع: {method_name}\n⏳ لديك 15 دقيقة لإتمام الطلب.\n\n{prompt}\nللإلغاء أرسل /cancel")
 
 
 # ====== اختيار طريقة الدفع ======
@@ -1418,6 +1598,7 @@ async def select_payment(
         "currency": currency if method.startswith("custom_") else "DA",
         "platform": context.user_data.get("selected_platform", ""),
     }
+    await _begin_cart_timer(context, query.from_user.id)
 
     with db() as conn:
         selected_method = conn.execute("SELECT * FROM recharge_methods WHERE id=?", (offer["recharge_method_id"],)).fetchone() if "recharge_method_id" in offer.keys() and offer["recharge_method_id"] else None
@@ -1478,6 +1659,12 @@ async def create_wallet_order(message, context, player_id, user=None):
             (user.id, draft["game_id"], draft["offer_id"], player_id, "رصيد المحفظة", price, now_text(), points_used, draft.get("platform", "")),
         )
         order_id = cursor.lastrowid
+        if draft.get("cart_mode"):
+            for item in draft.get("cart_items", []):
+                _, cart_offer, _ = _cart_method_info(draft["game_id"], item["offer_id"])
+                if cart_offer:
+                    unit = int(offer_price(cart_offer, "flexy" if draft.get("payment_type") == "flexy" else "baridi", user.id))
+                    conn.execute("INSERT INTO order_items (order_id, offer_id, offer_name, quantity, unit_price) VALUES (?, ?, ?, ?, ?)", (order_id, item["offer_id"], cart_offer["name"], item["quantity"], unit))
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 قيد التنفيذ", callback_data=f"status:{order_id}:processing"), InlineKeyboardButton("✅ مكتمل", callback_data=f"status:{order_id}:completed")],
         [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"status:{order_id}:rejected")],
@@ -1486,6 +1673,16 @@ async def create_wallet_order(message, context, player_id, user=None):
     context.user_data.pop("order_draft", None)
     context.user_data.pop("pending_player_id", None)
     context.user_data.pop("awaiting_player_id", None)
+    context.user_data.pop("awaiting_login_email", None)
+    context.user_data.pop("awaiting_login_password", None)
+    context.user_data.pop("pending_login_email", None)
+    context.user_data.pop("awaiting_payment_receipt", None)
+    context.user_data.pop("cart_checkout_active", None)
+    context.user_data.pop("cart_checkout_token", None)
+    task = CART_TIMEOUT_TASKS.pop(user.id, None)
+    if task and not task.done(): task.cancel()
+    if draft.get("cart_mode"):
+        context.user_data.pop("cart", None)
     await message.reply_text(f"✅ تم تسجيل طلبك #{order_id}.\n💰 المبلغ المخصوم: {price} DA\n🎁 النقاط المستخدمة: {points_used}\nسيتم إعلامك عند تحديث الحالة.", reply_markup=main_keyboard(user.id))
 
 
@@ -1617,6 +1814,9 @@ async def document_handler(update, context):
 async def photo_handler(update, context):
     user = update.effective_user
     message = update.effective_message
+    if user and context.user_data.pop("expired_order_checkout", False):
+        await message.reply_text("⏰ انتهت مهلة الدفع (15 دقيقة)، ولم يتم تسجيل الطلب. أعد الطلب من المتجر إذا كنت لا تزال ترغب في الشراء.", reply_markup=main_keyboard(user.id))
+        return
     if user and not is_admin(user.id) and not store_is_open():
         await message.reply_text(store_closed_notice())
         return
@@ -1714,6 +1914,10 @@ async def photo_handler(update, context):
     draft = context.user_data.get("order_draft")
     player_id = context.user_data.get("pending_player_id")
 
+    if draft and draft.get("cart_mode") and not context.user_data.get("cart_checkout_active"):
+        context.user_data.pop("awaiting_payment_receipt", None)
+        await message.reply_text("⏰ انتهت مهلة الدفع أو أُلغيت العملية. ابدأ طلبًا جديدًا من السلة.", reply_markup=main_keyboard(user.id))
+        return
     if not draft or player_id is None:
         context.user_data.pop("awaiting_payment_receipt", None)
         await message.reply_text(
@@ -1755,6 +1959,12 @@ async def photo_handler(update, context):
             ),
         )
         order_id = cursor.lastrowid
+        if draft.get("cart_mode"):
+            for item in draft.get("cart_items", []):
+                _, cart_offer, _ = _cart_method_info(draft["game_id"], item["offer_id"])
+                if cart_offer:
+                    unit = int(offer_price(cart_offer, "flexy" if draft.get("payment_type") == "flexy" else "baridi", user.id))
+                    conn.execute("INSERT INTO order_items (order_id, offer_id, offer_name, quantity, unit_price) VALUES (?, ?, ?, ?, ?)", (order_id, item["offer_id"], cart_offer["name"], item["quantity"], unit))
         points_used = int(draft.get("points_used", 0))
         if points_used:
             conn.execute("UPDATE users SET points = MAX(0, points - ?) WHERE user_id = ?", (points_used, user.id))
@@ -1786,6 +1996,12 @@ async def photo_handler(update, context):
     context.user_data.pop("pending_player_id", None)
     context.user_data.pop("awaiting_payment_receipt", None)
     context.user_data.pop("use_points_for_order", None)
+    if draft.get("cart_mode"):
+        context.user_data.pop("cart", None)
+    context.user_data.pop("cart_checkout_active", None)
+    context.user_data.pop("cart_checkout_token", None)
+    task = CART_TIMEOUT_TASKS.pop(user.id, None)
+    if task and not task.done(): task.cancel()
 
     await message.reply_text(
         "✅ تم استلام صورة وصل الدفع وتسجيل طلبك!\n\n"
@@ -2442,6 +2658,37 @@ async def callback_handler(update, context):
         await query.answer(store_closed_notice(), show_alert=True)
         return
     await query.answer()
+
+    if data.startswith("cart_add:"):
+        try:
+            _, gid, oid, platform = data.split(":", 3)
+            await _cart_add(query, context, int(gid), int(oid), platform)
+        except Exception:
+            logger.exception("Cart add failed")
+            await query.answer("تعذرت إضافة العرض للسلة.", show_alert=True)
+        return
+    if data == "cart_view":
+        await _cart_view(query, context); return
+    if data == "cart_checkout":
+        await _cart_checkout(query, context); return
+    if data == "cart_clear":
+        context.user_data.pop("cart", None)
+        await query.edit_message_text("🧹 تم إفراغ السلة."); return
+    if data.startswith(("cart_inc:", "cart_dec:", "cart_del:")):
+        cart = context.user_data.get("cart")
+        if not cart:
+            await query.edit_message_text("🛒 السلة فارغة."); return
+        action, oid_text = data.split(":", 1); oid = int(oid_text)
+        item = next((x for x in cart["items"] if int(x["offer_id"]) == oid), None)
+        if item:
+            if action == "cart_inc": item["quantity"] = min(99, int(item["quantity"]) + 1)
+            elif action == "cart_dec": item["quantity"] = int(item["quantity"]) - 1
+            else: item["quantity"] = 0
+            if item["quantity"] <= 0: cart["items"].remove(item)
+        if not cart["items"]: context.user_data.pop("cart", None); await query.edit_message_text("🛒 السلة فارغة."); return
+        await _cart_view(query, context); return
+    if data.startswith("cart_pay:"):
+        await _cart_start_payment(query, context, data.split(":", 1)[1]); return
 
     if data == "browse_offers":
         await query.message.reply_text(
@@ -4625,6 +4872,10 @@ async def text_handler(update, context):
     message = update.effective_message
     user_id = update.effective_user.id
     text = (message.text or "").strip()
+    if context.user_data.get("expired_order_checkout") and text not in ("/start", "🛍️ المتجر", "🎮 الألعاب", "📱 التطبيقات"):
+        context.user_data.pop("expired_order_checkout", None)
+        await message.reply_text("⏰ انتهت مهلة الدفع (15 دقيقة)، وتم إلغاء العملية. ابدأ طلبًا جديدًا من المتجر.", reply_markup=main_keyboard(user_id))
+        return
 
     if not is_admin(user_id) and not store_is_open():
         await message.reply_text(store_closed_notice())
@@ -4718,6 +4969,13 @@ async def text_handler(update, context):
 
     # إلغاء العملية الحالية
     if text in CANCEL_WORDS:
+        task = CART_TIMEOUT_TASKS.pop(user_id, None)
+        if task and not task.done(): task.cancel()
+        context.user_data.pop("cart_checkout_active", None)
+        context.user_data.pop("cart_checkout_token", None)
+        context.user_data.pop("order_draft", None)
+        context.user_data.pop("pending_player_id", None)
+        context.user_data.pop("awaiting_payment_receipt", None)
         context.user_data.pop("admin_step", None)
         context.user_data.pop("pending_game_id", None)
         context.user_data.pop("pending_offer_id", None)
@@ -4866,6 +5124,8 @@ async def text_handler(update, context):
         return
 
     if context.user_data.get("awaiting_login_email"):
+        if context.user_data.get("cart_checkout_active") and not context.user_data.get("cart_checkout_token"):
+            await message.reply_text("⏰ انتهت مهلة الطلب. ابدأ من جديد."); return
         if "@" not in text or len(text) < 5:
             await message.reply_text("❌ أرسل إيميلًا صحيحًا.")
             return
