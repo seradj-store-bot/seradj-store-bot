@@ -2830,23 +2830,56 @@ async def callback_handler(update, context):
     if data.startswith("coupon_buy:"):
         if not points_enabled(user_id):
             await query.answer("القسائم متاحة للزبائن فقط.", show_alert=True); return
-        amount=int(data.split(":",1)[1]); cfg=COUPON_TYPES.get(amount)
-        if not cfg: return
         try:
+            amount = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("القسيمة المختارة غير صحيحة. افتح متجر القسائم من جديد.", show_alert=True); return
+        cfg = COUPON_TYPES.get(amount)
+        if not cfg:
+            await query.answer("القسيمة المختارة غير متاحة.", show_alert=True); return
+        try:
+            purchased = datetime.now()
+            expires = purchased + timedelta(days=int(cfg["days"]))
+            purchased_text = purchased.strftime('%Y-%m-%d %H:%M:%S')
+            expires_text = expires.strftime('%Y-%m-%d %H:%M:%S')
+            # Ensure the coupon table exists even if the hosting process did not run migrations.
             with db() as conn:
-                u=conn.execute("SELECT points FROM users WHERE user_id=?",(user_id,)).fetchone()
+                conn.execute("""CREATE TABLE IF NOT EXISTS user_coupons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    discount_amount INTEGER NOT NULL,
+                    points_cost INTEGER NOT NULL,
+                    min_order INTEGER NOT NULL,
+                    purchased_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'available',
+                    used_order_id INTEGER DEFAULT NULL
+                )""")
+                # Atomic points deduction prevents simultaneous taps from spending the same points twice.
+                conn.execute("BEGIN IMMEDIATE")
+                u = conn.execute("SELECT points FROM users WHERE user_id=?", (user_id,)).fetchone()
                 if not u:
-                    await query.answer("ما لقيناش حسابك في قاعدة البيانات. ابعث /start ثم عاود.",show_alert=True); return
-                if int(u['points'] or 0)<cfg['points']:
-                    await query.answer(f"رصيدك غير كافٍ. تحتاج {cfg['points']} نقطة، وعندك {int(u['points'] or 0)} نقطة.",show_alert=True); return
-                purchased=datetime.now(); expires=purchased+timedelta(days=cfg['days'])
-                conn.execute("UPDATE users SET points=points-? WHERE user_id=?",(cfg['points'],user_id))
-                conn.execute("INSERT INTO user_coupons(user_id,discount_amount,points_cost,min_order,purchased_at,expires_at,status) VALUES(?,?,?,?,?,?,'available')",(user_id,amount,cfg['points'],cfg['minimum'],purchased.strftime('%Y-%m-%d %H:%M:%S'),expires.strftime('%Y-%m-%d %H:%M:%S')))
-        except Exception:
+                    conn.rollback()
+                    await query.answer("ما لقيناش حسابك في قاعدة البيانات. ابعث /start ثم عاود.", show_alert=True); return
+                balance = int(u['points'] or 0)
+                if balance < int(cfg['points']):
+                    conn.rollback()
+                    await query.answer(f"رصيدك غير كافٍ. تحتاج {cfg['points']} نقطة، وعندك {balance} نقطة.", show_alert=True); return
+                cur = conn.execute("UPDATE users SET points=points-? WHERE user_id=? AND COALESCE(points,0)>=?", (int(cfg['points']), user_id, int(cfg['points'])))
+                if cur.rowcount != 1:
+                    conn.rollback()
+                    await query.answer("تغيّر رصيد نقاطك. افتح متجر القسائم وتحقق من رصيدك ثم حاول مجددًا.", show_alert=True); return
+                conn.execute("INSERT INTO user_coupons(user_id,discount_amount,points_cost,min_order,purchased_at,expires_at,status) VALUES(?,?,?,?,?,?,'available')", (user_id, amount, int(cfg['points']), int(cfg['minimum']), purchased_text, expires_text))
+                conn.commit()
+        except Exception as exc:
             logger.exception("Coupon purchase failed for user %s", user_id)
-            await query.answer("حدث خطأ أثناء شراء القسيمة. لم نتمكن من إتمام العملية؛ حاول مرة أخرى.",show_alert=True); return
+            await query.answer("تعذر إتمام الشراء بسبب خطأ في قاعدة البيانات. لم نؤكد الشراء؛ راجع سجل أخطاء الاستضافة ثم حاول مرة أخرى.", show_alert=True); return
         await query.answer("تم شراء القسيمة بنجاح ✅")
-        await query.edit_message_text(f"✅ اشتريت قسيمة تخفيض {amount} دج.\nصلاحيتها {cfg['days']} يومًا من هذه اللحظة، وتنتهي {expires.strftime('%Y-%m-%d %H:%M:%S')}.\nتُستخدم مرة واحدة لطلب قيمته أكثر من {cfg['minimum']} دج، ولا تُمنح نقاط مكافأة على الطلب الذي تُستخدم فيه.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 قسائمي",callback_data="coupon_mine")],[InlineKeyboardButton("🎟️ متجر القسائم",callback_data="coupon_shop")]])); return
+        await query.edit_message_text(
+            f"✅ اشتريت قسيمة تخفيض {amount} دج.\nصلاحيتها {cfg['days']} يومًا من لحظة الشراء، وتنتهي {expires_text}.\nتُستخدم مرة واحدة لطلب قيمته أكثر من {cfg['minimum']} دج، ولا تُمنح نقاط مكافأة على الطلب الذي تُستخدم فيه.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 قسائمي", callback_data="coupon_mine")], [InlineKeyboardButton("🎟️ متجر القسائم", callback_data="coupon_shop")]])
+        )
+        return
     if data == "cart_coupon_list":
         cart=context.user_data.get('cart')
         if not cart or not cart.get('items'):
