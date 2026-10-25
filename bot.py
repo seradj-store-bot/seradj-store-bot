@@ -3559,7 +3559,6 @@ async def callback_handler(update, context):
                 conn.execute("UPDATE trader_loan_requests SET status='rejected', processed_at=? WHERE id=?", (now_text(), request_id))
                 approve = False
             elif approve:
-                from datetime import datetime, timedelta
                 debt = int(trader["credit_debt"] or 0)
                 term = max(1, int(trader["credit_term_days"] or 30))
                 due = (datetime.now() + timedelta(days=term)).strftime("%Y-%m-%d %H:%M:%S") if debt == 0 else None
