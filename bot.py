@@ -2789,7 +2789,9 @@ async def callback_handler(update, context):
     if not is_admin(user_id) and not store_is_open():
         await query.answer(store_closed_notice(), show_alert=True)
         return
-    await query.answer()
+    # Coupon callbacks answer themselves so alerts/errors can be shown exactly once.
+    if not data.startswith(("coupon_", "cart_coupon_")):
+        await query.answer()
 
     if data.startswith("cart_add:"):
         try:
@@ -2820,8 +2822,10 @@ async def callback_handler(update, context):
         if not cart["items"]: context.user_data.pop("cart", None); await query.edit_message_text("🛒 السلة فارغة."); return
         await _cart_view(query, context); return
     if data == "coupon_shop":
+        await query.answer()
         await show_coupon_shop(query.message, user_id); return
     if data == "coupon_mine":
+        await query.answer()
         await show_my_coupons(query, user_id); return
     if data.startswith("coupon_buy:"):
         if not points_enabled(user_id):
@@ -2853,6 +2857,7 @@ async def callback_handler(update, context):
         for c in coupons:
             if total>int(c['min_order']): rows.append([InlineKeyboardButton(f"استخدم {int(c['discount_amount'])} دج (ينتهي {c['expires_at']})",callback_data=f"cart_coupon_set:{int(c['id'])}")])
         rows.append([InlineKeyboardButton("🔙 رجوع للدفع",callback_data="cart_checkout")])
+        await query.answer()
         await query.edit_message_text("🎟️ اختر قسيمة صالحة لهذا الطلب. سيتم التحقق مجددًا من السعر النهائي قبل اعتمادها.",reply_markup=InlineKeyboardMarkup(rows)); return
     if data.startswith("cart_coupon_set:"):
         cid=int(data.split(':',1)[1]); rows=_valid_coupons(user_id)
@@ -2863,6 +2868,7 @@ async def callback_handler(update, context):
         await query.answer("تم اختيار القسيمة.")
         await _cart_checkout(query,context); return
     if data == "cart_coupon_remove":
+        await query.answer()
         context.user_data.pop('cart_coupon',None); await _cart_checkout(query,context); return
     if data.startswith("cart_pay:"):
         await _cart_start_payment(query, context, data.split(":", 1)[1]); return
