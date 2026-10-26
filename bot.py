@@ -1338,11 +1338,9 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None):
             )
         ],
     ]
-    if points_enabled(user_id):
-        buttons.insert(-1, [InlineKeyboardButton(
-            f"🎁 استخدام النقاط: {'مفعّل' if context and context.user_data.get('use_points_for_order') else 'غير مفعّل'}",
-            callback_data=f"points_toggle:{game_id}:{offer_id}:{platform or 'none'}",
-        )])
+    # النقاط لا تخصم تلقائيًا من طلب الشحن؛ تُستخدم فقط لشراء عروض النقاط أو شراء القسائم.
+    if context is not None:
+        context.user_data["use_points_for_order"] = False
 
     await query.edit_message_text(
         "🛍️ تفاصيل العرض\n\n"
@@ -1691,14 +1689,11 @@ async def select_payment(
             row = conn.execute("SELECT balance FROM users WHERE user_id = ?", (query.from_user.id,)).fetchone()
         balance = int(row["balance"] or 0) if row else 0
         price = offer_price(offer, "baridi", query.from_user.id)
-        points_row = None
-        if points_enabled(query.from_user.id) and context.user_data.get("use_points_for_order"):
-            with db() as conn:
-                points_row = conn.execute("SELECT points FROM users WHERE user_id = ?", (query.from_user.id,)).fetchone()
-        available_points = int(points_row["points"] or 0) if points_row else 0
-        if balance + (available_points if context.user_data.get("use_points_for_order") else 0) < price:
+        # لا تُعامل نقاط الولاء كأنها دنانير ولا تُضاف إلى رصيد المحفظة.
+        context.user_data["use_points_for_order"] = False
+        if balance < price:
             await query.edit_message_text(
-                f"❌ رصيدك غير كافٍ.\nالسعر: {price} DA\nرصيد المحفظة: {balance} DA\nالنقاط: {available_points}\n\nاضغط تعبئة الرصيد من القائمة الرئيسية ثم أعد الطلب."
+                f"❌ رصيد المحفظة غير كافٍ.\nالسعر: {price} DA\nرصيد المحفظة: {balance} DA\n\nاضغط تعبئة الرصيد من القائمة الرئيسية ثم أعد الطلب."
             )
             return
         method_name = "رصيد المحفظة"
@@ -1710,17 +1705,10 @@ async def select_payment(
         return
 
     base_price = price
+    # لا يوجد تحويل تلقائي للنقاط إلى دنانير عند الشراء.
+    # لا تُخصم النقاط من طلب عادي؛ القسائم تُطبّق عبر coupon_discount بشكل منفصل.
     points_used = 0
-    if not points_enabled(query.from_user.id):
-        context.user_data["use_points_for_order"] = False
-    if points_enabled(query.from_user.id) and context.user_data.get("use_points_for_order") and not (method.startswith("custom_") and currency == "USD"):
-        with db() as conn:
-            points_row = conn.execute("SELECT points FROM users WHERE user_id = ?", (query.from_user.id,)).fetchone()
-        available_points = int(points_row["points"] or 0) if points_row else 0
-        points_used = min(available_points, int(base_price))
-        price = max(0, base_price - points_used)
-        if points_used:
-            details += f"\n🎁 خصم النقاط: {points_used} DA"
+    context.user_data["use_points_for_order"] = False
 
     context.user_data["order_draft"] = {
         "game_id": game_id,
@@ -4925,22 +4913,6 @@ async def callback_handler(update, context):
             return
         platform = parts[3] if len(parts) == 4 and parts[3] != "none" else None
         context.user_data["selected_platform"] = platform or ""
-        await open_offer(query, game_id, offer_id, platform, context)
-
-    elif data.startswith("points_toggle:"):
-        if not points_enabled(user_id):
-            context.user_data["use_points_for_order"] = False
-            await query.answer("نظام النقاط متاح للزبائن فقط وليس للتجار.", show_alert=True)
-            return
-        parts = data.split(":")
-        if len(parts) != 4:
-            return
-        try:
-            game_id, offer_id = int(parts[1]), int(parts[2])
-        except ValueError:
-            return
-        context.user_data["use_points_for_order"] = not context.user_data.get("use_points_for_order", False)
-        platform = parts[3] if parts[3] in ("android", "ios") else None
         await open_offer(query, game_id, offer_id, platform, context)
 
     # اختيار طريقة دفع تسديد القرض
