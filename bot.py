@@ -1479,9 +1479,19 @@ def _valid_coupons(user_id, min_total=None):
     with db() as conn:
         rows = conn.execute("SELECT * FROM user_coupons WHERE user_id=? AND status='available' AND expires_at>? ORDER BY discount_amount", (user_id, now_text())).fetchall()
     result=[]
+    # Repair legacy coupon rows created by an older buggy version that may
+    # have stored the points cost (250) as the discount instead of 100 DA.
+    expected_by_points = {250: 100, 500: 200, 1250: 500, 2500: 1000}
     for r in rows:
-        if min_total is None or (int(min_total) > int(r['min_order'])):
-            result.append(r)
+        item = dict(r)
+        points_cost = int(item.get('points_cost') or 0)
+        expected_discount = expected_by_points.get(points_cost)
+        if expected_discount is not None and int(item.get('discount_amount') or 0) != expected_discount:
+            item['discount_amount'] = expected_discount
+            with db() as conn:
+                conn.execute("UPDATE user_coupons SET discount_amount=? WHERE id=? AND user_id=? AND status='available'", (expected_discount, int(item['id']), int(user_id)))
+        if min_total is None or (int(min_total) > int(item['min_order'])):
+            result.append(item)
     return result
 
 async def show_coupon_shop(message, user_id):
