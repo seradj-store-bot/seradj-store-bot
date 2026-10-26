@@ -886,8 +886,10 @@ async def admin_person_card(query, target_id):
     phone = row["phone_number"] if "phone_number" in row.keys() and row["phone_number"] else "غير مشارك"
     banned = int(row["is_banned"] or 0) if "is_banned" in row.keys() else 0
     buttons = [
-        [InlineKeyboardButton("💰 إضافة رصيد", callback_data=f"person_balance:{target_id}")],
-        [InlineKeyboardButton("✏️ تعديل الرصيد", callback_data=f"person_balance_edit:{target_id}")],
+        [InlineKeyboardButton("💰 إضافة رصيد DA", callback_data=f"person_balance:{target_id}")],
+        [InlineKeyboardButton("✏️ تعديل رصيد DA", callback_data=f"person_balance_edit:{target_id}")],
+        [InlineKeyboardButton("💵 إضافة رصيد USD", callback_data=f"person_balance_usd:{target_id}")],
+        [InlineKeyboardButton("✏️ تعديل رصيد USD", callback_data=f"person_balance_usd_edit:{target_id}")],
     ]
     if row["account_type"] == "trader":
         buttons.append([InlineKeyboardButton("💵 منح سلفية للتاجر", callback_data=f"person_loan_grant:{target_id}")])
@@ -905,6 +907,7 @@ async def admin_person_card(query, target_id):
         f"نوع الحساب: {'تاجر' if row['account_type']=='trader' else 'زبون'}\n"
         f"الحالة: {'🚫 محظور' if banned else '🟢 نشط'}\n"
         f"الرصيد: {int(row['balance'] or 0)} DA\n"
+        f"💵 رصيد الدولار: {float(row['balance_usd'] or 0):.2f} USD\n"
         + (f"💳 الدين الحالي: {int(row['credit_debt'] or 0)} DA\n" if row['account_type'] == 'trader' else "")
         + f"🎁 نقاط المكافآت: {int(row['points'] or 0)} نقطة\n"
         f"عدد الطلبات: {orders}\n"
@@ -1314,7 +1317,7 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
             prompt_rows = [
                 [InlineKeyboardButton("🎟️ نعم، أريد استعمال قسيمة", callback_data="offer_coupon_yes")],
                 [InlineKeyboardButton("⏭️ لا، متابعة بلا قسيمة", callback_data="offer_coupon_no")],
-                [InlineKeyboardButton("🛒 إضافة إلى السلة دون قسيمة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}")],
+                [InlineKeyboardButton("🛒 إضافة إلى السلة دون قسيمة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}:{price_mode}")],
             ]
             await query.edit_message_text(
                 "🛍️ تم اختيار العرض\n\n"
@@ -1371,7 +1374,7 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
         buttons.append([InlineKeyboardButton(f"🎟️ القسيمة المختارة: -{int(selected_coupon['discount'])} دج", callback_data="offer_coupon_yes")])
         buttons.append([InlineKeyboardButton("❌ إلغاء القسيمة", callback_data="offer_coupon_remove")])
     buttons += [
-        [InlineKeyboardButton("🛒 إضافة إلى السلة دون قسيمة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}")],
+        [InlineKeyboardButton("🛒 إضافة إلى السلة دون قسيمة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}:{price_mode}")],
         [InlineKeyboardButton("🛒 عرض السلة", callback_data="cart_view")],
     ]
     # Wallet payment is intentionally unavailable from Flexy/USD price views.
@@ -1472,7 +1475,7 @@ async def _begin_cart_timer(context, user_id):
     CART_TIMEOUT_TASKS[user_id] = asyncio.create_task(_expire_cart_checkout(context, user_id, token))
 
 
-async def _cart_add(query, context, game_id, offer_id, platform):
+async def _cart_add(query, context, game_id, offer_id, platform, price_mode="choose"):
     game, offer, kind = _cart_method_info(game_id, offer_id)
     if not game or not offer:
         await query.answer("العرض غير متوفر.", show_alert=True); return
@@ -1484,8 +1487,11 @@ async def _cart_add(query, context, game_id, offer_id, platform):
     method_id = int(offer["recharge_method_id"] or 0)
     if cart and (int(cart["game_id"]) != int(game_id) or int(cart.get("recharge_method_id", 0)) != method_id or cart.get("platform", "") != (platform if platform != "none" else "")):
         await query.answer("السلة تقبل عروض نفس اللعبة ونفس طريقة الشحن والجهاز فقط. أفرغ السلة أو أكمل الطلب الحالي أولًا.", show_alert=True); return
+    selected_mode = price_mode if price_mode in ("baridi", "flexy", "usd") else "choose"
+    if cart and cart.get("price_mode", "choose") != selected_mode:
+        await query.answer("السلة الحالية من فئة أسعار مختلفة. أكمل الطلب أو أفرغ السلة أولًا.", show_alert=True); return
     if not cart:
-        cart = {"game_id": int(game_id), "recharge_method_id": method_id, "method_type": kind, "platform": platform if platform != "none" else "", "items": []}
+        cart = {"game_id": int(game_id), "recharge_method_id": method_id, "method_type": kind, "platform": platform if platform != "none" else "", "price_mode": selected_mode, "items": []}
         context.user_data["cart"] = cart
     existing = next((x for x in cart["items"] if int(x["offer_id"]) == int(offer_id)), None)
     if existing:
@@ -1565,11 +1571,15 @@ async def _cart_checkout(query, context):
         await query.edit_message_text("🛒 السلة فارغة."); return
     buttons = []
     # Coupon controls belong ONLY to this checkout/payment screen, never the cart contents screen.
-    if get_setting("payment_baridi_enabled", "1") == "1":
+    price_mode = cart.get("price_mode", "choose")
+    if price_mode == "usd":
+        await query.edit_message_text("💵 عروض USD تُدفع عبر طرق الدفع بالدولار مباشرة من صفحة العرض، ولا يمكن إتمامها من السلة حاليًا. ارجع للعرض واختر طريقة دفع USD.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للسلة", callback_data="cart_view")]])); return
+    if price_mode in ("choose", "baridi") and get_setting("payment_baridi_enabled", "1") == "1":
         buttons.append([InlineKeyboardButton(f"💳 BaridiMob / CCP — {_cart_total(cart, 'baridi', query.from_user.id)} DA", callback_data="cart_pay:baridi")])
-    if get_setting("payment_flexy_enabled", "1") == "1":
+    if price_mode in ("choose", "flexy") and get_setting("payment_flexy_enabled", "1") == "1":
         buttons.append([InlineKeyboardButton(f"📱 Flexy — {_cart_total(cart, 'flexy', query.from_user.id)} DA", callback_data="cart_pay:flexy")])
-    buttons.append([InlineKeyboardButton("💰 الدفع من رصيد المحفظة", callback_data="cart_pay:balance")])
+    if price_mode in ("choose", "baridi"):
+        buttons.append([InlineKeyboardButton("💰 الدفع من رصيد محفظة الدينار", callback_data="cart_pay:balance")])
     buttons.append([InlineKeyboardButton("🔙 رجوع للسلة", callback_data="cart_view")])
     checkout_text = "💳 إتمام الطلب — اختر طريقة الدفع للسلة كاملة.\n🎟️ القسائم تُختار مباشرة بعد اختيار العرض الفردي، وليست متاحة من شاشة السلة.\n⏳ عند اختيار الدفع تبدأ مهلة 15 دقيقة."
     await query.edit_message_text(checkout_text, reply_markup=InlineKeyboardMarkup(buttons))
@@ -2869,8 +2879,10 @@ async def callback_handler(update, context):
 
     if data.startswith("cart_add:"):
         try:
-            _, gid, oid, platform = data.split(":", 3)
-            await _cart_add(query, context, int(gid), int(oid), platform)
+            parts = data.split(":", 4)
+            _, gid, oid, platform = parts[:4]
+            price_mode = parts[4] if len(parts) > 4 else "choose"
+            await _cart_add(query, context, int(gid), int(oid), platform, price_mode)
         except Exception:
             logger.exception("Cart add failed")
             await query.answer("تعذرت إضافة العرض للسلة.", show_alert=True)
@@ -3573,6 +3585,26 @@ async def callback_handler(update, context):
             pass
         await admin_person_card(query, target)
         return
+    if data.startswith("person_balance_usd_edit:"):
+        target = int(data.split(":", 1)[1])
+        with db() as conn:
+            person = conn.execute("SELECT user_id, full_name, balance_usd FROM users WHERE user_id=?", (target,)).fetchone()
+        if not person:
+            await query.answer("المشترك غير موجود.", show_alert=True); return
+        context.user_data["person_balance_usd_edit_target"] = target
+        await query.message.reply_text(
+            f"✏️ تعديل رصيد الدولار للمشترك {person['full_name'] or target} (ID: {target})\n"
+            f"الرصيد الحالي: {float(person['balance_usd'] or 0):.2f} USD\n"
+            "أرسل الرصيد الجديد بالدولار (مثال: 12.50). للصفر أرسل 0، وللإلغاء /cancel."
+        )
+        return
+
+    if data.startswith("person_balance_usd:"):
+        target = int(data.split(":", 1)[1])
+        context.user_data["person_balance_usd_target"] = target
+        await query.message.reply_text(f"💵 أرسل مبلغ الدولار الذي تريد إضافته إلى رصيد المشترك {target}. مثال: 10 أو 12.50 USD.")
+        return
+
     if data.startswith("person_balance_edit:"):
         target = int(data.split(":", 1)[1])
         with db() as conn:
@@ -5664,6 +5696,43 @@ async def text_handler(update, context):
             await context.bot.send_message(target, f"💵 منحتك الإدارة سلفية بقيمة {amount} DA.\nتمت إضافتها إلى رصيدك.\nإجمالي الدين: {new_debt} DA\nتاريخ التسديد المحدد: {due_at}")
         except Exception:
             logger.exception("تعذر إشعار التاجر بمنح السلفية")
+        return
+
+    if is_admin(user_id) and context.user_data.get("person_balance_usd_edit_target"):
+        target = int(context.user_data.pop("person_balance_usd_edit_target"))
+        try:
+            new_balance = float(text.strip().upper().replace("USD", "").replace("$", "").replace(",", ".").strip())
+            if new_balance < 0: raise ValueError
+        except ValueError:
+            context.user_data["person_balance_usd_edit_target"] = target
+            await message.reply_text("❌ أرسل مبلغ USD صحيحًا يساوي صفرًا أو أكثر، مثل 12.50، أو /cancel."); return
+        with db() as conn:
+            person = conn.execute("SELECT full_name FROM users WHERE user_id=?", (target,)).fetchone()
+            if not person:
+                await message.reply_text("❌ المشترك غير موجود."); return
+            conn.execute("UPDATE users SET balance_usd=? WHERE user_id=?", (new_balance, target))
+        await message.reply_text(f"✅ تم تعديل رصيد الدولار للمشترك إلى {new_balance:.2f} USD.")
+        try: await context.bot.send_message(target, f"ℹ️ حدّثت الإدارة رصيد الدولار في محفظتك. الرصيد الجديد: {new_balance:.2f} USD.")
+        except Exception: logger.exception("تعذر إشعار المشترك بتعديل رصيد USD")
+        return
+
+    if is_admin(user_id) and context.user_data.get("person_balance_usd_target"):
+        target = int(context.user_data.pop("person_balance_usd_target"))
+        try:
+            amount = float(text.strip().upper().replace("USD", "").replace("$", "").replace(",", ".").strip())
+            if amount <= 0: raise ValueError
+        except ValueError:
+            context.user_data["person_balance_usd_target"] = target
+            await message.reply_text("❌ أرسل مبلغ USD أكبر من صفر، مثل 10 أو 12.50، أو /cancel."); return
+        with db() as conn:
+            person = conn.execute("SELECT full_name FROM users WHERE user_id=?", (target,)).fetchone()
+            if not person:
+                await message.reply_text("❌ المشترك غير موجود."); return
+            conn.execute("UPDATE users SET balance_usd=COALESCE(balance_usd,0)+? WHERE user_id=?", (amount, target))
+            balance = conn.execute("SELECT balance_usd FROM users WHERE user_id=?", (target,)).fetchone()["balance_usd"]
+        await message.reply_text(f"✅ تمت إضافة {amount:.2f} USD. رصيد الدولار الجديد: {float(balance):.2f} USD.")
+        try: await context.bot.send_message(target, f"💵 أضافت الإدارة {amount:.2f} USD إلى محفظتك. رصيدك الجديد: {float(balance):.2f} USD.")
+        except Exception: logger.exception("تعذر إشعار المشترك بإضافة رصيد USD")
         return
 
     if is_admin(user_id) and context.user_data.get("person_balance_edit_target"):
