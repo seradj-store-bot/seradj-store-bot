@@ -379,6 +379,7 @@ def init_db():
             account_type TEXT DEFAULT 'customer',
             trader_requested INTEGER DEFAULT 0,
             balance INTEGER DEFAULT 0,
+            balance_usd REAL DEFAULT 0,
             points INTEGER DEFAULT 0,
             credit_limit INTEGER DEFAULT 0,
             credit_debt INTEGER DEFAULT 0,
@@ -516,7 +517,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS wallet_deposits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
-            amount INTEGER NOT NULL,
+            amount INTEGER NOT NULL DEFAULT 0,
+            amount_usd REAL DEFAULT 0,
+            currency TEXT DEFAULT 'DA',
             payment_method TEXT DEFAULT '',
             receipt_file_id TEXT DEFAULT '',
             status TEXT DEFAULT 'pending',
@@ -688,6 +691,16 @@ def init_db():
         conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('marketing_reminder_count','2')")
         conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('marketing_reminder_interval_minutes','1440')")
         conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('marketing_reminder_text',?)", ("👋 ما زلت ما طلبتش من SERADJ STORE؟ 🛍️\\nتصفح العروض واختار الخدمة اللي تحتاجها!",))
+
+        # Safe additive migrations for an existing production database.
+        user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "balance_usd" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN balance_usd REAL DEFAULT 0")
+        deposit_cols = {r["name"] for r in conn.execute("PRAGMA table_info(wallet_deposits)").fetchall()}
+        if "amount_usd" not in deposit_cols:
+            conn.execute("ALTER TABLE wallet_deposits ADD COLUMN amount_usd REAL DEFAULT 0")
+        if "currency" not in deposit_cols:
+            conn.execute("ALTER TABLE wallet_deposits ADD COLUMN currency TEXT DEFAULT 'DA'")
 
 
 def get_setting(key, default=""):
@@ -1136,7 +1149,9 @@ async def show_account(message, user_id):
         f"🔗 Username: {username}\n"
         f"📦 عدد الطلبات: {total}\n"
         f"🏷️ نوع الحساب: {'تاجر معتمد' if user['account_type'] == 'trader' else 'زبون عادي'}\n"
-        f"💰 رصيد المحفظة: {int(user['balance'] or 0)} DA\n"
+        f"💰 محفظة الدينار: {int(user['balance'] or 0)} DA\n"
+        f"💵 محفظة الدولار: {float(user['balance_usd'] or 0):.2f} USD\n"
+        f"🔄 لتحويل الدولار إلى الدينار، تواصل مع الإدارة مباشرة (لا يوجد تحويل آلي داخل البوت).\n"
         f"🎁 نقاط المكافآت: {int(user['points'] or 0) if points_enabled(user_id) else 0} نقطة\n"
         f"📅 التسجيل: {user['created_at']}",
         reply_markup=main_keyboard(user_id),
@@ -1288,15 +1303,40 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
         await query.edit_message_text("❌ هذا العرض غير متوفر على iPhone.")
         return
 
+    # Ask customers whether to use a coupon immediately after selecting an offer (not in the cart).
+    coupon_key = f"{game_id}:{offer_id}:{platform or ''}:{price_mode}"
+    if context is not None and points_enabled(user_id) and price_mode != "usd":
+        pending = context.user_data.get("pending_offer_coupon") or {}
+        selected_coupon = context.user_data.get("offer_coupon") or {}
+        selected_matches = selected_coupon.get("key") == coupon_key
+        if context.user_data.get("offer_coupon_prompt_key") != coupon_key and not selected_matches:
+            context.user_data["pending_offer_coupon"] = {"game_id": game_id, "offer_id": offer_id, "platform": platform, "price_mode": price_mode, "key": coupon_key}
+            prompt_rows = [
+                [InlineKeyboardButton("🎟️ نعم، أريد استعمال قسيمة", callback_data="offer_coupon_yes")],
+                [InlineKeyboardButton("⏭️ لا، متابعة بلا قسيمة", callback_data="offer_coupon_no")],
+                [InlineKeyboardButton("🛒 إضافة إلى السلة دون قسيمة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}")],
+            ]
+            await query.edit_message_text(
+                "🛍️ تم اختيار العرض\n\n"
+                f"🎮 اللعبة: {game['name']}\n📦 العرض: {offer['name']}\n"
+                f"💰 السعر: {offer_price(offer, 'flexy' if price_mode == 'flexy' else 'baridi', user_id)} دج\n\n"
+                "🎟️ هل تريد استعمال قسيمة تخفيض؟ يمكنك أيضًا المتابعة دون قسيمة بالسعر الكامل.",
+                reply_markup=InlineKeyboardMarkup(prompt_rows))
+            return
+
     buttons = []
+    selected_coupon = context.user_data.get("offer_coupon") if context is not None else None
+    if not selected_coupon or selected_coupon.get("key") != coupon_key or price_mode == "usd":
+        selected_coupon = None
+    coupon_cut = int(selected_coupon.get("discount", 0)) if selected_coupon else 0
     if price_mode in ("choose", "baridi") and get_setting("payment_baridi_enabled", "1") == "1" and get_setting(f"offer_payment_baridi_{offer_id}", "1") == "1":
         buttons.append([InlineKeyboardButton(
-            f"💳 BaridiMob / CCP — {offer_price(offer, 'baridi', user_id)} DA",
+            f"💳 BaridiMob / CCP — {max(0, offer_price(offer, 'baridi', user_id)-coupon_cut)} DA",
             callback_data=f"pay:{game_id}:{offer_id}:baridi",
         )])
     if price_mode in ("choose", "flexy") and get_setting("payment_flexy_enabled", "1") == "1" and get_setting(f"offer_payment_flexy_{offer_id}", "1") == "1":
         buttons.append([InlineKeyboardButton(
-            f"📱 Flexy — {offer_price(offer, 'flexy', user_id)} DA",
+            f"📱 Flexy — {max(0, offer_price(offer, 'flexy', user_id)-coupon_cut)} DA",
             callback_data=f"pay:{game_id}:{offer_id}:flexy",
         )])
     with db() as conn:
@@ -1327,8 +1367,11 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
             f"{custom_method['emoji']} {custom_method['name']} — {label_price}",
             callback_data=f"pay:{game_id}:{offer_id}:custom_{custom_method['id']}"
         )])
+    if selected_coupon and selected_coupon.get("key") == coupon_key and price_mode != "usd":
+        buttons.append([InlineKeyboardButton(f"🎟️ القسيمة المختارة: -{int(selected_coupon['discount'])} دج", callback_data="offer_coupon_yes")])
+        buttons.append([InlineKeyboardButton("❌ إلغاء القسيمة", callback_data="offer_coupon_remove")])
     buttons += [
-        [InlineKeyboardButton("🛒 إضافة إلى السلة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}")],
+        [InlineKeyboardButton("🛒 إضافة إلى السلة دون قسيمة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}")],
         [InlineKeyboardButton("🛒 عرض السلة", callback_data="cart_view")],
     ]
     # Wallet payment is intentionally unavailable from Flexy/USD price views.
@@ -1350,9 +1393,10 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
         f"🎮 اللعبة: {game['name']}\n"
         f"📦 العرض: {offer['name']}\n"
         f"📱 الجهاز: {'Android' if platform == 'android' else 'iPhone (iOS)' if platform == 'ios' else 'غير مطلوب'}\n\n"
-        + (f"💳 BaridiMob / CCP: {offer_price(offer, 'baridi', user_id)} DA\n" if price_mode in ("choose", "baridi") and get_setting("payment_baridi_enabled", "1") == "1" else "")
-        + (f"📱 Flexy: {offer_price(offer, 'flexy', user_id)} DA\n" if price_mode in ("choose", "flexy") and get_setting("payment_flexy_enabled", "1") == "1" else "")
+        + (f"💳 BaridiMob / CCP: {max(0, offer_price(offer, 'baridi', user_id)-coupon_cut)} DA\n" if price_mode in ("choose", "baridi") and get_setting("payment_baridi_enabled", "1") == "1" else "")
+        + (f"📱 Flexy: {max(0, offer_price(offer, 'flexy', user_id)-coupon_cut)} DA\n" if price_mode in ("choose", "flexy") and get_setting("payment_flexy_enabled", "1") == "1" else "")
         + (f"💵 USD: {(Decimal(offer_price(offer, 'baridi', user_id)) / max(Decimal(get_setting('usd_exchange_rate', '254')), Decimal('0.01'))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)} USD\n" if price_mode == "usd" else "")
+        + (f"🎟️ القسيمة المختارة: -{int(selected_coupon['discount'])} دج\n" if selected_coupon and selected_coupon.get("key") == coupon_key and price_mode != "usd" else "")
         + f"🏷️ فئة السعر: {'تاجر' if is_trader(user_id) else 'زبون عادي'}\n\nاختر طريقة الدفع:",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
@@ -1521,31 +1565,13 @@ async def _cart_checkout(query, context):
         await query.edit_message_text("🛒 السلة فارغة."); return
     buttons = []
     # Coupon controls belong ONLY to this checkout/payment screen, never the cart contents screen.
-    # Customers may apply one coupon or remove it before proceeding; traders cannot use coupons.
-    if points_enabled(query.from_user.id):
-        chosen_coupon = context.user_data.get("cart_coupon")
-        if chosen_coupon:
-            buttons.append([InlineKeyboardButton(
-                f"🎟️ القسيمة المختارة: تخفيض {int(chosen_coupon['discount'])} دج",
-                callback_data="cart_coupon_list"
-            )])
-            buttons.append([InlineKeyboardButton(
-                "❌ إلغاء القسيمة", callback_data="cart_coupon_remove"
-            )])
-        else:
-            buttons.append([InlineKeyboardButton(
-                "🎟️ استعمال قسيمة تخفيض", callback_data="cart_coupon_list"
-            )])
     if get_setting("payment_baridi_enabled", "1") == "1":
         buttons.append([InlineKeyboardButton(f"💳 BaridiMob / CCP — {_cart_total(cart, 'baridi', query.from_user.id)} DA", callback_data="cart_pay:baridi")])
     if get_setting("payment_flexy_enabled", "1") == "1":
         buttons.append([InlineKeyboardButton(f"📱 Flexy — {_cart_total(cart, 'flexy', query.from_user.id)} DA", callback_data="cart_pay:flexy")])
     buttons.append([InlineKeyboardButton("💰 الدفع من رصيد المحفظة", callback_data="cart_pay:balance")])
     buttons.append([InlineKeyboardButton("🔙 رجوع للسلة", callback_data="cart_view")])
-    checkout_text = "💳 إتمام الطلب — اختر طريقة الدفع للسلة كاملة.\n🎟️ إذا أردت، يمكنك استعمال قسيمة تخفيض من الأزرار هنا.\n⏳ عند اختيار الدفع تبدأ مهلة 15 دقيقة."
-    chosen_coupon = context.user_data.get("cart_coupon") if points_enabled(query.from_user.id) else None
-    if chosen_coupon:
-        checkout_text += f"\n\n🎟️ القسيمة المختارة: تخفيض {int(chosen_coupon['discount'])} دج. مسموح بقسيمة واحدة فقط لكل طلب."
+    checkout_text = "💳 إتمام الطلب — اختر طريقة الدفع للسلة كاملة.\n🎟️ القسائم تُختار مباشرة بعد اختيار العرض الفردي، وليست متاحة من شاشة السلة.\n⏳ عند اختيار الدفع تبدأ مهلة 15 دقيقة."
     await query.edit_message_text(checkout_text, reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -1557,18 +1583,10 @@ async def _cart_start_payment(query, context, payment_type):
         await query.answer("طريقة الدفع غير مدعومة للسلة حاليًا.", show_alert=True); return
     game = get_game(cart["game_id"])
     base_total = _cart_total(cart, payment_type, query.from_user.id)
-    coupon = context.user_data.get("cart_coupon")
     coupon_id = None
     coupon_discount = 0
-    if coupon:
-        valid = next((c for c in _valid_coupons(query.from_user.id) if int(c['id']) == int(coupon['id'])), None)
-        if not valid:
-            context.user_data.pop("cart_coupon", None); coupon = None
-        elif base_total <= int(valid['min_order']):
-            await query.edit_message_text(f"❌ هذه القسيمة تتطلب طلبًا أكبر من {int(valid['min_order'])} دج."); return
-        else:
-            coupon_id=int(valid['id']); coupon_discount=min(int(valid['discount_amount']),base_total)
-    total = max(0, base_total-coupon_discount)
+    context.user_data.pop("cart_coupon", None)
+    total = base_total
     if payment_type == "balance":
         with db() as conn:
             row = conn.execute("SELECT balance FROM users WHERE user_id=?", (query.from_user.id,)).fetchone()
@@ -1625,6 +1643,7 @@ async def select_payment(
         )
         return
 
+    currency = "DA"
     if method in ("baridi", "flexy") and (
         get_setting(f"payment_{method}_enabled", "1") != "1"
         or get_setting(f"offer_payment_{method}_{offer_id}", "1") != "1"
@@ -1696,11 +1715,6 @@ async def select_payment(
         price = offer_price(offer, "baridi", query.from_user.id)
         # لا تُعامل نقاط الولاء كأنها دنانير ولا تُضاف إلى رصيد المحفظة.
         context.user_data["use_points_for_order"] = False
-        if balance < price:
-            await query.edit_message_text(
-                f"❌ رصيد المحفظة غير كافٍ.\nالسعر: {price} DA\nرصيد المحفظة: {balance} DA\n\nاضغط تعبئة الرصيد من القائمة الرئيسية ثم أعد الطلب."
-            )
-            return
         method_name = "رصيد المحفظة"
         details = "سيُخصم المبلغ من محفظتك عند تأكيد الطلب."
     else:
@@ -1709,9 +1723,32 @@ async def select_payment(
         )
         return
 
-    base_price = price
+    # Apply a separately selected coupon only to DA-denominated single-offer orders.
+    coupon_id = None
+    coupon_discount = 0
+    coupon_state = context.user_data.get("offer_coupon") or {}
+    expected_coupon_key = f"{game_id}:{offer_id}:{context.user_data.get('selected_platform') or ''}:{context.user_data.get('selected_price_mode', 'choose')}"
+    # The callback's explicit price mode is retained from the selected offer view.
+    selected_coupon = coupon_state if coupon_state.get("key") == expected_coupon_key else {}
+    base_price = int(price) if str(currency).upper() != "USD" else price
+    if selected_coupon and str(currency).upper() not in ("USD",):
+        valid_coupon = next((c for c in _valid_coupons(query.from_user.id) if int(c["id"]) == int(selected_coupon.get("id", 0))), None)
+        if valid_coupon and int(base_price) > int(valid_coupon["min_order"]):
+            coupon_id = int(valid_coupon["id"])
+            coupon_discount = min(int(valid_coupon["discount_amount"]), int(base_price))
+            price = max(0, int(base_price) - coupon_discount)
+        else:
+            context.user_data.pop("offer_coupon", None)
+            await query.answer("القسيمة لم تعد صالحة أو لا تحقق الحد الأدنى لهذا السعر؛ سيُستخدم السعر الكامل.", show_alert=True)
+    if method == "balance":
+        with db() as conn:
+            row = conn.execute("SELECT balance FROM users WHERE user_id=?", (query.from_user.id,)).fetchone()
+        balance = int(row["balance"] or 0) if row else 0
+        if balance < int(price):
+            await query.edit_message_text(f"❌ رصيد المحفظة غير كافٍ.\nالسعر بعد القسيمة: {int(price)} DA\nرصيدك: {balance} DA\nعبّئ محفظتك أو اختر طريقة دفع أخرى.")
+            return
+
     # Loyalty points are not cash and must never be auto-deducted from a normal order.
-    # Only a separately selected valid coupon changes the price via coupon_discount.
     points_used = 0
     context.user_data["use_points_for_order"] = False
 
@@ -1727,6 +1764,8 @@ async def select_payment(
         "payment_type": method,
         "currency": currency if method.startswith("custom_") else "DA",
         "platform": context.user_data.get("selected_platform", ""),
+        "coupon_id": coupon_id,
+        "coupon_discount": coupon_discount,
     }
     await _begin_cart_timer(context, query.from_user.id)
 
@@ -1759,8 +1798,9 @@ async def select_payment(
         f"📦 العرض: {offer['name']}\n"
         f"🔀 طريقة الشحن: {selected_method['title'] if selected_method else 'الطريقة الافتراضية'}\n"
         f"💳 الدفع: {method_name}\n"
-        f"💰 السعر: {price} {currency if method.startswith('custom_') else 'DA'}\n\n"
-        f"💳 معلومات الدفع:\n{details}\n\n"
+        f"💰 السعر: {price} {currency if method.startswith('custom_') else 'DA'}\n"
+        + (f"🎟️ خصم القسيمة: -{coupon_discount} DA\n" if coupon_discount else "")
+        + f"\n💳 معلومات الدفع:\n{details}\n\n"
         f"{prompt}\n\nللإلغاء أرسل /cancel"
     )
 
@@ -1796,6 +1836,9 @@ async def create_wallet_order(message, context, player_id, user=None):
                 conn.execute("DELETE FROM orders WHERE id=?",(order_id,))
                 await message.reply_text("❌ القسيمة لم تعد صالحة أو سبق استعمالها. لم يتم تثبيت الطلب؛ أعد المحاولة.",reply_markup=main_keyboard(user.id)); return
             context.user_data.pop('cart_coupon',None)
+            context.user_data.pop('offer_coupon',None)
+            context.user_data.pop('pending_offer_coupon',None)
+            context.user_data.pop('offer_coupon_prompt_key',None)
         if draft.get("cart_mode"):
             for item in draft.get("cart_items", []):
                 _, cart_offer, _ = _cart_method_info(draft["game_id"], item["offer_id"])
@@ -2006,36 +2049,46 @@ async def photo_handler(update, context):
         return
 
     if context.user_data.get("awaiting_deposit_receipt"):
-        amount = int(context.user_data.get("deposit_amount", 0))
         method = context.user_data.get("deposit_method", "")
+        currency = (context.user_data.get("deposit_currency") or "DA").upper()
         if not method:
             context.user_data.pop("awaiting_deposit_receipt", None)
             await message.reply_text("❌ انتهت جلسة التعبئة. ابدأ من جديد.")
             return
-        method_key = "flexy" if "flexy" in method.lower() else "baridi"
-        account_type = "trader" if is_trader(user.id) else "customer"
-        minimum, maximum = deposit_limits(account_type, method_key)
-        if amount < minimum or amount > maximum:
-            context.user_data.pop("awaiting_deposit_receipt", None)
-            context.user_data.pop("deposit_amount", None)
-            context.user_data.pop("deposit_method", None)
-            await message.reply_text(f"❌ مبلغ التعبئة خارج الحدود المسموحة ({minimum} إلى {maximum} DA). ابدأ من جديد.")
-            return
+        if currency == "USD":
+            amount_usd = float(context.user_data.get("deposit_amount_usd", 0) or 0)
+            if not (amount_usd > 0):
+                context.user_data.pop("awaiting_deposit_receipt", None)
+                await message.reply_text("❌ مبلغ الدولار غير صحيح. ابدأ التعبئة من جديد.")
+                return
+            amount = 0
+        else:
+            amount = int(context.user_data.get("deposit_amount", 0) or 0)
+            method_key = "flexy" if "flexy" in method.lower() else "baridi"
+            account_type = "trader" if is_trader(user.id) else "customer"
+            minimum, maximum = deposit_limits(account_type, method_key)
+            if amount < minimum or amount > maximum:
+                context.user_data.pop("awaiting_deposit_receipt", None)
+                context.user_data.pop("deposit_amount", None)
+                context.user_data.pop("deposit_method", None)
+                await message.reply_text(f"❌ مبلغ التعبئة خارج الحدود المسموحة ({minimum} إلى {maximum} DA). ابدأ من جديد.")
+                return
+            amount_usd = 0.0
         photo = message.photo[-1]
         with db() as conn:
-            cur = conn.execute("INSERT INTO wallet_deposits (user_id, amount, payment_method, receipt_file_id, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)", (user.id, amount, method, photo.file_id, now_text()))
+            cur = conn.execute("INSERT INTO wallet_deposits (user_id, amount, amount_usd, currency, payment_method, receipt_file_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)", (user.id, amount, amount_usd, currency, method, photo.file_id, now_text()))
             deposit_id = cur.lastrowid
+        display_amount = f"{amount_usd:.2f} USD" if currency == "USD" else f"{amount} DA"
         if ADMIN_ID:
             try:
                 await context.bot.send_photo(ADMIN_ID, photo.file_id,
-                    caption=f"💰 طلب تعبئة رصيد #{deposit_id}\nالزبون: {user.full_name}\nTelegram ID: {user.id}\nالمبلغ: {amount} DA\nطريقة الدفع: {method}\nالحالة: قيد المراجعة",
+                    caption=f"💰 طلب تعبئة رصيد #{deposit_id}\nالزبون: {user.full_name}\nTelegram ID: {user.id}\nالمبلغ: {display_amount}\nالمحفظة: {currency}\nطريقة الدفع: {method}\nالحالة: قيد المراجعة",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ قبول التعبئة", callback_data=f"deposit_approve:{deposit_id}"), InlineKeyboardButton("❌ رفض", callback_data=f"deposit_reject:{deposit_id}")]]))
             except Exception:
                 logger.exception("تعذر إرسال طلب تعبئة الرصيد للإدارة")
-        context.user_data.pop("awaiting_deposit_receipt", None)
-        context.user_data.pop("deposit_amount", None)
-        context.user_data.pop("deposit_method", None)
-        await message.reply_text(f"✅ استلمنا وصل التعبئة #{deposit_id}. سيضاف الرصيد بعد تأكيد الإدارة.", reply_markup=main_keyboard(user.id))
+        for k in ("awaiting_deposit_receipt", "deposit_amount", "deposit_amount_usd", "deposit_method", "deposit_currency"):
+            context.user_data.pop(k, None)
+        await message.reply_text(f"✅ استلمنا وصل التعبئة #{deposit_id}. سيضاف الرصيد إلى محفظة {currency} بعد تأكيد الإدارة.", reply_markup=main_keyboard(user.id))
         return
 
     if not context.user_data.get("awaiting_payment_receipt"):
@@ -2104,6 +2157,9 @@ async def photo_handler(update, context):
                 conn.execute("DELETE FROM orders WHERE id=?",(order_id,))
                 await message.reply_text("❌ القسيمة لم تعد صالحة أو سبق استعمالها. أعد الطلب دونها.",reply_markup=main_keyboard(user.id)); return
             context.user_data.pop('cart_coupon',None)
+            context.user_data.pop('offer_coupon',None)
+            context.user_data.pop('pending_offer_coupon',None)
+            context.user_data.pop('offer_coupon_prompt_key',None)
         if draft.get("cart_mode"):
             for item in draft.get("cart_items", []):
                 _, cart_offer, _ = _cart_method_info(draft["game_id"], item["offer_id"])
@@ -2808,7 +2864,7 @@ async def callback_handler(update, context):
         await query.answer(store_closed_notice(), show_alert=True)
         return
     # Coupon callbacks answer themselves so alerts/errors can be shown exactly once.
-    if not data.startswith(("coupon_", "cart_coupon_")):
+    if not data.startswith(("coupon_", "cart_coupon_", "offer_coupon_")):
         await query.answer()
 
     if data.startswith("cart_add:"):
@@ -2898,6 +2954,54 @@ async def callback_handler(update, context):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 قسائمي", callback_data="coupon_mine")], [InlineKeyboardButton("🎟️ متجر القسائم", callback_data="coupon_shop")]])
         )
         return
+    if data in ("offer_coupon_yes", "offer_coupon_no", "offer_coupon_remove"):
+        pending = context.user_data.get("pending_offer_coupon") or {}
+        if not pending:
+            await query.answer("انتهت جلسة اختيار العرض. افتح العرض من جديد.", show_alert=True); return
+        if not points_enabled(user_id):
+            context.user_data.pop("offer_coupon", None)
+            context.user_data["offer_coupon_prompt_key"] = pending.get("key", "")
+            await open_offer(query, pending["game_id"], pending["offer_id"], pending.get("platform"), context, pending.get("price_mode", "choose")); return
+        if data == "offer_coupon_yes":
+            offer = next((x for x in get_offers(int(pending["game_id"])) if int(x["id"]) == int(pending["offer_id"])), None)
+            if not offer:
+                await query.edit_message_text("العرض لم يعد متاحًا."); return
+            price_mode = pending.get("price_mode", "choose")
+            price = int(offer_price(offer, "flexy" if price_mode == "flexy" else "baridi", user_id))
+            valid = [c for c in _valid_coupons(user_id) if price > int(c["min_order"])]
+            if not valid:
+                rows = [[InlineKeyboardButton("⏭️ متابعة بلا قسيمة", callback_data="offer_coupon_no")], [InlineKeyboardButton("🔙 رجوع", callback_data="offer_coupon_no")]]
+                await query.edit_message_text("ما عندك حتى قسيمة صالحة لهذا العرض، أو قيمة العرض لا تحقق الحد الأدنى للقسيمة.", reply_markup=InlineKeyboardMarkup(rows)); return
+            rows = [[InlineKeyboardButton(f"تخفيض {int(c['discount_amount'])} دج — ينتهي {c['expires_at']}", callback_data=f"offer_coupon_set:{int(c['id'])}")] for c in valid]
+            rows.append([InlineKeyboardButton("⏭️ متابعة بلا قسيمة", callback_data="offer_coupon_no")])
+            await query.edit_message_text("🎟️ اختر القسيمة التي تريد استعمالها لهذا العرض:", reply_markup=InlineKeyboardMarkup(rows)); return
+        if data == "offer_coupon_remove":
+            context.user_data.pop("offer_coupon", None)
+            context.user_data["offer_coupon_prompt_key"] = pending.get("key", "")
+        else:
+            context.user_data.pop("offer_coupon", None)
+            context.user_data["offer_coupon_prompt_key"] = pending.get("key", "")
+        await open_offer(query, pending["game_id"], pending["offer_id"], pending.get("platform"), context, pending.get("price_mode", "choose")); return
+    if data.startswith("offer_coupon_set:"):
+        pending = context.user_data.get("pending_offer_coupon") or {}
+        if not pending or not points_enabled(user_id):
+            await query.answer("القسائم متاحة للزبائن فقط. افتح العرض من جديد.", show_alert=True); return
+        try: cid = int(data.split(":", 1)[1])
+        except ValueError: return
+        coupons = _valid_coupons(user_id)
+        coupon = next((c for c in coupons if int(c["id"]) == cid), None)
+        offer = next((x for x in get_offers(int(pending["game_id"])) if int(x["id"]) == int(pending["offer_id"])), None)
+        if not coupon or not offer:
+            await query.answer("القسيمة منتهية أو مستعملة أو العرض غير متاح.", show_alert=True); return
+        price_mode = pending.get("price_mode", "choose")
+        base = int(offer_price(offer, "flexy" if price_mode == "flexy" else "baridi", user_id))
+        if base <= int(coupon["min_order"]):
+            await query.answer(f"هذه القسيمة تتطلب طلبًا أكبر من {int(coupon['min_order'])} دج.", show_alert=True); return
+        context.user_data["offer_coupon"] = {"id": cid, "discount": int(coupon["discount_amount"]), "minimum": int(coupon["min_order"]), "key": pending.get("key", "")}
+        context.user_data["offer_coupon_prompt_key"] = pending.get("key", "")
+        await query.answer("تم اختيار القسيمة.")
+        await open_offer(query, pending["game_id"], pending["offer_id"], pending.get("platform"), context, pending.get("price_mode", "choose")); return
+
     if data == "cart_coupon_list":
         if not points_enabled(user_id):
             context.user_data.pop('cart_coupon', None)
@@ -3655,6 +3759,35 @@ async def callback_handler(update, context):
         await query.message.reply_text(f"💬 أرسل ردك للزبون {target_id}.\nأرسل /cancel للإلغاء.")
         return
 
+    if data.startswith("deposit_currency:"):
+        currency = data.split(":", 1)[1].upper()
+        if currency == "DA":
+            context.user_data["deposit_currency"] = "DA"
+            context.user_data["awaiting_deposit_amount"] = True
+            await query.edit_message_text("🇩🇿 محفظة الدينار\nأرسل مبلغ التعبئة بالدينار الجزائري (مثال: 1000 DA).\nالحد الأدنى 100 DA.\nللإلغاء أرسل /cancel")
+        elif currency == "USD":
+            context.user_data["deposit_currency"] = "USD"
+            context.user_data["awaiting_deposit_amount_usd"] = True
+            await query.edit_message_text("💵 محفظة الدولار USD\nأرسل المبلغ بالدولار، مثال: 10 أو 12.50 USD.\nيُضاف الرصيد إلى محفظة الدولار فقط بعد موافقة الإدارة.\nلا يوجد تحويل تلقائي إلى الدينار؛ للتحويل تواصل مع الإدارة مباشرة.\nللإلغاء أرسل /cancel")
+        return
+
+    if data.startswith("deposit_usd_method:"):
+        try: method_id = int(data.split(":", 1)[1])
+        except ValueError: return
+        amount_usd = float(context.user_data.get("deposit_amount_usd", 0) or 0)
+        with db() as conn:
+            method_row = conn.execute("SELECT * FROM custom_payment_methods WHERE id=? AND enabled=1 AND upper(currency)='USD'", (method_id,)).fetchone()
+        if not method_row or get_setting("usd_payments_enabled", "0") != "1":
+            await query.edit_message_text("❌ طريقة الدفع بالدولار غير متاحة حاليًا. تواصل مع الإدارة."); return
+        if amount_usd <= 0:
+            await query.edit_message_text("❌ مبلغ الدولار غير صحيح. ابدأ التعبئة من جديد."); return
+        context.user_data["deposit_method"] = f"{method_row['emoji']} {method_row['name']}"
+        context.user_data["deposit_currency"] = "USD"
+        context.user_data["awaiting_deposit_receipt"] = True
+        details = method_row["instructions"] or "تواصل مع الإدارة لمعرفة تعليمات الدفع."
+        await query.edit_message_text(f"💵 تعبئة محفظة الدولار\nالمبلغ: {amount_usd:.2f} USD\nطريقة الدفع: {method_row['name']}\n\n{details}\n\n📸 بعد الدفع، أرسل صورة وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
+        return
+
     if data.startswith("deposit_method:"):
         method = data.split(":", 1)[1]
         if method not in ("baridi", "flexy"):
@@ -3670,6 +3803,7 @@ async def callback_handler(update, context):
             )
             return
         context.user_data["deposit_method"] = "BaridiMob / CCP" if method == "baridi" else "Flexy"
+        context.user_data["deposit_currency"] = "DA"
         context.user_data["awaiting_deposit_receipt"] = True
         details = get_setting("baridi_details" if method == "baridi" else "flexy_details", "تواصل مع الإدارة لمعرفة معلومات الدفع.")
         await query.edit_message_text(f"💳 معلومات الدفع:\n{details}\n\n📸 بعد الدفع، أرسل صورة وصل الدفع هنا لتعبئة رصيدك.\nلا يُضاف الرصيد إلا بعد مراجعة الإدارة.")
@@ -3687,22 +3821,37 @@ async def callback_handler(update, context):
                 await query.answer("تمت معالجة هذا الطلب مسبقًا.", show_alert=True)
                 return
             conn.execute("UPDATE wallet_deposits SET status = ?, processed_at = ? WHERE id = ?", ("approved" if approve else "rejected", now_text(), deposit_id))
-            credited_amount = int(dep["amount"])
+            currency = (dep["currency"] if "currency" in dep.keys() else "DA") or "DA"
+            is_usd = str(currency).upper() == "USD"
+            amount_usd = float(dep["amount_usd"] or 0) if "amount_usd" in dep.keys() else 0.0
+            credited_amount = int(dep["amount"] or 0)
+            credited_usd = amount_usd
             is_flexy = "flexy" in str(dep["payment_method"] or "").lower() or "فليكسي" in str(dep["payment_method"] or "").lower()
             if approve:
-                # Flexy deposits receive an 15% deduction; other methods are credited in full.
-                credited_amount = int(int(dep["amount"]) * 0.85) if is_flexy else int(dep["amount"])
-                conn.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (credited_amount, dep["user_id"]))
+                if is_usd:
+                    conn.execute("UPDATE users SET balance_usd = COALESCE(balance_usd,0) + ? WHERE user_id = ?", (credited_usd, dep["user_id"]))
+                else:
+                    # Flexy deposits receive a 15% deduction; other methods are credited in full.
+                    credited_amount = int(int(dep["amount"]) * 0.85) if is_flexy else int(dep["amount"])
+                    conn.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (credited_amount, dep["user_id"]))
         try:
             if approve:
                 deduction_note = f"\nاقتطاع فليكسي (15%): {int(dep['amount']) - credited_amount} DA" if is_flexy else ""
-                await context.bot.send_message(dep["user_id"], f"✅ تمت الموافقة على تعبئة #{deposit_id}.\nالمبلغ المدفوع: {dep['amount']} DA{deduction_note}\nالمبلغ المضاف إلى محفظتك: {credited_amount} DA.")
+                if is_usd:
+                    await context.bot.send_message(dep["user_id"], f"✅ تمت الموافقة على تعبئة #{deposit_id}.\nالمبلغ المدفوع: {amount_usd:.2f} USD\nالمبلغ المضاف إلى محفظة الدولار: {credited_usd:.2f} USD.\nإذا رغبت في تحويله إلى الدينار، تواصل مع الإدارة مباشرة.")
+                else:
+                    await context.bot.send_message(dep["user_id"], f"✅ تمت الموافقة على تعبئة #{deposit_id}.\nالمبلغ المدفوع: {dep['amount']} DA{deduction_note}\nالمبلغ المضاف إلى محفظتك: {credited_amount} DA.")
             else:
                 await context.bot.send_message(dep["user_id"], f"❌ تم رفض تعبئة الرصيد #{deposit_id}. إذا كان هناك خطأ، تواصل مع الإدارة.")
         except Exception:
             logger.exception("تعذر إشعار الزبون بنتيجة التعبئة")
-        deduction_caption = f"\nالمضاف للمحفظة: {credited_amount} DA (بعد خصم 15%)" if approve and is_flexy else (f"\nالمضاف للمحفظة: {credited_amount} DA" if approve else "")
-        await query.edit_message_caption(caption=f"{'✅ تمت الموافقة' if approve else '❌ تم الرفض'} على تعبئة الرصيد #{deposit_id}\nالمبلغ المدفوع: {dep['amount']} DA{deduction_caption}\nالطريقة: {dep['payment_method']}\nالزبون: {dep['user_id']}", reply_markup=None)
+        if is_usd:
+            amount_label = f"{amount_usd:.2f} USD"
+            deduction_caption = f"\nالمضاف لمحفظة USD: {credited_usd:.2f} USD" if approve else ""
+        else:
+            amount_label = f"{int(dep['amount'] or 0)} DA"
+            deduction_caption = f"\nالمضاف للمحفظة: {credited_amount} DA (بعد خصم 15%)" if approve and is_flexy else (f"\nالمضاف للمحفظة: {credited_amount} DA" if approve else "")
+        await query.edit_message_caption(caption=f"{'✅ تمت الموافقة' if approve else '❌ تم الرفض'} على تعبئة الرصيد #{deposit_id}\nالمبلغ المدفوع: {amount_label}{deduction_caption}\nالطريقة: {dep['payment_method']}\nالزبون: {dep['user_id']}", reply_markup=None)
         return
 
     if data.startswith("trader_approve:") or data.startswith("trader_reject:"):
@@ -4919,6 +5068,11 @@ async def callback_handler(update, context):
         platform = parts[3] if len(parts) >= 4 and parts[3] != "none" else None
         price_mode = parts[4] if len(parts) == 5 and parts[4] in ("baridi", "flexy", "usd") else "choose"
         context.user_data["selected_platform"] = platform or ""
+        context.user_data["selected_price_mode"] = price_mode
+        current_coupon = context.user_data.get("offer_coupon") or {}
+        if current_coupon and not current_coupon.get("key", "").startswith(f"{game_id}:{offer_id}:"):
+            context.user_data.pop("offer_coupon", None)
+        context.user_data.pop("offer_coupon_prompt_key", None) if not current_coupon else None
         await open_offer(query, game_id, offer_id, platform, context, price_mode)
 
     # اختيار طريقة دفع تسديد القرض
@@ -5372,6 +5526,25 @@ async def text_handler(update, context):
         await message.reply_text("اختر طريقة الدفع:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("BaridiMob / CCP", callback_data="credit_repay_method:baridi")], [InlineKeyboardButton("Flexy", callback_data="credit_repay_method:flexy")]]))
         return
 
+    if context.user_data.get("awaiting_deposit_amount_usd"):
+        try:
+            amount_usd = float(text.replace("USD", "").replace("usd", "").replace(",", ".").strip())
+            if amount_usd <= 0 or amount_usd > 1000000: raise ValueError
+        except ValueError:
+            await message.reply_text("❌ أدخل مبلغًا صحيحًا بالدولار، مثل 10 أو 12.50 USD.")
+            return
+        context.user_data["deposit_amount_usd"] = round(amount_usd, 2)
+        context.user_data.pop("awaiting_deposit_amount_usd", None)
+        if get_setting("usd_payments_enabled", "0") != "1":
+            await message.reply_text("❌ تعبئة محفظة الدولار متوقفة حاليًا. تواصل مع الإدارة.", reply_markup=main_keyboard(user_id)); return
+        with db() as conn:
+            methods = conn.execute("SELECT * FROM custom_payment_methods WHERE enabled=1 AND upper(currency)='USD' ORDER BY id").fetchall()
+        rows = [[InlineKeyboardButton(f"{m['emoji']} {m['name']}", callback_data=f"deposit_usd_method:{int(m['id'])}")] for m in methods]
+        if not rows:
+            await message.reply_text("لا توجد طرق دفع بالدولار مفعّلة حاليًا. تواصل مع الإدارة.", reply_markup=main_keyboard(user_id)); return
+        await message.reply_text(f"💵 تعبئة محفظة الدولار: {amount_usd:.2f} USD\nاختر طريقة الدفع:", reply_markup=InlineKeyboardMarkup(rows))
+        return
+
     if context.user_data.get("awaiting_deposit_amount"):
         try:
             amount = int(text.replace(" ", ""))
@@ -5381,6 +5554,7 @@ async def text_handler(update, context):
             await message.reply_text("❌ أدخل مبلغًا صحيحًا لا يقل عن 100 DA.")
             return
         context.user_data["deposit_amount"] = amount
+        context.user_data["deposit_currency"] = "DA"
         context.user_data.pop("awaiting_deposit_amount", None)
         await message.reply_text(
             f"💰 مبلغ التعبئة: {amount} DA\nإذا اخترت Flexy، يُخصم 15% ويُضاف 85% فقط إلى محفظتك ({int(amount * 0.85)} DA).\nاختر طريقة الدفع:",
@@ -6538,8 +6712,12 @@ async def text_handler(update, context):
         return
 
     if text == "💰 تعبئة الرصيد":
-        context.user_data["awaiting_deposit_amount"] = True
-        await message.reply_text("💰 أرسل مبلغ التعبئة بالدينار الجزائري (مثال: 1000 DA).\nالحد الأدنى 100 DA.\nللإلغاء أرسل /cancel")
+        for k in ("awaiting_deposit_amount", "awaiting_deposit_amount_usd", "deposit_amount", "deposit_amount_usd", "deposit_method", "deposit_currency", "awaiting_deposit_receipt"):
+            context.user_data.pop(k, None)
+        await message.reply_text("💰 اختر المحفظة التي تريد تعبئتها:", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🇩🇿 محفظة الدينار DA", callback_data="deposit_currency:DA")],
+            [InlineKeyboardButton("💵 محفظة الدولار USD", callback_data="deposit_currency:USD")],
+        ]))
         return
 
     if text in ("💳 تسديد القرض", "💳 قروض التجار"):
