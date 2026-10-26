@@ -1218,7 +1218,7 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None, pric
                 price_label = f"💳 {offer_price(offer, 'baridi', user_id)} DA"
             else:
                 price_label = f"💳 {offer_price(offer, 'baridi', user_id)} DA | 📱 {offer_price(offer, 'flexy', user_id)} DA"
-            buttons.append([InlineKeyboardButton(f"{offer['name']} | {price_label}", callback_data=f"offer:{game_id}:{offer['id']}:{platform or 'none'}")])
+            buttons.append([InlineKeyboardButton(f"{offer['name']} | {price_label}", callback_data=f"offer:{game_id}:{offer['id']}:{platform or 'none'}:{price_mode}")])
 
     # Separate price-list filters: BaridiMob, Flexy, and USD.
     price_buttons = [
@@ -1266,7 +1266,7 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None, pric
 
 # ====== تفاصيل العرض ======
 
-async def open_offer(query, game_id, offer_id, platform=None, context=None):
+async def open_offer(query, game_id, offer_id, platform=None, context=None, price_mode="choose"):
     user_id = query.from_user.id
     game = get_game(game_id)
     offers = get_offers(game_id)
@@ -1289,12 +1289,12 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None):
         return
 
     buttons = []
-    if get_setting("payment_baridi_enabled", "1") == "1" and get_setting(f"offer_payment_baridi_{offer_id}", "1") == "1":
+    if price_mode in ("choose", "baridi") and get_setting("payment_baridi_enabled", "1") == "1" and get_setting(f"offer_payment_baridi_{offer_id}", "1") == "1":
         buttons.append([InlineKeyboardButton(
             f"💳 BaridiMob / CCP — {offer_price(offer, 'baridi', user_id)} DA",
             callback_data=f"pay:{game_id}:{offer_id}:baridi",
         )])
-    if get_setting("payment_flexy_enabled", "1") == "1" and get_setting(f"offer_payment_flexy_{offer_id}", "1") == "1":
+    if price_mode in ("choose", "flexy") and get_setting("payment_flexy_enabled", "1") == "1" and get_setting(f"offer_payment_flexy_{offer_id}", "1") == "1":
         buttons.append([InlineKeyboardButton(
             f"📱 Flexy — {offer_price(offer, 'flexy', user_id)} DA",
             callback_data=f"pay:{game_id}:{offer_id}:flexy",
@@ -1306,7 +1306,7 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None):
         ).fetchall()
     for custom_method in custom_methods:
         method_currency = (custom_method["currency"] or "USD").upper()
-        if method_currency == "USD" and get_setting("usd_payments_enabled", "0") != "1":
+        if method_currency == "USD" and (price_mode not in ("choose", "usd") or get_setting("usd_payments_enabled", "0") != "1"):
             continue
         # Per-offer switches apply to USD and DZD custom methods alike.
         if custom_method["offer_method_enabled"] is not None and not int(custom_method["offer_method_enabled"] or 0):
@@ -1347,8 +1347,9 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None):
         f"🎮 اللعبة: {game['name']}\n"
         f"📦 العرض: {offer['name']}\n"
         f"📱 الجهاز: {'Android' if platform == 'android' else 'iPhone (iOS)' if platform == 'ios' else 'غير مطلوب'}\n\n"
-        + (f"💳 BaridiMob / CCP: {offer_price(offer, 'baridi', user_id)} DA\n" if get_setting("payment_baridi_enabled", "1") == "1" else "")
-        + (f"📱 Flexy: {offer_price(offer, 'flexy', user_id)} DA\n" if get_setting("payment_flexy_enabled", "1") == "1" else "")
+        + (f"💳 BaridiMob / CCP: {offer_price(offer, 'baridi', user_id)} DA\n" if price_mode in ("choose", "baridi") and get_setting("payment_baridi_enabled", "1") == "1" else "")
+        + (f"📱 Flexy: {offer_price(offer, 'flexy', user_id)} DA\n" if price_mode in ("choose", "flexy") and get_setting("payment_flexy_enabled", "1") == "1" else "")
+        + (f"💵 USD: {(Decimal(offer_price(offer, 'baridi', user_id)) / max(Decimal(get_setting('usd_exchange_rate', '254')), Decimal('0.01'))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)} USD\n" if price_mode == "usd" else "")
         + f"🏷️ فئة السعر: {'تاجر' if is_trader(user_id) else 'زبون عادي'}\n\nاختر طريقة الدفع:",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
@@ -4904,16 +4905,17 @@ async def callback_handler(update, context):
     # فتح عرض للزبون
     elif data.startswith("offer:"):
         parts = data.split(":")
-        if len(parts) not in (3, 4):
+        if len(parts) not in (3, 4, 5):
             return
         try:
             game_id = int(parts[1])
             offer_id = int(parts[2])
         except ValueError:
             return
-        platform = parts[3] if len(parts) == 4 and parts[3] != "none" else None
+        platform = parts[3] if len(parts) >= 4 and parts[3] != "none" else None
+        price_mode = parts[4] if len(parts) == 5 and parts[4] in ("baridi", "flexy", "usd") else "choose"
         context.user_data["selected_platform"] = platform or ""
-        await open_offer(query, game_id, offer_id, platform, context)
+        await open_offer(query, game_id, offer_id, platform, context, price_mode)
 
     # اختيار طريقة دفع تسديد القرض
     elif data.startswith("credit_repay_method:"):
