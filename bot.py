@@ -1330,14 +1330,17 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
     buttons += [
         [InlineKeyboardButton("🛒 إضافة إلى السلة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}")],
         [InlineKeyboardButton("🛒 عرض السلة", callback_data="cart_view")],
-        [InlineKeyboardButton("💰 الدفع من رصيد المحفظة", callback_data=f"pay:{game_id}:{offer_id}:balance")],
-        [
-            InlineKeyboardButton(
-                "🔙 رجوع للعروض",
-                callback_data=f"recharge_select:{game_id}:{int(offer['recharge_method_id'])}:{platform or 'none'}",
-            )
-        ],
     ]
+    # Wallet payment is intentionally unavailable from Flexy/USD price views.
+    # It remains available in the general view and the BaridiMob/CCP view only.
+    if price_mode not in ("flexy", "usd"):
+        buttons.append([InlineKeyboardButton("💰 الدفع من رصيد المحفظة", callback_data=f"pay:{game_id}:{offer_id}:balance")])
+    buttons.append([
+        InlineKeyboardButton(
+            "🔙 رجوع للعروض",
+            callback_data=f"recharge_select:{game_id}:{int(offer['recharge_method_id'])}:{platform or 'none'}",
+        )
+    ])
     # النقاط لا تخصم تلقائيًا من طلب الشحن؛ تُستخدم فقط لشراء عروض النقاط أو شراء القسائم.
     if context is not None:
         context.user_data["use_points_for_order"] = False
@@ -1517,16 +1520,17 @@ async def _cart_checkout(query, context):
     if not cart or not cart.get("items"):
         await query.edit_message_text("🛒 السلة فارغة."); return
     buttons = []
-    # Coupons are customer-only and exactly one coupon may be attached to an order.
+    # Coupon controls belong ONLY to this checkout/payment screen, never the cart contents screen.
+    # Customers may apply one coupon or remove it before proceeding; traders cannot use coupons.
     if points_enabled(query.from_user.id):
         chosen_coupon = context.user_data.get("cart_coupon")
         if chosen_coupon:
             buttons.append([InlineKeyboardButton(
-                f"🎟️ القسيمة المختارة: -{int(chosen_coupon['discount'])} دج (قسيمة واحدة فقط)",
+                f"🎟️ القسيمة المختارة: تخفيض {int(chosen_coupon['discount'])} دج",
                 callback_data="cart_coupon_list"
             )])
             buttons.append([InlineKeyboardButton(
-                "❌ إزالة القسيمة", callback_data="cart_coupon_remove"
+                "❌ إلغاء القسيمة", callback_data="cart_coupon_remove"
             )])
         else:
             buttons.append([InlineKeyboardButton(
@@ -1538,7 +1542,7 @@ async def _cart_checkout(query, context):
         buttons.append([InlineKeyboardButton(f"📱 Flexy — {_cart_total(cart, 'flexy', query.from_user.id)} DA", callback_data="cart_pay:flexy")])
     buttons.append([InlineKeyboardButton("💰 الدفع من رصيد المحفظة", callback_data="cart_pay:balance")])
     buttons.append([InlineKeyboardButton("🔙 رجوع للسلة", callback_data="cart_view")])
-    checkout_text = "💳 اختر طريقة الدفع للسلة كاملة. عند اختيار الدفع تبدأ مهلة 15 دقيقة."
+    checkout_text = "💳 إتمام الطلب — اختر طريقة الدفع للسلة كاملة.\n🎟️ إذا أردت، يمكنك استعمال قسيمة تخفيض من الأزرار هنا.\n⏳ عند اختيار الدفع تبدأ مهلة 15 دقيقة."
     chosen_coupon = context.user_data.get("cart_coupon") if points_enabled(query.from_user.id) else None
     if chosen_coupon:
         checkout_text += f"\n\n🎟️ القسيمة المختارة: تخفيض {int(chosen_coupon['discount'])} دج. مسموح بقسيمة واحدة فقط لكل طلب."
@@ -1706,8 +1710,8 @@ async def select_payment(
         return
 
     base_price = price
-    # لا يوجد تحويل تلقائي للنقاط إلى دنانير عند الشراء.
-    # لا تُخصم النقاط من طلب عادي؛ القسائم تُطبّق عبر coupon_discount بشكل منفصل.
+    # Loyalty points are not cash and must never be auto-deducted from a normal order.
+    # Only a separately selected valid coupon changes the price via coupon_discount.
     points_used = 0
     context.user_data["use_points_for_order"] = False
 
