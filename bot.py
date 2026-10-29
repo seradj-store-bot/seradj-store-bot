@@ -1,6 +1,7 @@
 import re
 import os
 import html
+import json
 import sqlite3
 import logging
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -148,7 +149,7 @@ async def scheduled_broadcast_loop(application):
         try:
             now = datetime.now(STORE_TZ).strftime("%Y-%m-%d %H:%M:%S")
             with db() as conn:
-                rows = conn.execute("SELECT id, message FROM scheduled_broadcasts WHERE cancelled=0 AND sent_at='' AND due_at<=? ORDER BY due_at LIMIT 20", (now,)).fetchall()
+                rows = conn.execute("SELECT id, message, entities_json FROM scheduled_broadcasts WHERE cancelled=0 AND sent_at='' AND due_at<=? ORDER BY due_at LIMIT 20", (now,)).fetchall()
                 recipients = [int(r[0]) for r in conn.execute("SELECT user_id FROM users WHERE COALESCE(is_banned,0)=0").fetchall()]
             for row in rows:
                 # Mark first to avoid duplicate sends if the process restarts during delivery.
@@ -156,9 +157,21 @@ async def scheduled_broadcast_loop(application):
                     cur = conn.execute("UPDATE scheduled_broadcasts SET sent_at=? WHERE id=? AND sent_at='' AND cancelled=0", (now_text(), row['id']))
                     if cur.rowcount == 0:
                         continue
+                prefix = "📢 إشعار من SERADJ STORE:\n\n"
+                prefix_utf16_len = len(prefix.encode("utf-16-le")) // 2
+                try:
+                    raw_entities = json.loads(row["entities_json"] or "[]")
+                except (TypeError, ValueError, KeyError):
+                    raw_entities = []
+                from telegram import MessageEntity
+                shifted_entities = [
+                    MessageEntity.de_json({**item, "offset": int(item.get("offset", 0)) + prefix_utf16_len}, application.bot)
+                    for item in raw_entities
+                ]
                 for uid in recipients:
                     try:
-                        await application.bot.send_message(chat_id=uid, text="📢 إشعار من SERADJ STORE:\n\n" + row['message'])
+                        kwargs = {"entities": shifted_entities} if shifted_entities else {}
+                        await application.bot.send_message(chat_id=uid, text=prefix + row['message'], **kwargs)
                     except Exception:
                         pass
         except asyncio.CancelledError:
@@ -711,11 +724,16 @@ def init_db():
         conn.execute("""CREATE TABLE IF NOT EXISTS scheduled_broadcasts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             message TEXT NOT NULL,
+            entities_json TEXT NOT NULL DEFAULT '[]',
             due_at TEXT NOT NULL,
             sent_at TEXT DEFAULT '',
             cancelled INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT ''
         )""")
+        # Upgrade older databases without losing already scheduled notifications.
+        scheduled_columns = {row[1] for row in conn.execute("PRAGMA table_info(scheduled_broadcasts)").fetchall()}
+        if "entities_json" not in scheduled_columns:
+            conn.execute("ALTER TABLE scheduled_broadcasts ADD COLUMN entities_json TEXT NOT NULL DEFAULT '[]'")
         conn.execute("""CREATE TABLE IF NOT EXISTS feedback_comments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -5271,9 +5289,10 @@ async def callback_handler(update, context):
         due = context.user_data.get("pending_scheduled_due", "").strip()
         if not body or not due:
             await query.answer("المعلومات ناقصة", show_alert=True); return
+        entities_json = json.dumps(context.user_data.get("pending_scheduled_entities", []), ensure_ascii=False)
         with db() as conn:
-            conn.execute("INSERT INTO scheduled_broadcasts(message,due_at,created_at) VALUES(?,?,?)", (body, due, now_text()))
-        context.user_data.pop("pending_scheduled_text", None); context.user_data.pop("pending_scheduled_due", None); context.user_data.pop("admin_step", None)
+            conn.execute("INSERT INTO scheduled_broadcasts(message,entities_json,due_at,created_at) VALUES(?,?,?,?)", (body, entities_json, due, now_text()))
+        context.user_data.pop("pending_scheduled_text", None); context.user_data.pop("pending_scheduled_entities", None); context.user_data.pop("pending_scheduled_due", None); context.user_data.pop("admin_step", None)
         await query.edit_message_text(f"✅ تمت جدولة الإشعار بنجاح.\n📅 الموعد: {due}\nسيُرسل مرة واحدة تلقائيًا.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]]))
         return
     if data.startswith("feedback_approve:") or data.startswith("feedback_reject:"):
@@ -6691,6 +6710,8 @@ async def text_handler(update, context):
 
         if step == "scheduled_broadcast_message":
             context.user_data["pending_scheduled_text"] = text
+            # Preserve Telegram Premium custom emoji and other formatting entities.
+            context.user_data["pending_scheduled_entities"] = [entity.to_dict() for entity in (message.entities or [])]
             context.user_data["admin_step"] = "scheduled_broadcast_datetime"
             await message.reply_text("📅 ابعث موعد الإرسال بهذا الشكل: YYYY-MM-DD HH:MM\nمثال: 2026-11-01 18:30\nالتوقيت حسب ساعة السيرفر.")
             return
