@@ -157,23 +157,25 @@ async def scheduled_broadcast_loop(application):
                     cur = conn.execute("UPDATE scheduled_broadcasts SET sent_at=? WHERE id=? AND sent_at='' AND cancelled=0", (now_text(), row['id']))
                     if cur.rowcount == 0:
                         continue
-                prefix = "📢 إشعار من SERADJ STORE:\n\n"
-                prefix_utf16_len = len(prefix.encode("utf-16-le")) // 2
+                # Send the exact original text so Telegram entity offsets (especially
+                # custom_emoji entities) remain unchanged. Prefixing text can corrupt
+                # entity offsets and make Premium emoji disappear or reject the message.
                 try:
                     raw_entities = json.loads(row["entities_json"] or "[]")
                 except (TypeError, ValueError, KeyError):
                     raw_entities = []
                 from telegram import MessageEntity
-                shifted_entities = [
-                    MessageEntity.de_json({**item, "offset": int(item.get("offset", 0)) + prefix_utf16_len}, application.bot)
+                entities = [
+                    MessageEntity.de_json(item, application.bot)
                     for item in raw_entities
+                    if isinstance(item, dict) and item.get("type") and item.get("offset") is not None and item.get("length") is not None
                 ]
                 for uid in recipients:
                     try:
-                        kwargs = {"entities": shifted_entities} if shifted_entities else {}
-                        await application.bot.send_message(chat_id=uid, text=prefix + row['message'], **kwargs)
-                    except Exception:
-                        pass
+                        kwargs = {"entities": entities} if entities else {}
+                        await application.bot.send_message(chat_id=uid, text=row['message'], **kwargs)
+                    except Exception as exc:
+                        logger.warning("Scheduled broadcast %s failed for user %s: %s", row['id'], uid, exc)
         except asyncio.CancelledError:
             raise
         except Exception:
