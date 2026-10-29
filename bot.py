@@ -5385,8 +5385,10 @@ async def callback_handler(update, context):
         with db() as conn:
             recipients = [r[0] for r in conn.execute("SELECT user_id FROM users").fetchall()]
         sent = failed = 0
+        failure_details = []
         raw_entities = context.user_data.get("pending_broadcast_entities", [])
         from telegram import MessageEntity
+        from telegram.error import Forbidden, BadRequest, RetryAfter, NetworkError, TimedOut
         prefix = "📢 إشعار من SERADJ STORE:\n\n"
         # Telegram entity offsets use UTF-16 code units, not Python character count.
         prefix_utf16_len = len(prefix.encode("utf-16-le")) // 2
@@ -5408,13 +5410,32 @@ async def callback_handler(update, context):
                     reply_markup=keyboard, **kwargs
                 )
                 sent += 1
-            except Exception:
+            except Exception as exc:
                 failed += 1
+                if isinstance(exc, Forbidden):
+                    reason = "البوت محظور أو لا يستطيع مراسلة المستخدم"
+                elif isinstance(exc, RetryAfter):
+                    reason = f"حدّ مؤقت للإرسال (انتظر {getattr(exc, 'retry_after', '?')} ثانية)"
+                elif isinstance(exc, BadRequest):
+                    reason = f"رفض تيليغرام الطلب: {str(exc)[:180]}"
+                elif isinstance(exc, (NetworkError, TimedOut)):
+                    reason = f"مشكلة شبكة/مهلة: {str(exc)[:180]}"
+                else:
+                    reason = f"{type(exc).__name__}: {str(exc)[:180]}"
+                failure_details.append((recipient, reason))
+                logger.warning("Broadcast failed for user_id=%s: %s: %s", recipient, type(exc).__name__, exc)
         for key in ("pending_broadcast_text", "pending_broadcast_entities", "pending_broadcast_buttons"):
             context.user_data.pop(key, None)
         context.user_data.pop("admin_step", None)
+        summary = f"✅ انتهى إرسال الإشعار.\nوصل إلى: {sent}\nتعذّر الإرسال إلى: {failed}"
+        if failure_details:
+            summary += "\n\n🔎 تفاصيل أول 15 حالة فشل:\n" + "\n".join(
+                f"• ID {uid}: {reason}" for uid, reason in failure_details[:15]
+            )
+            if len(failure_details) > 15:
+                summary += f"\n... وهناك {len(failure_details) - 15} حالات أخرى. راجع سجلات FadeHost للتفاصيل."
         await query.edit_message_text(
-            f"✅ انتهى إرسال الإشعار.\\nوصل إلى: {sent}\\nتعذّر الإرسال إلى: {failed}",
+            summary,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]])
         )
         return
