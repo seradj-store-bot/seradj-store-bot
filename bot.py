@@ -29,6 +29,9 @@ TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DB_PATH = os.getenv("DB_PATH", "seradj_store.db")
 WHATSAPP_NUMBER = os.getenv("WHATSAPP_NUMBER", "213671629818")
+# Required channel subscription (configure these on the hosting panel).
+REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip()
+REQUIRED_CHANNEL_LINK = os.getenv("REQUIRED_CHANNEL_LINK", "").strip()
 STORE_NAME = "SERADJ STORE"
 STORE_BENEFITS_TEXT = '✨ مزايا متجرنا ✨\n\n🎮 شحن ألعابك بسهولة\nشحن بالـID، بالحساب ، مع خيارات متعددة للألعاب والعروض.\n\n⚡ سرعة وسهولة\nخطوات بسيطة لطلب الشحن ومتابعة طلباتك من داخل المتجر.\n\n🔐 خدمة آمنة ومنظمة\nطلباتك، محفظتك ونقاطك مرتبطة بحسابك داخل المتجر.\n\n⭐ نظام النقاط\nمع عملياتك داخل المتجر تقدر تجمع نقاط، وبعد بلوغ الحد المطلوب تقدر تحولها وتستفيد منها.\n🔥 كلما تستعمل المتجر أكثر، عندك فرصة تجمع نقاط أكثر!\n\n👥 نظام الإحالة\nشارك رابطك مع أصدقائك، وكلما استخدموا المتجر وحققوا شروط الإحالة، تحصل على نقاط ومكافآت.\n💡 يعني تقدر تجمع نقاط حتى وأنت مرتاح، وأصدقاؤك هم اللي يستعملوا المتجر!\n\n👑 نظام VIP — مع ازدياد نشاطك وشحناتك، تقترب من مزايا VIP وخصوماته. 🚀\n\n💰 المحفظة\nاشحن محفظتك واستعمل رصيدك في طلباتك بسهولة، مع إمكانية الاستفادة من عروض وبونص الإيداع عند توفرها.\n\n🎁 مكافآت وعروض\nتابع المتجر باستمرار لأن العروض والمكافآت الجديدة تكون متاحة من وقت لآخر.\n\n🚀 الخلاصة: تشحن لعبتك، تجمع نقاط، تستفيد من VIP، وتشارك رابطك مع أصحابك لتزيد فرصك في المكافآت.\n\n❤️ استعمل المتجر… وكل عملية ممكن تكون بداية لمكافأة جديدة!'
 TERMS_PRIVACY_TEXT = '📜 الشروط والأحكام وسياسة الخصوصية — SERADJ STORE \n\n1. الاستخدام\nباستخدامك للبوت، فإنك توافق على الالتزام بالشروط والأحكام وسياسة الخصوصية الخاصة بالمتجر.\n\n2. معلومات المستخدم\nقد يتم حفظ معرف Telegram، اسم المستخدم، الاسم الظاهر، معلومات الطلبات، معلومات الشحن التي ترسلها، ومعلومات المحفظة والنقاط والمعاملات المرتبطة بها.\n\n3. استخدام المعلومات\nتُستخدم هذه المعلومات لتقديم خدمات المتجر، معالجة الطلبات والدفع والشحن، تقديم الدعم الفني وتحسين الخدمة.\n\n4. عمليات الدفع\nأنت مسؤول عن التأكد من صحة بيانات الدفع والبيانات التي تقدمها قبل إرسال الطلب. لا ترسل كلمات المرور أو المعلومات الحساسة إلا عند الضرورة الفعلية للخدمة.\n\n5. الطلبات\nتأكد من صحة بيانات اللعبة والحساب قبل تأكيد الطلب، وقد تبدأ المعالجة بعد إرسال الطلب.\n\n6. المحفظة والنقاط\nأرصدة المحفظة والنقاط مرتبطة بحساب Telegram، ويمنع استغلال النظام أو إجراء عمليات وهمية أو متكررة للحصول على رصيد أو نقاط بشكل غير مشروع.\n\n7. الإحالات والمكافآت\nيمنع استخدام الحسابات الوهمية أو أي وسيلة للتحايل على نظام الإحالات والمكافآت. رابط الإحالة يُحتسب للمستخدم الجديد عند أول تشغيل فقط، ولا يمكن تغيير المحيل بعد ذلك.\n\n8. الدعم الفني\nيُستخدم الدعم للاستفسارات والمشاكل المتعلقة بالخدمة، ويمنع استخدامه للإزعاج أو إرسال طلبات متكررة أو غير متعلقة بالخدمة.\n\n9. إيقاف الخدمة\nيحتفظ المتجر بحق رفض أو إيقاف أي طلب يخالف الشروط أو يشتبه في وجود تلاعب أو إساءة استخدام.\n\n10. الخصوصية\nنحترم خصوصيتك ولا نستخدم المعلومات التي يتم جمعها إلا للأغراض المرتبطة بتقديم خدمات المتجر وإدارة الطلبات والدعم.\n\n11. الموافقة\nباستخدامك للبوت وإتمام أي عملية، فإنك تؤكد أنك قرأت هذه الشروط وسياسة الخصوصية ووافقت عليها.'
@@ -139,7 +142,33 @@ async def marketing_reminder_loop(application):
         await asyncio.sleep(30)
 
 
+async def scheduled_broadcast_loop(application):
+    """Send one-time admin-scheduled broadcasts, persisted in SQLite."""
+    while True:
+        try:
+            now = datetime.now(STORE_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            with db() as conn:
+                rows = conn.execute("SELECT id, message FROM scheduled_broadcasts WHERE cancelled=0 AND sent_at='' AND due_at<=? ORDER BY due_at LIMIT 20", (now,)).fetchall()
+                recipients = [int(r[0]) for r in conn.execute("SELECT user_id FROM users WHERE COALESCE(is_banned,0)=0").fetchall()]
+            for row in rows:
+                # Mark first to avoid duplicate sends if the process restarts during delivery.
+                with db() as conn:
+                    cur = conn.execute("UPDATE scheduled_broadcasts SET sent_at=? WHERE id=? AND sent_at='' AND cancelled=0", (now_text(), row['id']))
+                    if cur.rowcount == 0:
+                        continue
+                for uid in recipients:
+                    try:
+                        await application.bot.send_message(chat_id=uid, text="📢 إشعار من SERADJ STORE:\n\n" + row['message'])
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Scheduled broadcast loop failed")
+        await asyncio.sleep(15)
+
 async def post_init(application):
+    application.create_task(scheduled_broadcast_loop(application), name="scheduled-broadcast-loop")
     application.create_task(store_schedule_loop(application), name="store-schedule-loop")
     application.create_task(marketing_reminder_loop(application), name="marketing-reminder-loop")
 
@@ -169,6 +198,8 @@ ADMIN_PANEL_MENU = [
 ["➕ إضافة", "🎮 إدارة الألعاب"],
 ["✨ إدارة إيموجيات Premium", "💰 تعديل الأسعار"],
 ["📂 إدارة البوت", "📨 إرسال إشعار"],
+["⚙️ إعدادات البوت", "⏰ إشعار مجدول"],
+["💬 مراجعة الآراء"],
 ["🎁 إدارة متجر النقاط", "💬 مراسلة زبون"],
 ["💰 حدود تعبئة الرصيد"],
 ["📢 إعدادات النشر للقناة"],
@@ -337,54 +368,6 @@ def main_keyboard(user_id):
         keyboard = [[item for item in row if "ترقية الحساب" not in item] for row in keyboard]
         keyboard = [row for row in keyboard if row]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-async def ids_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show game, recharge-method/server, and offer IDs to the admin."""
-    user_id = update.effective_user.id if update.effective_user else 0
-    if not is_admin(user_id):
-        await update.effective_message.reply_text("⛔ هذا الأمر خاص بالإدارة.")
-        return
-
-    chunks = []
-    with db() as conn:
-        chunks.append("🎮 معرّفات الألعاب (GAME_ID)\n")
-        games = conn.execute("SELECT id, name, active FROM games ORDER BY id").fetchall()
-        if games:
-            chunks.extend(f"{r['id']} | {r['name']} | {'مفعّلة' if r['active'] else 'معطّلة'}\n" for r in games)
-        else:
-            chunks.append("لا توجد ألعاب مسجلة.\n")
-
-        chunks.append("\n🔀 معرّفات طرق الشحن والسيرفرات (METHOD_ID)\n")
-        methods = conn.execute(
-            "SELECT rm.id, rm.game_id, g.name AS game_name, rm.title, rm.active "
-            "FROM recharge_methods rm LEFT JOIN games g ON g.id=rm.game_id "
-            "ORDER BY rm.game_id, rm.id"
-        ).fetchall()
-        if methods:
-            chunks.extend(
-                f"GAME_ID={r['game_id']} | METHOD_ID={r['id']} | {r['game_name'] or 'لعبة غير معروفة'} → {r['title']} | {'مفعّلة' if r['active'] else 'معطّلة'}\n"
-                for r in methods
-            )
-        else:
-            chunks.append("لا توجد طرق شحن مسجلة.\n")
-
-        chunks.append("\n💎 معرّفات العروض (OFFER_ID)\n")
-        offers = conn.execute(
-            "SELECT o.id, o.game_id, g.name AS game_name, o.recharge_method_id, o.name, o.active "
-            "FROM offers o LEFT JOIN games g ON g.id=o.game_id ORDER BY o.game_id, o.id"
-        ).fetchall()
-        if offers:
-            chunks.extend(
-                f"OFFER_ID={r['id']} | GAME_ID={r['game_id']} | METHOD_ID={r['recharge_method_id']} | {r['game_name'] or 'لعبة غير معروفة'} → {r['name']} | {'مفعّل' if r['active'] else 'معطّل'}\n"
-                for r in offers
-            )
-        else:
-            chunks.append("لا توجد عروض مسجلة.\n")
-
-    text = ''.join(chunks)
-    # Telegram message text is limited; send the report in safe-sized chunks.
-    for start in range(0, len(text), 3500):
-        await update.effective_message.reply_text(text[start:start + 3500])
 
 async def admin_command(update, context):
     user_id = update.effective_user.id
@@ -725,6 +708,22 @@ def init_db():
                 "WHERE NOT EXISTS (SELECT 1 FROM custom_payment_methods WHERE lower(name)=lower(?))",
                 (method_name, method_emoji, now_text(), method_name),
             )
+        conn.execute("""CREATE TABLE IF NOT EXISTS scheduled_broadcasts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message TEXT NOT NULL,
+            due_at TEXT NOT NULL,
+            sent_at TEXT DEFAULT '',
+            cancelled INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT ''
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS feedback_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            comment TEXT NOT NULL,
+            created_at TEXT DEFAULT '',
+            approved INTEGER NOT NULL DEFAULT 0,
+            published INTEGER NOT NULL DEFAULT 0
+        )""")
         conn.execute("""CREATE TABLE IF NOT EXISTS marketing_reminders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -964,6 +963,34 @@ async def admin_person_card(query, target_id):
     )
 
 
+# ====== التحقق من الاشتراك في القناة ======
+
+def current_required_channel():
+    return get_setting("required_channel", REQUIRED_CHANNEL).strip()
+
+def current_required_channel_link():
+    return get_setting("required_channel_link", REQUIRED_CHANNEL_LINK).strip()
+
+def subscription_keyboard():
+    buttons = []
+    channel_link = current_required_channel_link()
+    if channel_link:
+        buttons.append([InlineKeyboardButton("📢 اشترك في القناة", url=channel_link)])
+    buttons.append([InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_subscription")])
+    return InlineKeyboardMarkup(buttons)
+
+async def is_subscribed(bot, user_id):
+    """Check required channel membership using admin-configured DB settings or env defaults."""
+    channel = current_required_channel()
+    if not channel or get_setting("required_subscription_enabled", "1") != "1":
+        return True
+    try:
+        member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception:
+        logger.exception("تعذر التحقق من اشتراك المستخدم %s في القناة %s", user_id, channel)
+        return False
+
 # ====== أوامر البداية ======
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1049,6 +1076,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     saved = get_user_row(user.id)
     if not is_admin(user.id) and saved and "is_banned" in saved.keys() and int(saved["is_banned"] or 0):
         await update.message.reply_text("🚫 حسابك محظور من استعمال البوت. تواصل مع الإدارة.")
+        return
+
+    # Mandatory channel membership check before allowing customers into the bot.
+    if not is_admin(user.id) and not await is_subscribed(context.bot, user.id):
+        await update.message.reply_text(
+            "🔒 لاستخدام بوت SERADJ STORE، لازم تشترك أولًا في قناتنا ثم تضغط على «تحققت من الاشتراك».",
+            reply_markup=subscription_keyboard(),
+        )
         return
 
     welcome_text = get_setting(
@@ -2915,6 +2950,21 @@ async def callback_handler(update, context):
     query = update.callback_query
     data = query.data or ""
     user_id = query.from_user.id
+
+    if data == "check_subscription":
+        if not await is_subscribed(context.bot, user_id):
+            await query.answer("❌ مازال ما تأكدش اشتراكك. اشترك في القناة ثم أعد المحاولة.", show_alert=True)
+            return
+        await query.answer("✅ تم التأكد من اشتراكك!")
+        welcome_text = get_setting(
+            "welcome_message",
+            f"🎮 مرحباً بك في {STORE_NAME}!\n\n"
+            "🛍️ شحن الألعاب والخدمات الرقمية\n"
+            "💳 الدفع عبر BaridiMob / CCP أو Flexy\n\n"
+            "اختر الخدمة من القائمة بالأسفل 👇",
+        )
+        await query.message.reply_text(welcome_text, reply_markup=main_keyboard(user_id))
+        return
 
     # Block all customer navigation while the store is closed.
     # Check before acknowledging the callback so the alert is shown reliably.
@@ -5213,6 +5263,49 @@ async def callback_handler(update, context):
             "ابعث /cancel للإلغاء."
         )
 
+    # Scheduled broadcast creation and feedback review
+    if data == "scheduled_broadcast_confirm":
+        if not is_admin(user_id):
+            await query.answer("غير مسموح", show_alert=True); return
+        body = context.user_data.get("pending_scheduled_text", "").strip()
+        due = context.user_data.get("pending_scheduled_due", "").strip()
+        if not body or not due:
+            await query.answer("المعلومات ناقصة", show_alert=True); return
+        with db() as conn:
+            conn.execute("INSERT INTO scheduled_broadcasts(message,due_at,created_at) VALUES(?,?,?)", (body, due, now_text()))
+        context.user_data.pop("pending_scheduled_text", None); context.user_data.pop("pending_scheduled_due", None); context.user_data.pop("admin_step", None)
+        await query.edit_message_text(f"✅ تمت جدولة الإشعار بنجاح.\n📅 الموعد: {due}\nسيُرسل مرة واحدة تلقائيًا.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]]))
+        return
+    if data.startswith("feedback_approve:") or data.startswith("feedback_reject:"):
+        if not is_admin(user_id):
+            await query.answer("غير مسموح", show_alert=True); return
+        cid = int(data.split(":",1)[1]); approve = data.startswith("feedback_approve:")
+        with db() as conn:
+            row = conn.execute("SELECT comment FROM feedback_comments WHERE id=?", (cid,)).fetchone()
+            if row:
+                conn.execute("UPDATE feedback_comments SET approved=?, published=? WHERE id=?", (1 if approve else 0, 1 if approve else 0, cid))
+        if row and approve:
+            with db() as conn:
+                users = [int(r[0]) for r in conn.execute("SELECT user_id FROM users WHERE COALESCE(is_banned,0)=0").fetchall()]
+            for uid in users:
+                try: await context.bot.send_message(chat_id=uid, text="💬 رأي أحد زبائن SERADJ STORE (بدون معلومات شخصية):\n\n" + row['comment'])
+                except Exception: pass
+        await query.edit_message_text("✅ تم نشر التعليق بشكل مجهول." if approve else "🗑️ تم رفض التعليق.")
+        return
+    if data == "feedback_begin":
+        context.user_data["feedback_waiting"] = True
+        await query.message.reply_text("💬 ابعث رأيك في SERADJ STORE برسالة واحدة. سيتم إرساله للإدارة للمراجعة، ولن يظهر للناس إلا بعد الموافقة، وبدون أي معلومات عنك.")
+        return
+    if data == "feedback_review":
+        if not is_admin(user_id): await query.answer("غير مسموح", show_alert=True); return
+        with db() as conn:
+            rows = conn.execute("SELECT id,comment,created_at FROM feedback_comments WHERE approved=0 ORDER BY id DESC LIMIT 30").fetchall()
+        if not rows:
+            await query.edit_message_text("لا توجد تعليقات تنتظر المراجعة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]])); return
+        for row in rows:
+            await query.message.reply_text("💬 تعليق للمراجعة (مجهول):\n\n" + row['comment'] + "\n\n" + str(row['created_at']), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر مجهول", callback_data=f"feedback_approve:{row['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{row['id']}")]]))
+        return
+
     # تأكيد إرسال إشعار
     elif data == "notify_broadcast_confirm":
         broadcast_text = context.user_data.get("pending_broadcast_text", "")
@@ -5374,6 +5467,20 @@ async def text_handler(update, context):
     message = update.effective_message
     user_id = update.effective_user.id
     text = (message.text or "").strip()
+    if context.user_data.pop("feedback_waiting", False):
+        if len(text) > 1500:
+            context.user_data["feedback_waiting"] = True
+            await message.reply_text("التعليق طويل بزاف. اختصره إلى 1500 حرف كحد أقصى.")
+            return
+        with db() as conn:
+            conn.execute("INSERT INTO feedback_comments(user_id,comment,created_at,approved,published) VALUES(?,?,?,0,0)", (update.effective_user.id, text, now_text()))
+            cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        try:
+            await context.bot.send_message(chat_id=ADMIN_ID, text="💬 رأي جديد ينتظر الموافقة (هوية المشترك غير معروضة):\n\n" + text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر مجهول", callback_data=f"feedback_approve:{cid}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{cid}")]]))
+        except Exception:
+            logger.exception("تعذر إرسال التعليق للإدارة")
+        await message.reply_text("✅ وصل رأيك للإدارة. لن يظهر للناس إلا بعد الموافقة، وسيُنشر بدون اسم أو صورة أو اسم مستخدم.")
+        return
     if context.user_data.get("expired_order_checkout") and text not in ("/start", "🛍️ المتجر", "🎮 الألعاب", "📱 التطبيقات"):
         context.user_data.pop("expired_order_checkout", None)
         await message.reply_text("⏰ انتهت مهلة الدفع (15 دقيقة)، وتم إلغاء العملية. ابدأ طلبًا جديدًا من المتجر.", reply_markup=main_keyboard(user_id))
@@ -6471,6 +6578,25 @@ async def text_handler(update, context):
     if is_admin(user_id):
         step = context.user_data.get("admin_step")
 
+        if step == "set_required_channel":
+            value = text.strip()
+            if not value or len(value) > 200:
+                await message.reply_text("❌ معرّف غير صالح. جرّب مرة أخرى أو /cancel للإلغاء.")
+                return
+            set_setting("required_channel", value)
+            context.user_data.pop("admin_step", None)
+            await message.reply_text(f"✅ تم حفظ معرّف القناة: {value}\nتأكد أن البوت مشرف في القناة.", reply_markup=admin_keyboard())
+            return
+        if step == "set_required_channel_link":
+            value = text.strip()
+            if value and not (value.startswith("https://t.me/") or value.startswith("http://t.me/") or value.startswith("https://telegram.me/")):
+                await message.reply_text("❌ الرابط لازم يكون رابط قناة تيليغرام مثل https://t.me/YourChannel.")
+                return
+            set_setting("required_channel_link", value)
+            context.user_data.pop("admin_step", None)
+            await message.reply_text("✅ تم حفظ رابط القناة.", reply_markup=admin_keyboard())
+            return
+
         if step == "premium_emoji_set":
             game_id = context.user_data.get("pending_premium_game_id")
             # Easiest path: admin sends/pastes one custom emoji; fallback accepts its numeric ID.
@@ -6561,6 +6687,23 @@ async def text_handler(update, context):
                 await message.reply_text("❌ تعذر إرسال الرسالة. تأكد أن الزبون بدأ البوت من قبل.")
             context.user_data.pop("admin_step", None)
             context.user_data.pop("chat_target_id", None)
+            return
+
+        if step == "scheduled_broadcast_message":
+            context.user_data["pending_scheduled_text"] = text
+            context.user_data["admin_step"] = "scheduled_broadcast_datetime"
+            await message.reply_text("📅 ابعث موعد الإرسال بهذا الشكل: YYYY-MM-DD HH:MM\nمثال: 2026-11-01 18:30\nالتوقيت حسب ساعة السيرفر.")
+            return
+        if step == "scheduled_broadcast_datetime":
+            try:
+                due_dt = datetime.strptime(text.strip(), "%Y-%m-%d %H:%M").replace(tzinfo=STORE_TZ)
+                if due_dt <= datetime.now(STORE_TZ): raise ValueError
+            except ValueError:
+                await message.reply_text("❌ التاريخ غير صحيح أو فات. استعمل YYYY-MM-DD HH:MM لموعد مستقبلي."); return
+            due = due_dt.strftime("%Y-%m-%d %H:%M:%S")
+            context.user_data["pending_scheduled_due"] = due
+            context.user_data["admin_step"] = "scheduled_broadcast_confirm"
+            await message.reply_text("📨 معاينة الإشعار المجدول:\n\n" + context.user_data.get("pending_scheduled_text", "") + f"\n\n📅 الموعد: {due}\nسيُرسل مرة واحدة لجميع المشتركين.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الجدولة", callback_data="scheduled_broadcast_confirm"), InlineKeyboardButton("❌ إلغاء", callback_data="notify_cancel")]]))
             return
 
         if step == "notify_broadcast_message":
@@ -6656,6 +6799,19 @@ async def text_handler(update, context):
                     if len(buttons) > 8:
                         await message.reply_text("❌ الحد الأقصى 8 أزرار.")
                         return
+            # Ask whether this broadcast should collect anonymous customer feedback.
+            context.user_data["pending_broadcast_buttons"] = buttons
+            context.user_data["admin_step"] = "notify_broadcast_feedback_choice"
+            await message.reply_text("هل تحب تضيف زر لجمع آراء الزبائن مع هذا الإشعار؟\nاكتب نعم أو لا.")
+            return
+
+        if step == "notify_broadcast_feedback_choice":
+            choice = text.strip().lower()
+            if choice not in ("نعم", "لا", "yes", "no"):
+                await message.reply_text("اكتب نعم أو لا فقط."); return
+            buttons = context.user_data.get("pending_broadcast_buttons", [])
+            if choice in ("نعم", "yes"):
+                buttons.append({"text": "💬 شاركنا رأيك", "callback_data": "feedback_begin"})
             context.user_data["pending_broadcast_buttons"] = buttons
             context.user_data["admin_step"] = "notify_broadcast_confirm"
             with db() as conn:
@@ -6887,6 +7043,57 @@ async def text_handler(update, context):
         if text == "📂 إدارة البوت":
             await message.reply_text("📂 إدارة البوت:", reply_markup=ReplyKeyboardMarkup([["📋 كل الطلبات", "🗑️ حذف جميع الطلبات"], ["💳 إعدادات الدفع", "📊 الإحصائيات"], ["📝 إدارة النصوص", "📇 إعدادات التواصل"], ["🕒 أوقات المتجر", "🧹 تصفير الحسابات والطلبات"], ["🛍️ التذكير التسويقي"], ["🔄 تحويل زبون / تاجر"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
             return
+        if text == "⚙️ إعدادات البوت":
+            enabled = get_setting("required_subscription_enabled", "1") == "1"
+            channel = current_required_channel() or "غير محدد"
+            link = current_required_channel_link() or "غير محدد"
+            await message.reply_text(
+                "⚙️ إعدادات البوت\n\n"
+                f"🔒 الاشتراك الإجباري: {'مفعّل ✅' if enabled and current_required_channel() else 'متوقف ⏸️'}\n"
+                f"🆔 معرّف القناة: {channel}\n🔗 رابط القناة: {link}\n\n"
+                "اختار الإعداد الذي تريد تغييره:",
+                reply_markup=ReplyKeyboardMarkup([
+                    ["🔒 تفعيل الاشتراك الإجباري", "⏸️ إيقاف الاشتراك الإجباري"],
+                    ["🆔 تغيير معرّف القناة", "🔗 تغيير رابط القناة"],
+                    ["✅ اختبار إعدادات القناة"],
+                    ["🔙 لوحة التحكم"]
+                ], resize_keyboard=True)
+            )
+            return
+        if text == "🔒 تفعيل الاشتراك الإجباري":
+            if not current_required_channel():
+                await message.reply_text("❌ أدخل معرّف القناة أولًا عبر زر «🆔 تغيير معرّف القناة».")
+                return
+            set_setting("required_subscription_enabled", "1")
+            await message.reply_text("✅ تم تفعيل الاشتراك الإجباري.", reply_markup=admin_keyboard())
+            return
+        if text == "⏸️ إيقاف الاشتراك الإجباري":
+            set_setting("required_subscription_enabled", "0")
+            await message.reply_text("⏸️ تم إيقاف الاشتراك الإجباري.", reply_markup=admin_keyboard())
+            return
+        if text == "🆔 تغيير معرّف القناة":
+            context.user_data["admin_step"] = "set_required_channel"
+            await message.reply_text("ابعث معرّف القناة مثل @YourChannel أو -1001234567890. ابعث /cancel للإلغاء.")
+            return
+        if text == "🔗 تغيير رابط القناة":
+            context.user_data["admin_step"] = "set_required_channel_link"
+            await message.reply_text("ابعث رابط القناة مثل https://t.me/YourChannel. ابعث /cancel للإلغاء.")
+            return
+        if text == "✅ اختبار إعدادات القناة":
+            channel = current_required_channel()
+            if not channel:
+                await message.reply_text("❌ معرّف القناة غير محدد.")
+                return
+            try:
+                chat = await context.bot.get_chat(channel)
+                me = await context.bot.get_chat_member(chat_id=channel, user_id=context.bot.id)
+                status = getattr(me, "status", "unknown")
+                await message.reply_text(f"✅ تم الوصول إلى القناة: {getattr(chat, 'title', channel)}\nحالة البوت: {status}\nلازم يكون البوت مشرفًا حتى يكون التحقق من الاشتراك موثوقًا.")
+            except Exception as exc:
+                logger.exception("Channel settings test failed")
+                await message.reply_text("❌ تعذر الوصول إلى القناة. تأكد من المعرّف وأن البوت مشرف فيها.")
+            return
+
         if text == "🛍️ التذكير التسويقي":
             enabled = get_setting("marketing_reminders_enabled", "1") == "1"
             await message.reply_text(
@@ -7187,6 +7394,19 @@ async def text_handler(update, context):
             await message.reply_text("🏪 طلبات حسابات التجار:", reply_markup=InlineKeyboardMarkup(buttons))
             return
 
+        if text == "⏰ إشعار مجدول":
+            context.user_data["admin_step"] = "scheduled_broadcast_message"
+            await message.reply_text("⏰ ابعث نص الإشعار الذي تريد جدولته لإرساله مرة واحدة في موعد تختاره.\nللإلغاء ابعث /cancel.")
+            return
+        if text == "💬 مراجعة الآراء":
+            with db() as conn:
+                rows = conn.execute("SELECT id,comment,created_at FROM feedback_comments WHERE approved=0 ORDER BY id DESC LIMIT 30").fetchall()
+            if not rows:
+                await message.reply_text("لا توجد تعليقات تنتظر المراجعة.", reply_markup=admin_keyboard()); return
+            for row in rows:
+                await message.reply_text("💬 تعليق للمراجعة (مجهول):\n\n" + row['comment'] + "\n\n" + str(row['created_at']), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر مجهول", callback_data=f"feedback_approve:{row['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{row['id']}")]]))
+            return
+
         if text == "📨 إرسال إشعار":
             context.user_data["admin_step"] = "notify_broadcast_message"
             await message.reply_text("📨 ابعث نص الإشعار الذي تريد إرساله لجميع المشتركين.\n\nابعث /cancel للإلغاء.")
@@ -7244,7 +7464,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("myid", myid))
-    app.add_handler(CommandHandler("ids", ids_command))
+    app.add_handler(CommandHandler("id", myid))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CommandHandler("ordergames", order_games_command))
     app.add_handler(CommandHandler("setordergroup", set_order_group_command))
