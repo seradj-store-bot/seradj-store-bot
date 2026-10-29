@@ -215,6 +215,7 @@ ADMIN_PANEL_MENU = [
 ["📂 إدارة البوت", "📨 إرسال إشعار"],
 ["⚙️ إعدادات البوت", "⏰ إشعار مجدول"],
 ["💬 مراجعة الآراء"],
+["📬 طلبات الألعاب"],
 ["🎁 إدارة متجر النقاط", "💬 مراسلة زبون"],
 ["💰 حدود تعبئة الرصيد"],
 ["📢 إعدادات النشر للقناة"],
@@ -3593,6 +3594,78 @@ async def callback_handler(update, context):
         except Exception: pass
         await query.edit_message_text(f"تمت معالجة طلب متجر النقاط #{redemption_id}.")
         return
+    if data.startswith("game_request_view:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
+        req_id = int(data.split(":", 1)[1])
+        with db() as conn:
+            req = conn.execute(
+                "SELECT gr.*, u.full_name, u.username FROM game_requests gr "
+                "LEFT JOIN users u ON u.user_id=gr.user_id WHERE gr.id=?", (req_id,)
+            ).fetchone()
+        if not req:
+            await query.answer("الطلب غير موجود.", show_alert=True); return
+        username = ("@" + req["username"]) if req["username"] else "غير متوفر"
+        status_names = {"pending":"⏳ جديد", "reviewed":"👀 قيد المراجعة", "added":"✅ تمت الإضافة", "rejected":"❌ مرفوض"}
+        buttons = [
+            [InlineKeyboardButton("👀 قيد المراجعة", callback_data=f"game_request_status:{req_id}:reviewed"),
+             InlineKeyboardButton("✅ تمت الإضافة", callback_data=f"game_request_status:{req_id}:added")],
+            [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"game_request_status:{req_id}:rejected")],
+            [InlineKeyboardButton("🗑️ حذف الطلب", callback_data=f"game_request_delete_confirm:{req_id}")],
+            [InlineKeyboardButton("🔙 قائمة الطلبات", callback_data="game_requests_list")]
+        ]
+        await query.edit_message_text(
+            f"📬 طلب لعبة/تطبيق #{req_id}\n\n"
+            f"👤 الاسم: {req['full_name'] or 'غير متوفر'}\n"
+            f"🔗 Username: {username}\n🆔 Telegram ID: {req['user_id']}\n"
+            f"🎮 الطلب: {req['request_text']}\n📅 التاريخ: {req['created_at'] or 'غير معروف'}\n"
+            f"📌 الحالة: {status_names.get(req['status'], req['status'])}",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
+    if data == "game_requests_list":
+        if not is_admin(user_id):
+            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
+        with db() as conn:
+            rows = conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT 30").fetchall()
+        if not rows:
+            await query.edit_message_text("📬 لا توجد طلبات ألعاب أو تطبيقات.")
+            return
+        status_names = {"pending":"جديد", "reviewed":"قيد المراجعة", "added":"تمت الإضافة", "rejected":"مرفوض"}
+        buttons = [[InlineKeyboardButton(
+            f"#{r['id']} {r['request_text'][:28]} · {status_names.get(r['status'], r['status'])}"[:60],
+            callback_data=f"game_request_view:{r['id']}"
+        )] for r in rows]
+        buttons.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")])
+        await query.edit_message_text("📬 طلبات الألعاب والتطبيقات — آخر 30 طلبًا:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data.startswith("game_request_delete_confirm:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
+        req_id = int(data.split(":", 1)[1])
+        await query.edit_message_text(
+            f"⚠️ هل تريد حذف طلب اللعبة #{req_id} نهائيًا؟",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ نعم، احذف", callback_data=f"game_request_delete:{req_id}"),
+                InlineKeyboardButton("❌ إلغاء", callback_data=f"game_request_view:{req_id}")
+            ]])
+        )
+        return
+
+    if data.startswith("game_request_delete:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
+        req_id = int(data.split(":", 1)[1])
+        with db() as conn:
+            cur = conn.execute("DELETE FROM game_requests WHERE id=?", (req_id,))
+        await query.edit_message_text(
+            f"{'✅ تم حذف' if cur.rowcount else 'ℹ️ الطلب غير موجود'} طلب اللعبة #{req_id}.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📬 قائمة الطلبات", callback_data="game_requests_list")]])
+        )
+        return
+
     if data.startswith("game_request_status:"):
         if not is_admin(user_id):
             await query.answer("⛔ غير مسموح لك.", show_alert=True); return
@@ -3602,9 +3675,30 @@ async def callback_handler(update, context):
             req=conn.execute("SELECT * FROM game_requests WHERE id=?",(req_id,)).fetchone()
             if not req: await query.answer("الطلب غير موجود.", show_alert=True); return
             conn.execute("UPDATE game_requests SET status=? WHERE id=?",(status,req_id))
-        await query.edit_message_text(f"تم تحديث حالة طلب اللعبة #{req_id} إلى {status}.")
-        try: await context.bot.send_message(req['user_id'], f"📬 تحديث طلب اللعبة #{req_id}: {status}")
+        status_names = {"reviewed":"👀 قيد المراجعة", "added":"✅ تمت الإضافة", "rejected":"❌ مرفوض"}
+        await query.answer("تم تحديث الحالة.")
+        try: await context.bot.send_message(req['user_id'], f"📬 تحديث طلب اللعبة #{req_id}: {status_names[status]}")
         except Exception: pass
+        # Refresh the request card so its current status remains visible.
+        with db() as conn:
+            refreshed = conn.execute(
+                "SELECT gr.*, u.full_name, u.username FROM game_requests gr "
+                "LEFT JOIN users u ON u.user_id=gr.user_id WHERE gr.id=?", (req_id,)
+            ).fetchone()
+        username = ("@" + refreshed["username"]) if refreshed and refreshed["username"] else "غير متوفر"
+        buttons = [
+            [InlineKeyboardButton("👀 قيد المراجعة", callback_data=f"game_request_status:{req_id}:reviewed"),
+             InlineKeyboardButton("✅ تمت الإضافة", callback_data=f"game_request_status:{req_id}:added")],
+            [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"game_request_status:{req_id}:rejected")],
+            [InlineKeyboardButton("🗑️ حذف الطلب", callback_data=f"game_request_delete_confirm:{req_id}")],
+            [InlineKeyboardButton("🔙 قائمة الطلبات", callback_data="game_requests_list")]
+        ]
+        await query.edit_message_text(
+            f"📬 طلب لعبة/تطبيق #{req_id}\n\n👤 الاسم: {refreshed['full_name'] or 'غير متوفر'}\n"
+            f"🔗 Username: {username}\n🆔 Telegram ID: {refreshed['user_id']}\n"
+            f"🎮 الطلب: {refreshed['request_text']}\n📅 التاريخ: {refreshed['created_at'] or 'غير معروف'}\n"
+            f"📌 الحالة: {status_names[status]}", reply_markup=InlineKeyboardMarkup(buttons)
+        )
         return
 
     # Group members can claim a pending order; only the first claim succeeds.
@@ -7351,12 +7445,18 @@ async def text_handler(update, context):
             await message.reply_text("أرسل العرض بهذا الشكل:\nالاسم | الوصف | تكلفة النقاط | المخزون (-1 لمخزون غير محدود)\nمثال: اشتراك تجريبي | اشتراك رقمي | 200 | 10\nللإلغاء /cancel")
             return
         if text == "📬 طلبات الألعاب":
-            with db() as conn: rows=conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT 30").fetchall()
-            if not rows: await message.reply_text("لا توجد طلبات ألعاب."); return
-            buttons=[]
-            for r in rows:
-                buttons.append([InlineKeyboardButton(f"#{r['id']} {r['request_text'][:35]} ({r['status']})",callback_data=f"game_request_status:{r['id']}:reviewed")])
-            await message.reply_text("📬 طلبات الألعاب والتطبيقات الأخيرة:",reply_markup=InlineKeyboardMarkup(buttons)); return
+            if not is_admin(user_id):
+                await message.reply_text("⛔ هذا الزر خاص بالإدارة."); return
+            with db() as conn:
+                rows = conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT 30").fetchall()
+            if not rows:
+                await message.reply_text("📬 لا توجد طلبات ألعاب أو تطبيقات.", reply_markup=admin_keyboard()); return
+            status_names = {"pending":"جديد", "reviewed":"قيد المراجعة", "added":"تمت الإضافة", "rejected":"مرفوض"}
+            buttons = [[InlineKeyboardButton(
+                f"#{r['id']} {r['request_text'][:28]} · {status_names.get(r['status'], r['status'])}"[:60],
+                callback_data=f"game_request_view:{r['id']}"
+            )] for r in rows]
+            await message.reply_text("📬 طلبات الألعاب والتطبيقات — آخر 30 طلبًا:", reply_markup=InlineKeyboardMarkup(buttons)); return
 
         if text == "📦 إدارة العروض":
             await message.reply_text(
