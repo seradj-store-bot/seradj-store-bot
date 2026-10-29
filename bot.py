@@ -208,20 +208,54 @@ ADMIN_MAIN_MENU = [
     ["🔐 السياسات والخصوصية", "📞 اتصل بالإدارة"],
 ]
 
+# لوحة الإدارة الرئيسية: أزرار قليلة وواضحة، وباقي الوظائف داخل أقسامها.
 ADMIN_PANEL_MENU = [
-["🧪 الطلب التجريبي"],
-["➕ إضافة", "🎮 إدارة الألعاب"],
-["✨ إدارة إيموجيات Premium", "💰 تعديل الأسعار"],
-["📂 إدارة البوت", "📨 إرسال إشعار"],
-["⚙️ إعدادات البوت", "⏰ إشعار مجدول"],
-["💬 مراجعة الآراء"],
-["📬 طلبات الألعاب"],
-["🎁 إدارة متجر النقاط", "💬 مراسلة زبون"],
-["💰 حدود تعبئة الرصيد"],
-["📢 إعدادات النشر للقناة"],
-["👥 التحكم في الأفراد", "👥 إدارة التجار"],
-["🔙 القائمة الرئيسية"],
+    ["📦 الطلبات والعملاء", "👥 المشتركين والتجار"],
+    ["🛍️ إدارة المتجر", "💎 الأسعار والرصيد"],
+    ["📣 التسويق والتواصل", "⚙️ إعدادات البوت"],
+    ["📊 التقارير والصيانة"],
+    ["🔙 القائمة الرئيسية"],
 ]
+
+ADMIN_SUBMENUS = {
+    "📦 الطلبات والعملاء": [
+        ["📋 كل الطلبات", "🧪 الطلب التجريبي"],
+        ["📬 طلبات الألعاب", "💬 مراجعة الآراء"],
+        ["💬 مراسلة زبون"],
+        ["🔙 لوحة الإدارة"],
+    ],
+    "👥 المشتركين والتجار": [
+        ["👥 التحكم في الأفراد", "👥 إدارة التجار"],
+        ["🔄 تحويل زبون / تاجر"],
+        ["🔙 لوحة الإدارة"],
+    ],
+    "🛍️ إدارة المتجر": [
+        ["➕ إضافة", "🎮 إدارة الألعاب"],
+        ["✨ إدارة إيموجيات Premium", "🎁 إدارة متجر النقاط"],
+        ["🔙 لوحة الإدارة"],
+    ],
+    "💎 الأسعار والرصيد": [
+        ["💰 تعديل الأسعار", "💰 حدود تعبئة الرصيد"],
+        ["💳 إعدادات الدفع"],
+        ["🔙 لوحة الإدارة"],
+    ],
+    "📣 التسويق والتواصل": [
+        ["📨 إرسال إشعار", "⏰ إشعار مجدول"],
+        ["🛍️ التذكير التسويقي", "📢 إعدادات النشر للقناة"],
+        ["📇 إعدادات التواصل"],
+        ["🔙 لوحة الإدارة"],
+    ],
+    "⚙️ إعدادات البوت": [
+        ["⚙️ إعدادات البوت", "📝 إدارة النصوص"],
+        ["🕒 أوقات المتجر", "📂 إدارة البوت"],
+        ["🔙 لوحة الإدارة"],
+    ],
+    "📊 التقارير والصيانة": [
+        ["📊 الإحصائيات", "🧹 تصفير الحسابات والطلبات"],
+        ["🗑️ حذف جميع الطلبات"],
+        ["🔙 لوحة الإدارة"],
+    ],
+}
 
 def now_text():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -383,7 +417,7 @@ def main_keyboard(user_id):
     if is_trader(user_id):
         keyboard = [[item for item in row if "ترقية الحساب" not in item] for row in keyboard]
         keyboard = [row for row in keyboard if row]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 async def ids_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show game, recharge-method/server, and offer IDs to the admin."""
@@ -451,7 +485,8 @@ async def admin_command(update, context):
 def admin_keyboard():
     return ReplyKeyboardMarkup(
         ADMIN_PANEL_MENU,
-        resize_keyboard=True
+        resize_keyboard=True,
+        is_persistent=True,
     )
 
 def cancel_keyboard():
@@ -2508,6 +2543,7 @@ async def show_admin_panel(update, context):
         reply_markup=ReplyKeyboardMarkup(
             ADMIN_PANEL_MENU,
             resize_keyboard=True,
+            is_persistent=True,
         ),
     )
 
@@ -3594,78 +3630,6 @@ async def callback_handler(update, context):
         except Exception: pass
         await query.edit_message_text(f"تمت معالجة طلب متجر النقاط #{redemption_id}.")
         return
-    if data.startswith("game_request_view:"):
-        if not is_admin(user_id):
-            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
-        req_id = int(data.split(":", 1)[1])
-        with db() as conn:
-            req = conn.execute(
-                "SELECT gr.*, u.full_name, u.username FROM game_requests gr "
-                "LEFT JOIN users u ON u.user_id=gr.user_id WHERE gr.id=?", (req_id,)
-            ).fetchone()
-        if not req:
-            await query.answer("الطلب غير موجود.", show_alert=True); return
-        username = ("@" + req["username"]) if req["username"] else "غير متوفر"
-        status_names = {"pending":"⏳ جديد", "reviewed":"👀 قيد المراجعة", "added":"✅ تمت الإضافة", "rejected":"❌ مرفوض"}
-        buttons = [
-            [InlineKeyboardButton("👀 قيد المراجعة", callback_data=f"game_request_status:{req_id}:reviewed"),
-             InlineKeyboardButton("✅ تمت الإضافة", callback_data=f"game_request_status:{req_id}:added")],
-            [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"game_request_status:{req_id}:rejected")],
-            [InlineKeyboardButton("🗑️ حذف الطلب", callback_data=f"game_request_delete_confirm:{req_id}")],
-            [InlineKeyboardButton("🔙 قائمة الطلبات", callback_data="game_requests_list")]
-        ]
-        await query.edit_message_text(
-            f"📬 طلب لعبة/تطبيق #{req_id}\n\n"
-            f"👤 الاسم: {req['full_name'] or 'غير متوفر'}\n"
-            f"🔗 Username: {username}\n🆔 Telegram ID: {req['user_id']}\n"
-            f"🎮 الطلب: {req['request_text']}\n📅 التاريخ: {req['created_at'] or 'غير معروف'}\n"
-            f"📌 الحالة: {status_names.get(req['status'], req['status'])}",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-        return
-
-    if data == "game_requests_list":
-        if not is_admin(user_id):
-            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
-        with db() as conn:
-            rows = conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT 30").fetchall()
-        if not rows:
-            await query.edit_message_text("📬 لا توجد طلبات ألعاب أو تطبيقات.")
-            return
-        status_names = {"pending":"جديد", "reviewed":"قيد المراجعة", "added":"تمت الإضافة", "rejected":"مرفوض"}
-        buttons = [[InlineKeyboardButton(
-            f"#{r['id']} {r['request_text'][:28]} · {status_names.get(r['status'], r['status'])}"[:60],
-            callback_data=f"game_request_view:{r['id']}"
-        )] for r in rows]
-        buttons.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")])
-        await query.edit_message_text("📬 طلبات الألعاب والتطبيقات — آخر 30 طلبًا:", reply_markup=InlineKeyboardMarkup(buttons))
-        return
-
-    if data.startswith("game_request_delete_confirm:"):
-        if not is_admin(user_id):
-            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
-        req_id = int(data.split(":", 1)[1])
-        await query.edit_message_text(
-            f"⚠️ هل تريد حذف طلب اللعبة #{req_id} نهائيًا؟",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🗑️ نعم، احذف", callback_data=f"game_request_delete:{req_id}"),
-                InlineKeyboardButton("❌ إلغاء", callback_data=f"game_request_view:{req_id}")
-            ]])
-        )
-        return
-
-    if data.startswith("game_request_delete:"):
-        if not is_admin(user_id):
-            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
-        req_id = int(data.split(":", 1)[1])
-        with db() as conn:
-            cur = conn.execute("DELETE FROM game_requests WHERE id=?", (req_id,))
-        await query.edit_message_text(
-            f"{'✅ تم حذف' if cur.rowcount else 'ℹ️ الطلب غير موجود'} طلب اللعبة #{req_id}.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📬 قائمة الطلبات", callback_data="game_requests_list")]])
-        )
-        return
-
     if data.startswith("game_request_status:"):
         if not is_admin(user_id):
             await query.answer("⛔ غير مسموح لك.", show_alert=True); return
@@ -3675,30 +3639,9 @@ async def callback_handler(update, context):
             req=conn.execute("SELECT * FROM game_requests WHERE id=?",(req_id,)).fetchone()
             if not req: await query.answer("الطلب غير موجود.", show_alert=True); return
             conn.execute("UPDATE game_requests SET status=? WHERE id=?",(status,req_id))
-        status_names = {"reviewed":"👀 قيد المراجعة", "added":"✅ تمت الإضافة", "rejected":"❌ مرفوض"}
-        await query.answer("تم تحديث الحالة.")
-        try: await context.bot.send_message(req['user_id'], f"📬 تحديث طلب اللعبة #{req_id}: {status_names[status]}")
+        await query.edit_message_text(f"تم تحديث حالة طلب اللعبة #{req_id} إلى {status}.")
+        try: await context.bot.send_message(req['user_id'], f"📬 تحديث طلب اللعبة #{req_id}: {status}")
         except Exception: pass
-        # Refresh the request card so its current status remains visible.
-        with db() as conn:
-            refreshed = conn.execute(
-                "SELECT gr.*, u.full_name, u.username FROM game_requests gr "
-                "LEFT JOIN users u ON u.user_id=gr.user_id WHERE gr.id=?", (req_id,)
-            ).fetchone()
-        username = ("@" + refreshed["username"]) if refreshed and refreshed["username"] else "غير متوفر"
-        buttons = [
-            [InlineKeyboardButton("👀 قيد المراجعة", callback_data=f"game_request_status:{req_id}:reviewed"),
-             InlineKeyboardButton("✅ تمت الإضافة", callback_data=f"game_request_status:{req_id}:added")],
-            [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"game_request_status:{req_id}:rejected")],
-            [InlineKeyboardButton("🗑️ حذف الطلب", callback_data=f"game_request_delete_confirm:{req_id}")],
-            [InlineKeyboardButton("🔙 قائمة الطلبات", callback_data="game_requests_list")]
-        ]
-        await query.edit_message_text(
-            f"📬 طلب لعبة/تطبيق #{req_id}\n\n👤 الاسم: {refreshed['full_name'] or 'غير متوفر'}\n"
-            f"🔗 Username: {username}\n🆔 Telegram ID: {refreshed['user_id']}\n"
-            f"🎮 الطلب: {refreshed['request_text']}\n📅 التاريخ: {refreshed['created_at'] or 'غير معروف'}\n"
-            f"📌 الحالة: {status_names[status]}", reply_markup=InlineKeyboardMarkup(buttons)
-        )
         return
 
     # Group members can claim a pending order; only the first claim succeeds.
@@ -5815,9 +5758,9 @@ async def text_handler(update, context):
         context.user_data.pop("admin_step", None)
         if key in ("store_open_time", "store_close_time"):
             set_setting("store_last_state", "open" if store_is_open() else "closed")
-            await message.reply_text(f"✅ تم حفظ الإعداد: {value}", reply_markup=ReplyKeyboardMarkup([["🟢 تفعيل أوقات المتجر", "⚪ تعطيل أوقات المتجر"], ["⏰ تعديل وقت الافتتاح", "⏰ تعديل وقت الغلق"], ["📣 تعديل رسالة الافتتاح", "📣 تعديل رسالة الغلق"], ["🔙 إدارة البوت"]], resize_keyboard=True))
+            await message.reply_text(f"✅ تم حفظ الإعداد: {value}", reply_markup=ReplyKeyboardMarkup([["🟢 تفعيل أوقات المتجر", "⚪ تعطيل أوقات المتجر"], ["⏰ تعديل وقت الافتتاح", "⏰ تعديل وقت الغلق"], ["📣 تعديل رسالة الافتتاح", "📣 تعديل رسالة الغلق"], ["🔙 إدارة البوت"]], resize_keyboard=True, is_persistent=True))
         else:
-            await message.reply_text("✅ تم حفظ الرسالة الجديدة.", reply_markup=ReplyKeyboardMarkup([["🟢 تفعيل أوقات المتجر", "⚪ تعطيل أوقات المتجر"], ["⏰ تعديل وقت الافتتاح", "⏰ تعديل وقت الغلق"], ["📣 تعديل رسالة الافتتاح", "📣 تعديل رسالة الغلق"], ["🔙 إدارة البوت"]], resize_keyboard=True))
+            await message.reply_text("✅ تم حفظ الرسالة الجديدة.", reply_markup=ReplyKeyboardMarkup([["🟢 تفعيل أوقات المتجر", "⚪ تعطيل أوقات المتجر"], ["⏰ تعديل وقت الافتتاح", "⏰ تعديل وقت الغلق"], ["📣 تعديل رسالة الافتتاح", "📣 تعديل رسالة الغلق"], ["🔙 إدارة البوت"]], resize_keyboard=True, is_persistent=True))
         return
 
     if not is_admin(user_id) and not store_is_open() and any(context.user_data.get(key) for key in (
@@ -6799,7 +6742,7 @@ async def text_handler(update, context):
             set_setting(f"premium_emoji_enabled_{game_id}", "1")
             context.user_data.pop("admin_step", None)
             context.user_data.pop("pending_premium_game_id", None)
-            await message.reply_text("✅ تم حفظ إيموجي Premium وتفعيله. سيظهر في زر اللعبة وفي قائمة الألعاب إذا كان البوت/مالك البوت مؤهلاً لاستخدام الإيموجيات المخصصة.", reply_markup=ReplyKeyboardMarkup(ADMIN_PANEL_MENU, resize_keyboard=True))
+            await message.reply_text("✅ تم حفظ إيموجي Premium وتفعيله. سيظهر في زر اللعبة وفي قائمة الألعاب إذا كان البوت/مالك البوت مؤهلاً لاستخدام الإيموجيات المخصصة.", reply_markup=ReplyKeyboardMarkup(ADMIN_PANEL_MENU, resize_keyboard=True, is_persistent=True))
             return
 
         # حفظ النص الجديد
@@ -7248,14 +7191,26 @@ async def text_handler(update, context):
             await show_admin_panel(update, context)
             return
 
+        if text in ADMIN_SUBMENUS:
+            await message.reply_text(
+                f"{text}\n\nاختار العملية المطلوبة:",
+                reply_markup=ReplyKeyboardMarkup(
+                    ADMIN_SUBMENUS[text], resize_keyboard=True, is_persistent=True
+                ),
+            )
+            return
+        if text in ("🔙 لوحة الإدارة", "🔙 لوحة التحكم"):
+            await show_admin_panel(update, context)
+            return
+
         if text == "➕ إضافة":
-            await message.reply_text("➕ اختار واش تحب تزيد:", reply_markup=ReplyKeyboardMarkup([["➕ إضافة لعبة", "➕ إضافة عرض"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
+            await message.reply_text("➕ اختار واش تحب تزيد:", reply_markup=ReplyKeyboardMarkup([["➕ إضافة لعبة", "➕ إضافة عرض"], ["🔙 لوحة الإدارة"]], resize_keyboard=True, is_persistent=True))
             return
         if text == "🛍️ المتجر":
-            await message.reply_text("🛍️ إدارة الألعاب والتطبيقات:", reply_markup=ReplyKeyboardMarkup([["🎮 الألعاب", "📱 التطبيقات"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
+            await message.reply_text("🛍️ إدارة الألعاب والتطبيقات:", reply_markup=ReplyKeyboardMarkup([["🎮 الألعاب", "📱 التطبيقات"], ["🔙 لوحة الإدارة"]], resize_keyboard=True, is_persistent=True))
             return
         if text == "📂 إدارة البوت":
-            await message.reply_text("📂 إدارة البوت:", reply_markup=ReplyKeyboardMarkup([["📋 كل الطلبات", "🗑️ حذف جميع الطلبات"], ["💳 إعدادات الدفع", "📊 الإحصائيات"], ["📝 إدارة النصوص", "📇 إعدادات التواصل"], ["🕒 أوقات المتجر", "🧹 تصفير الحسابات والطلبات"], ["🛍️ التذكير التسويقي"], ["🔄 تحويل زبون / تاجر"], ["🔙 لوحة الإدارة"]], resize_keyboard=True))
+            await message.reply_text("📂 إدارة البوت:", reply_markup=ReplyKeyboardMarkup([["📋 كل الطلبات", "🗑️ حذف جميع الطلبات"], ["💳 إعدادات الدفع", "📊 الإحصائيات"], ["📝 إدارة النصوص", "📇 إعدادات التواصل"], ["🕒 أوقات المتجر", "🧹 تصفير الحسابات والطلبات"], ["🛍️ التذكير التسويقي"], ["🔄 تحويل زبون / تاجر"], ["🔙 لوحة الإدارة"]], resize_keyboard=True, is_persistent=True))
             return
         if text == "⚙️ إعدادات البوت":
             enabled = get_setting("required_subscription_enabled", "1") == "1"
@@ -7366,7 +7321,7 @@ async def text_handler(update, context):
             closing = get_setting("store_close_time", "23:00")
             await message.reply_text(
                 f"🕒 إعداد أوقات المتجر (توقيت الجزائر)\n\nالحالة: {'مفعّل' if enabled else 'معطّل'}\nالافتتاح: {opening}\nالغلق: {closing}\n\nاختر إجراءً. عند التعطيل تبقى الطلبات متاحة دائمًا. عند التفعيل يمكن تصفح المتجر خارج الوقت لكن لا يمكن إرسال طلب جديد.",
-                reply_markup=ReplyKeyboardMarkup([["🟢 تفعيل أوقات المتجر", "⚪ تعطيل أوقات المتجر"], ["⏰ تعديل وقت الافتتاح", "⏰ تعديل وقت الغلق"], ["📣 تعديل رسالة الافتتاح", "📣 تعديل رسالة الغلق"], ["🔙 إدارة البوت"]], resize_keyboard=True))
+                reply_markup=ReplyKeyboardMarkup([["🟢 تفعيل أوقات المتجر", "⚪ تعطيل أوقات المتجر"], ["⏰ تعديل وقت الافتتاح", "⏰ تعديل وقت الغلق"], ["📣 تعديل رسالة الافتتاح", "📣 تعديل رسالة الغلق"], ["🔙 إدارة البوت"]], resize_keyboard=True, is_persistent=True))
             return
         if text == "🟢 تفعيل أوقات المتجر":
             set_setting("store_hours_enabled", "1")
@@ -7445,18 +7400,12 @@ async def text_handler(update, context):
             await message.reply_text("أرسل العرض بهذا الشكل:\nالاسم | الوصف | تكلفة النقاط | المخزون (-1 لمخزون غير محدود)\nمثال: اشتراك تجريبي | اشتراك رقمي | 200 | 10\nللإلغاء /cancel")
             return
         if text == "📬 طلبات الألعاب":
-            if not is_admin(user_id):
-                await message.reply_text("⛔ هذا الزر خاص بالإدارة."); return
-            with db() as conn:
-                rows = conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT 30").fetchall()
-            if not rows:
-                await message.reply_text("📬 لا توجد طلبات ألعاب أو تطبيقات.", reply_markup=admin_keyboard()); return
-            status_names = {"pending":"جديد", "reviewed":"قيد المراجعة", "added":"تمت الإضافة", "rejected":"مرفوض"}
-            buttons = [[InlineKeyboardButton(
-                f"#{r['id']} {r['request_text'][:28]} · {status_names.get(r['status'], r['status'])}"[:60],
-                callback_data=f"game_request_view:{r['id']}"
-            )] for r in rows]
-            await message.reply_text("📬 طلبات الألعاب والتطبيقات — آخر 30 طلبًا:", reply_markup=InlineKeyboardMarkup(buttons)); return
+            with db() as conn: rows=conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT 30").fetchall()
+            if not rows: await message.reply_text("لا توجد طلبات ألعاب."); return
+            buttons=[]
+            for r in rows:
+                buttons.append([InlineKeyboardButton(f"#{r['id']} {r['request_text'][:35]} ({r['status']})",callback_data=f"game_request_status:{r['id']}:reviewed")])
+            await message.reply_text("📬 طلبات الألعاب والتطبيقات الأخيرة:",reply_markup=InlineKeyboardMarkup(buttons)); return
 
         if text == "📦 إدارة العروض":
             await message.reply_text(
