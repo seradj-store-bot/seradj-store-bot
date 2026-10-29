@@ -338,6 +338,54 @@ def main_keyboard(user_id):
         keyboard = [row for row in keyboard if row]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+async def ids_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show game, recharge-method/server, and offer IDs to the admin."""
+    user_id = update.effective_user.id if update.effective_user else 0
+    if not is_admin(user_id):
+        await update.effective_message.reply_text("⛔ هذا الأمر خاص بالإدارة.")
+        return
+
+    chunks = []
+    with db() as conn:
+        chunks.append("🎮 معرّفات الألعاب (GAME_ID)\n")
+        games = conn.execute("SELECT id, name, active FROM games ORDER BY id").fetchall()
+        if games:
+            chunks.extend(f"{r['id']} | {r['name']} | {'مفعّلة' if r['active'] else 'معطّلة'}\n" for r in games)
+        else:
+            chunks.append("لا توجد ألعاب مسجلة.\n")
+
+        chunks.append("\n🔀 معرّفات طرق الشحن والسيرفرات (METHOD_ID)\n")
+        methods = conn.execute(
+            "SELECT rm.id, rm.game_id, g.name AS game_name, rm.title, rm.active "
+            "FROM recharge_methods rm LEFT JOIN games g ON g.id=rm.game_id "
+            "ORDER BY rm.game_id, rm.id"
+        ).fetchall()
+        if methods:
+            chunks.extend(
+                f"GAME_ID={r['game_id']} | METHOD_ID={r['id']} | {r['game_name'] or 'لعبة غير معروفة'} → {r['title']} | {'مفعّلة' if r['active'] else 'معطّلة'}\n"
+                for r in methods
+            )
+        else:
+            chunks.append("لا توجد طرق شحن مسجلة.\n")
+
+        chunks.append("\n💎 معرّفات العروض (OFFER_ID)\n")
+        offers = conn.execute(
+            "SELECT o.id, o.game_id, g.name AS game_name, o.recharge_method_id, o.name, o.active "
+            "FROM offers o LEFT JOIN games g ON g.id=o.game_id ORDER BY o.game_id, o.id"
+        ).fetchall()
+        if offers:
+            chunks.extend(
+                f"OFFER_ID={r['id']} | GAME_ID={r['game_id']} | METHOD_ID={r['recharge_method_id']} | {r['game_name'] or 'لعبة غير معروفة'} → {r['name']} | {'مفعّل' if r['active'] else 'معطّل'}\n"
+                for r in offers
+            )
+        else:
+            chunks.append("لا توجد عروض مسجلة.\n")
+
+    text = ''.join(chunks)
+    # Telegram message text is limited; send the report in safe-sized chunks.
+    for start in range(0, len(text), 3500):
+        await update.effective_message.reply_text(text[start:start + 3500])
+
 async def admin_command(update, context):
     user_id = update.effective_user.id
 
@@ -7196,6 +7244,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("myid", myid))
+    app.add_handler(CommandHandler("ids", ids_command))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CommandHandler("ordergames", order_games_command))
     app.add_handler(CommandHandler("setordergroup", set_order_group_command))
