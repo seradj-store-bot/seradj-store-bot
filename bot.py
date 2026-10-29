@@ -6712,10 +6712,12 @@ async def text_handler(update, context):
 
         if step == "scheduled_broadcast_message":
             context.user_data["pending_scheduled_text"] = text
-            # Preserve Telegram Premium custom emoji and other formatting entities.
-            context.user_data["pending_scheduled_entities"] = [entity.to_dict() for entity in (message.entities or [])]
+            # Keep Telegram Premium custom emoji and text-formatting entities from
+            # either a text message or a media caption.
+            source_entities = message.entities or message.caption_entities or []
+            context.user_data["pending_scheduled_entities"] = [entity.to_dict() for entity in source_entities]
             context.user_data["admin_step"] = "scheduled_broadcast_datetime"
-            await message.reply_text("📅 ابعث موعد الإرسال بهذا الشكل: YYYY-MM-DD HH:MM\nمثال: 2026-11-01 18:30\nالتوقيت حسب ساعة السيرفر.")
+            await message.reply_text("📅 ابعث موعد الإرسال بهذا الشكل: YYYY-MM-DD HH:MM\nمثال: 2026-11-01 18:30\nالتوقيت حسب توقيت الجزائر.")
             return
         if step == "scheduled_broadcast_datetime":
             try:
@@ -6726,7 +6728,32 @@ async def text_handler(update, context):
             due = due_dt.strftime("%Y-%m-%d %H:%M:%S")
             context.user_data["pending_scheduled_due"] = due
             context.user_data["admin_step"] = "scheduled_broadcast_confirm"
-            await message.reply_text("📨 معاينة الإشعار المجدول:\n\n" + context.user_data.get("pending_scheduled_text", "") + f"\n\n📅 الموعد: {due}\nسيُرسل مرة واحدة لجميع المشتركين.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الجدولة", callback_data="scheduled_broadcast_confirm"), InlineKeyboardButton("❌ إلغاء", callback_data="notify_cancel")]]))
+            preview_prefix = "📨 معاينة الإشعار المجدول:\n\n"
+            preview_body = context.user_data.get("pending_scheduled_text", "")
+            preview_suffix = f"\n\n📅 الموعد: {due}\nسيُرسل مرة واحدة لجميع المشتركين."
+            # Telegram entity offsets are measured in UTF-16 code units. Shift the
+            # original entities by the prefix length so Premium custom emoji render
+            # correctly in the preview as well as in the final scheduled message.
+            preview_entities = []
+            prefix_utf16_len = len(preview_prefix.encode("utf-16-le")) // 2
+            try:
+                from telegram import MessageEntity
+                for item in context.user_data.get("pending_scheduled_entities", []):
+                    if not isinstance(item, dict):
+                        continue
+                    shifted = dict(item)
+                    if shifted.get("offset") is not None:
+                        shifted["offset"] = int(shifted["offset"]) + prefix_utf16_len
+                    entity = MessageEntity.de_json(shifted, context.bot)
+                    if entity:
+                        preview_entities.append(entity)
+            except Exception:
+                logger.exception("Could not restore entities for scheduled broadcast preview")
+            await message.reply_text(
+                preview_prefix + preview_body + preview_suffix,
+                entities=preview_entities or None,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الجدولة", callback_data="scheduled_broadcast_confirm"), InlineKeyboardButton("❌ إلغاء", callback_data="notify_cancel")]])
+            )
             return
 
         if step == "notify_broadcast_message":
