@@ -5496,8 +5496,27 @@ async def callback_handler(update, context):
                 "تأكد أن البوت مسؤول في القناة ويملك صلاحية نشر الرسائل."
             )
             return
+        preview_prefix = "📨 معاينة الإشعار:\\n\\n"
+        preview_body = context.user_data.get("pending_broadcast_text", "")
+        # Preserve Premium custom emoji and formatting in the admin preview.
+        # Telegram entity offsets are UTF-16 code units, so shift them by the
+        # prefix length before sending the combined preview text.
+        preview_entities = []
+        prefix_utf16_len = len(preview_prefix.encode("utf-16-le")) // 2
+        try:
+            for item in context.user_data.get("pending_broadcast_entities", []):
+                if not isinstance(item, dict):
+                    continue
+                shifted = dict(item)
+                shifted["offset"] = int(shifted.get("offset", 0)) + prefix_utf16_len
+                entity = MessageEntity.de_json(shifted, context.bot)
+                if entity:
+                    preview_entities.append(entity)
+        except Exception:
+            logger.exception("Could not restore entities for broadcast preview")
         await query.message.reply_text(
-            "📨 معاينة الإشعار:\\n\\n" + context.user_data.get("pending_broadcast_text", ""),
+            preview_prefix + preview_body,
+            entities=preview_entities or None,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ تأكيد الإرسال", callback_data="notify_broadcast_confirm")],
                 [InlineKeyboardButton("❌ إلغاء", callback_data="notify_cancel")]
