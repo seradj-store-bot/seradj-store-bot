@@ -5561,20 +5561,32 @@ async def callback_handler(update, context):
             try:
                 if not channel_id:
                     raise ValueError("لم يتم ضبط قناة النشر")
-                kwargs = {"entities": [
-                    MessageEntity.de_json(item, context.bot)
-                    for item in raw_entities
-                ]} if raw_entities else {}
-                await context.bot.send_message(
-                    chat_id=channel_id, text=broadcast_text,
-                    reply_markup=keyboard, **kwargs
-                )
+                source_chat_id = context.user_data.get("pending_broadcast_source_chat_id")
+                source_message_id = context.user_data.get("pending_broadcast_source_message_id")
+                if source_chat_id and source_message_id:
+                    # Copy the original Telegram message instead of rebuilding it
+                    # from text/entities; this preserves custom (premium) emojis.
+                    await context.bot.copy_message(
+                        chat_id=channel_id,
+                        from_chat_id=source_chat_id,
+                        message_id=source_message_id,
+                        reply_markup=keyboard,
+                    )
+                else:
+                    kwargs = {"entities": [
+                        MessageEntity.de_json(item, context.bot)
+                        for item in raw_entities
+                    ]} if raw_entities else {}
+                    await context.bot.send_message(
+                        chat_id=channel_id, text=broadcast_text,
+                        reply_markup=keyboard, **kwargs
+                    )
                 sent += 1
             except Exception as exc:
                 failed += 1
                 failure_details.append(("القناة", f"{type(exc).__name__}: {str(exc)[:180]}"))
                 logger.exception("Channel broadcast failed")
-        for key in ("pending_broadcast_text", "pending_broadcast_entities", "pending_broadcast_buttons", "pending_broadcast_target"):
+        for key in ("pending_broadcast_text", "pending_broadcast_entities", "pending_broadcast_buttons", "pending_broadcast_target", "pending_broadcast_source_chat_id", "pending_broadcast_source_message_id"):
             context.user_data.pop(key, None)
         context.user_data.pop("admin_step", None)
         summary = f"✅ انتهى إرسال الإشعار.\nوصل إلى: {sent}\nتعذّر الإرسال إلى: {failed}"
@@ -6999,6 +7011,10 @@ async def text_handler(update, context):
             context.user_data["pending_broadcast_entities"] = [
                 entity.to_dict() for entity in (message.entities or [])
             ]
+            # Keep the original Telegram message as the source so copy_message
+            # preserves premium/custom emoji entities exactly in channel posts.
+            context.user_data["pending_broadcast_source_chat_id"] = message.chat_id
+            context.user_data["pending_broadcast_source_message_id"] = message.message_id
             context.user_data["admin_step"] = "notify_broadcast_buttons"
             await message.reply_text(
                 "✅ حفظت نص الإشعار.\n\n"
