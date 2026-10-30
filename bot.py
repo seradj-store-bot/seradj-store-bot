@@ -982,6 +982,13 @@ def trader_wallet_currency(user_id):
     return "USD" if str(value or "DA").upper() == "USD" else "DA"
 
 
+def trader_offer_price(offer, user_id):
+    """One trader price in the currency selected by admin for this trader."""
+    if trader_wallet_currency(user_id) == "USD":
+        return float(offer["price_usd_trader"] or 0)
+    return int(offer["price_baridi_trader"] or 0)
+
+
 def status_label(status):
     labels = {
         "pending": "⏳ قيد الانتظار",
@@ -1453,8 +1460,16 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None, pric
 
     buttons = []
 
-    # لا نعرض أسعارًا مختلطة عند الدخول؛ يختار المستخدم طريقة العرض أولاً.
-    if price_mode != "choose":
+    # Trader sees only the currency assigned by admin and its trader price.
+    if is_trader(user_id):
+        wallet_ccy = trader_wallet_currency(user_id)
+        price_mode = "trader_usd" if wallet_ccy == "USD" else "trader_da"
+        for offer in offers:
+            price = trader_offer_price(offer, user_id)
+            label = f"{price:.2f} USD" if wallet_ccy == "USD" else f"{price} DA"
+            buttons.append([InlineKeyboardButton(f"{offer['name']} | 🏪 {label}", callback_data=f"offer:{game_id}:{offer['id']}:{platform or 'none'}:{price_mode}")])
+    # لا نعرض أسعارًا مختلطة عند الدخول؛ يختار الزبون طريقة العرض أولاً.
+    elif price_mode != "choose":
         for offer in offers:
             if price_mode == "usd":
                 try:
@@ -1472,17 +1487,17 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None, pric
                 price_label = f"💳 {offer_price(offer, 'baridi', user_id)} DA | 📱 {offer_price(offer, 'flexy', user_id)} DA"
             buttons.append([InlineKeyboardButton(f"{offer['name']} | {price_label}", callback_data=f"offer:{game_id}:{offer['id']}:{platform or 'none'}:{price_mode}")])
 
-    # Separate price-list filters: BaridiMob, Flexy, and USD.
-    price_buttons = [
+    # Retail payment filters are never shown to traders.
+    price_buttons = [] if is_trader(user_id) else [
         InlineKeyboardButton("💳 أسعار بريدي موب و CCP", callback_data=f"price_view:{game_id}:baridi:{platform or 'none'}:{context_method_id}"),
         InlineKeyboardButton("📱 أسعار الفليكسي", callback_data=f"price_view:{game_id}:flexy:{platform or 'none'}:{context_method_id}"),
     ]
     # USD price viewing is independent from whether USD payment is currently enabled.
-    price_buttons.append(InlineKeyboardButton("💵 أسعار USD", callback_data=f"price_view:{game_id}:usd:{platform or 'none'}:{context_method_id}"))
-    # Put each price category on its own row for clearer navigation.
-    buttons.insert(0, [price_buttons[1]])
-    buttons.insert(0, [price_buttons[0]])
-    buttons.insert(2, [price_buttons[2]])
+    if not is_trader(user_id):
+        price_buttons.append(InlineKeyboardButton("💵 أسعار USD", callback_data=f"price_view:{game_id}:usd:{platform or 'none'}:{context_method_id}"))
+        buttons.insert(0, [price_buttons[1]])
+        buttons.insert(0, [price_buttons[0]])
+        buttons.insert(2, [price_buttons[2]])
 
     # TikTok: let the customer request a custom coin quantity in addition to preset offers.
     if (game["name"] or "").strip().lower() == "tiktok":
@@ -1551,7 +1566,7 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
             customer_has_coupon = bool(_valid_coupons(user_id))
         except Exception:
             logger.exception("Could not check coupons for user %s", user_id)
-    if context is not None and customer_has_coupon:
+    if context is not None and customer_has_coupon and not is_trader(user_id):
         pending = context.user_data.get("pending_offer_coupon") or {}
         selected_coupon = context.user_data.get("offer_coupon") or {}
         selected_matches = selected_coupon.get("key") == coupon_key
@@ -1571,6 +1586,20 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
             return
 
     buttons = []
+    if is_trader(user_id):
+        ccy = trader_wallet_currency(user_id)
+        price = trader_offer_price(offer, user_id)
+        if ccy == "USD":
+            buttons.append([InlineKeyboardButton(f"💵 الدفع من محفظة USD — {price:.2f} USD", callback_data=f"pay:{game_id}:{offer_id}:trader_wallet")])
+            shown_price = f"{price:.2f} USD"
+        else:
+            buttons.append([InlineKeyboardButton(f"💰 الدفع من محفظة الدينار — {price} DA", callback_data=f"pay:{game_id}:{offer_id}:trader_wallet")])
+            shown_price = f"{price} DA"
+        buttons.append([InlineKeyboardButton("🛒 إضافة إلى السلة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}:{'trader_usd' if ccy == 'USD' else 'trader_da'}")])
+        buttons.append([InlineKeyboardButton("🛒 عرض السلة", callback_data="cart_view")])
+        buttons.append([InlineKeyboardButton("🔙 رجوع للعروض", callback_data=f"recharge_select:{game_id}:{int(offer['recharge_method_id'])}:{platform or 'none'}")])
+        await query.edit_message_text(f"🛍️ تفاصيل عرض التاجر\n\n🎮 اللعبة: {game['name']}\n📦 العرض: {offer['name']}\n💰 السعر: {shown_price}\n💳 الدفع من محفظتك المحددة من الإدارة فقط.", reply_markup=InlineKeyboardMarkup(buttons))
+        return
     selected_coupon = context.user_data.get("offer_coupon") if context is not None else None
     if not selected_coupon or selected_coupon.get("key") != coupon_key or price_mode == "usd":
         selected_coupon = None
@@ -1666,8 +1695,11 @@ def _cart_total(cart, payment_type, user_id):
         _, offer, _ = _cart_method_info(cart["game_id"], item["offer_id"])
         if not offer:
             continue
-        pay_key = "flexy" if payment_type == "flexy" else "baridi"
-        total += int(offer_price(offer, pay_key, user_id)) * int(item["quantity"])
+        if is_trader(user_id):
+            total += trader_offer_price(offer, user_id) * int(item["quantity"])
+        else:
+            pay_key = "flexy" if payment_type == "flexy" else "baridi"
+            total += int(offer_price(offer, pay_key, user_id)) * int(item["quantity"])
     return total
 
 
@@ -1679,12 +1711,13 @@ def _cart_text(cart, user_id, payment_type=None):
         _, offer, _ = _cart_method_info(cart["game_id"], item["offer_id"])
         if not offer:
             continue
-        unit = int(offer_price(offer, "flexy" if payment_type == "flexy" else "baridi", user_id)) if payment_type else 0
+        unit = (trader_offer_price(offer, user_id) if is_trader(user_id) else int(offer_price(offer, "flexy" if payment_type == "flexy" else "baridi", user_id))) if payment_type else 0
         subtotal = unit * int(item["quantity"])
         total += subtotal
         lines.append(f"• {offer['name']} × {item['quantity']}" + (f" — {subtotal} DA" if payment_type else ""))
     if payment_type:
-        lines += ["", f"💰 المجموع: {total} DA"]
+        ccy = trader_wallet_currency(user_id) if is_trader(user_id) else "DA"
+        lines += ["", f"💰 المجموع: {total:.2f} {ccy}" if ccy == "USD" else f"💰 المجموع: {int(total)} DA"]
     lines += ["", "تقدر تزيد أو تنقص الكمية أو تحذف أي عرض."]
     return "\n".join(lines)
 
@@ -1730,7 +1763,7 @@ async def _cart_add(query, context, game_id, offer_id, platform, price_mode="cho
     method_id = int(offer["recharge_method_id"] or 0)
     if cart and (int(cart["game_id"]) != int(game_id) or int(cart.get("recharge_method_id", 0)) != method_id or cart.get("platform", "") != (platform if platform != "none" else "")):
         await query.answer("السلة تقبل عروض نفس اللعبة ونفس طريقة الشحن والجهاز فقط. أفرغ السلة أو أكمل الطلب الحالي أولًا.", show_alert=True); return
-    selected_mode = price_mode if price_mode in ("baridi", "flexy", "usd") else "choose"
+    selected_mode = price_mode if price_mode in ("baridi", "flexy", "usd", "trader_da", "trader_usd") else "choose"
     if cart and cart.get("price_mode", "choose") != selected_mode:
         await query.answer("السلة الحالية من فئة أسعار مختلفة. أكمل الطلب أو أفرغ السلة أولًا.", show_alert=True); return
     if not cart:
@@ -1813,6 +1846,16 @@ async def _cart_checkout(query, context):
     if not cart or not cart.get("items"):
         await query.edit_message_text("🛒 السلة فارغة."); return
     buttons = []
+    # Traders pay exclusively from the wallet currency assigned by admin.
+    if is_trader(query.from_user.id):
+        ccy = trader_wallet_currency(query.from_user.id)
+        cart["price_mode"] = "trader_usd" if ccy == "USD" else "trader_da"
+        total = _cart_total(cart, "trader_wallet", query.from_user.id)
+        label = f"{total:.2f} USD" if ccy == "USD" else f"{int(total)} DA"
+        buttons.append([InlineKeyboardButton(f"💰 الدفع من محفظة {ccy} — {label}", callback_data="cart_pay:trader_wallet")])
+        buttons.append([InlineKeyboardButton("🔙 رجوع للسلة", callback_data="cart_view")])
+        await query.edit_message_text("💳 إتمام طلب التاجر\nسيتم الخصم من المحفظة التي حددتها الإدارة فقط.", reply_markup=InlineKeyboardMarkup(buttons))
+        return
     # Coupon controls belong ONLY to this checkout/payment screen, never the cart contents screen.
     price_mode = cart.get("price_mode", "choose")
     if price_mode == "usd":
@@ -1832,20 +1875,24 @@ async def _cart_start_payment(query, context, payment_type):
     cart = context.user_data.get("cart")
     if not cart or not cart.get("items"):
         await query.edit_message_text("🛒 السلة فارغة."); return
-    if payment_type not in ("baridi", "flexy", "balance"):
+    if payment_type not in ("baridi", "flexy", "balance", "trader_wallet"):
         await query.answer("طريقة الدفع غير مدعومة للسلة حاليًا.", show_alert=True); return
     game = get_game(cart["game_id"])
+    if payment_type == "trader_wallet" and not is_trader(query.from_user.id):
+        await query.answer("طريقة الدفع غير متاحة.", show_alert=True); return
+    wallet_ccy = trader_wallet_currency(query.from_user.id) if payment_type == "trader_wallet" else "DA"
     base_total = _cart_total(cart, payment_type, query.from_user.id)
     coupon_id = None
     coupon_discount = 0
     context.user_data.pop("cart_coupon", None)
     total = base_total
-    if payment_type == "balance":
+    if payment_type in ("balance", "trader_wallet"):
+        column = "balance_usd" if wallet_ccy == "USD" else "balance"
         with db() as conn:
-            row = conn.execute("SELECT balance FROM users WHERE user_id=?", (query.from_user.id,)).fetchone()
-        if not row or int(row["balance"] or 0) < total:
-            await query.edit_message_text(f"❌ رصيد المحفظة غير كافٍ. المجموع {total} DA. عبّئ محفظتك ثم حاول مجددًا."); return
-        method_name = "رصيد المحفظة"
+            row = conn.execute(f"SELECT {column} AS wallet_balance FROM users WHERE user_id=?", (query.from_user.id,)).fetchone()
+        if not row or float(row["wallet_balance"] or 0) < float(total):
+            await query.edit_message_text(f"❌ رصيد محفظة {wallet_ccy} غير كافٍ. المجموع {total} {wallet_ccy}."); return
+        method_name = f"محفظة التاجر {wallet_ccy}" if payment_type == "trader_wallet" else "رصيد المحفظة"
     else:
         method_name = "BaridiMob / CCP" if payment_type == "baridi" else "Flexy"
     names = []
@@ -1853,14 +1900,14 @@ async def _cart_start_payment(query, context, payment_type):
         _, offer, _ = _cart_method_info(cart["game_id"], item["offer_id"])
         if offer:
             names.append(f"{offer['name']} × {item['quantity']}")
-    context.user_data["order_draft"] = {"cart_mode": True, "cart_items": [dict(x) for x in cart["items"]], "game_id": cart["game_id"], "offer_id": cart["items"][0]["offer_id"], "game_name": game["name"] if game else "", "offer_name": " + ".join(names), "method": method_name, "price": total, "base_price": base_total, "coupon_id": coupon_id, "coupon_discount": coupon_discount, "points_used": 0, "payment_type": payment_type, "currency": "DA", "platform": cart.get("platform", ""), "login_mode": cart.get("method_type") == "login"}
+    context.user_data["order_draft"] = {"cart_mode": True, "cart_items": [dict(x) for x in cart["items"]], "game_id": cart["game_id"], "offer_id": cart["items"][0]["offer_id"], "game_name": game["name"] if game else "", "offer_name": " + ".join(names), "method": method_name, "price": total, "base_price": base_total, "coupon_id": coupon_id, "coupon_discount": coupon_discount, "points_used": 0, "payment_type": payment_type, "currency": wallet_ccy if payment_type == "trader_wallet" else "DA", "wallet_currency": wallet_ccy, "platform": cart.get("platform", ""), "login_mode": cart.get("method_type") == "login"}
     await _begin_cart_timer(context, query.from_user.id)
     if cart.get("method_type") == "login":
         context.user_data["awaiting_login_email"] = True
         prompt = "🔐 أرسل إيميل الحساب الذي تملكه أو لديك إذن بشحنه. سيطلب البوت كلمة السر بعدها."
     elif cart.get("method_type") == "none":
         context.user_data["pending_player_id"] = ""
-        if payment_type == "balance":
+        if payment_type in ("balance", "trader_wallet"):
             await create_wallet_order(query.message, context, "", user=query.from_user); return
         context.user_data["awaiting_payment_receipt"] = True
         prompt = "📸 أرسل صورة وصل الدفع لإتمام الطلب."
@@ -1897,14 +1944,29 @@ async def select_payment(
         return
 
     currency = "DA"
-    if method in ("baridi", "flexy") and (
+    if is_trader(query.from_user.id):
+        if method != "trader_wallet":
+            await query.edit_message_text("❌ التاجر يدفع من المحفظة التي حددتها الإدارة فقط."); return
+        currency = trader_wallet_currency(query.from_user.id)
+        price = trader_offer_price(offer, query.from_user.id)
+        method_name = f"محفظة التاجر {currency}"
+        details = "سيتم الخصم من محفظتك المحددة من الإدارة."
+        method = "trader_wallet"
+    elif method in ("baridi", "flexy") and (
         get_setting(f"payment_{method}_enabled", "1") != "1"
         or get_setting(f"offer_payment_{method}_{offer_id}", "1") != "1"
     ):
         await query.edit_message_text("❌ طريقة الدفع هذه غير متاحة حالياً لهذا العرض. اختر طريقة أخرى.")
         return
 
-    if method == "baridi":
+    if method == "trader_wallet":
+        if not is_trader(query.from_user.id):
+            await query.edit_message_text("❌ طريقة الدفع غير متاحة."); return
+        price = trader_offer_price(offer, query.from_user.id)
+        method_name = f"محفظة التاجر {currency}"
+        details = "سيتم الخصم من محفظتك المحددة من الإدارة."
+        method = "trader_wallet"
+    elif method == "baridi":
         price = offer_price(offer, "baridi", query.from_user.id)
         method_name = "BaridiMob / CCP"
         details = get_setting(
@@ -1993,12 +2055,13 @@ async def select_payment(
         else:
             context.user_data.pop("offer_coupon", None)
             await query.answer("القسيمة لم تعد صالحة أو لا تحقق الحد الأدنى لهذا السعر؛ سيُستخدم السعر الكامل.", show_alert=True)
-    if method == "balance":
+    if method in ("balance", "trader_wallet"):
+        wallet_col = "balance_usd" if currency == "USD" else "balance"
         with db() as conn:
-            row = conn.execute("SELECT balance FROM users WHERE user_id=?", (query.from_user.id,)).fetchone()
-        balance = int(row["balance"] or 0) if row else 0
-        if balance < int(price):
-            await query.edit_message_text(f"❌ رصيد المحفظة غير كافٍ.\nالسعر بعد القسيمة: {int(price)} DA\nرصيدك: {balance} DA\nعبّئ محفظتك أو اختر طريقة دفع أخرى.")
+            row = conn.execute(f"SELECT {wallet_col} AS wallet_balance FROM users WHERE user_id=?", (query.from_user.id,)).fetchone()
+        balance = float(row["wallet_balance"] or 0) if row else 0
+        if balance < float(price):
+            await query.edit_message_text(f"❌ رصيد محفظة {currency} غير كافٍ.\nالسعر: {price} {currency}\nرصيدك: {balance} {currency}\nعبّئ محفظتك أو اختر طريقة أخرى.")
             return
 
     # Loyalty points are not cash and must never be auto-deducted from a normal order.
@@ -2015,7 +2078,8 @@ async def select_payment(
         "base_price": base_price,
         "points_used": points_used,
         "payment_type": method,
-        "currency": currency if method.startswith("custom_") else "DA",
+        "currency": currency if method.startswith("custom_") or method == "trader_wallet" else "DA",
+        "wallet_currency": currency if method == "trader_wallet" else "DA",
         "platform": context.user_data.get("selected_platform", ""),
         "coupon_id": coupon_id,
         "coupon_discount": coupon_discount,
@@ -2033,7 +2097,7 @@ async def select_payment(
         # Some products (e.g. Netflix subscriptions) require no player ID or login.
         context.user_data["pending_player_id"] = ""
         context.user_data.pop("awaiting_player_id", None)
-        if method == "balance":
+        if method in ("balance", "trader_wallet"):
             await create_wallet_order(query.message, context, "", user=query.from_user)
             return
         if method == "credit":
@@ -2051,7 +2115,7 @@ async def select_payment(
         f"📦 العرض: {offer['name']}\n"
         f"🔀 طريقة الشحن: {selected_method['title'] if selected_method else 'الطريقة الافتراضية'}\n"
         f"💳 الدفع: {method_name}\n"
-        f"💰 السعر: {price} {currency if method.startswith('custom_') else 'DA'}\n"
+        f"💰 السعر: {price} {currency if method.startswith('custom_') or method == 'trader_wallet' else 'DA'}\n"
         + (f"🎟️ خصم القسيمة: -{coupon_discount} DA\n" if coupon_discount else "")
         + f"\n💳 معلومات الدفع:\n{details}\n\n"
         f"{prompt}\n\nللإلغاء أرسل /cancel"
@@ -2069,23 +2133,27 @@ async def create_wallet_order(message, context, player_id, user=None):
     if not draft:
         await message.reply_text("❌ انتهت جلسة الطلب. ابدأ من جديد.")
         return
-    price = int(draft["price"])
+    wallet_ccy = str(draft.get("wallet_currency", "DA")).upper()
+    price = float(draft["price"]) if wallet_ccy == "USD" else int(draft["price"])
     points_used = int(draft.get("points_used", 0))
+    if wallet_ccy not in ("DA", "USD"):
+        wallet_ccy = "DA"
+    wallet_col = "balance_usd" if wallet_ccy == "USD" else "balance"
     with db() as conn:
-        row = conn.execute("SELECT balance, points FROM users WHERE user_id = ?", (user.id,)).fetchone()
-        if not row or int(row["balance"] or 0) < price or int(row["points"] or 0) < points_used:
-            await message.reply_text("❌ رصيد المحفظة أو النقاط تغيّر ولم يعد كافيًا. راجع حسابك وأعد الطلب.")
+        row = conn.execute(f"SELECT {wallet_col} AS wallet_balance, points FROM users WHERE user_id = ?", (user.id,)).fetchone()
+        if not row or float(row["wallet_balance"] or 0) < float(price) or int(row["points"] or 0) < points_used:
+            await message.reply_text(f"❌ رصيد محفظة {wallet_ccy} أو النقاط غير كافٍ. راجع حسابك وأعد الطلب.")
             return
-        conn.execute("UPDATE users SET balance = balance - ?, points = points - ? WHERE user_id = ?", (price, points_used, user.id))
+        conn.execute(f"UPDATE users SET {wallet_col} = {wallet_col} - ?, points = points - ? WHERE user_id = ?", (price, points_used, user.id))
         cursor = conn.execute(
-            "INSERT INTO orders (user_id, game_id, offer_id, player_id, payment_method, price, currency, status, created_at, points_used, platform, wallet_charged, coupon_id, coupon_discount) VALUES (?, ?, ?, ?, ?, ?, 'DA', 'pending', ?, ?, ?, 1, ?, ?)",
-            (user.id, draft["game_id"], draft["offer_id"], player_id, "رصيد المحفظة", price, now_text(), points_used, draft.get("platform", ""), draft.get("coupon_id"), int(draft.get("coupon_discount", 0))),
+            "INSERT INTO orders (user_id, game_id, offer_id, player_id, payment_method, price, currency, status, created_at, points_used, platform, wallet_charged, coupon_id, coupon_discount) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, 1, ?, ?)",
+            (user.id, draft["game_id"], draft["offer_id"], player_id, draft.get("method", "رصيد المحفظة"), price, wallet_ccy, now_text(), points_used, draft.get("platform", ""), draft.get("coupon_id"), int(draft.get("coupon_discount", 0))),
         )
         order_id = cursor.lastrowid
         if draft.get("coupon_id"):
             updated=conn.execute("UPDATE user_coupons SET status='used',used_order_id=? WHERE id=? AND user_id=? AND status='available' AND expires_at>?",(order_id,int(draft['coupon_id']),user.id,now_text()))
             if updated.rowcount != 1:
-                conn.execute("UPDATE users SET balance=balance+? WHERE user_id=?",(price,user.id))
+                conn.execute(f"UPDATE users SET {wallet_col}={wallet_col}+? WHERE user_id=?",(price,user.id))
                 conn.execute("DELETE FROM orders WHERE id=?",(order_id,))
                 await message.reply_text("❌ القسيمة لم تعد صالحة أو سبق استعمالها. لم يتم تثبيت الطلب؛ أعد المحاولة.",reply_markup=main_keyboard(user.id)); return
             context.user_data.pop('cart_coupon',None)
@@ -2096,13 +2164,13 @@ async def create_wallet_order(message, context, player_id, user=None):
             for item in draft.get("cart_items", []):
                 _, cart_offer, _ = _cart_method_info(draft["game_id"], item["offer_id"])
                 if cart_offer:
-                    unit = int(offer_price(cart_offer, "flexy" if draft.get("payment_type") == "flexy" else "baridi", user.id))
+                    unit = trader_offer_price(cart_offer, user.id) if is_trader(user.id) else int(offer_price(cart_offer, "flexy" if draft.get("payment_type") == "flexy" else "baridi", user.id))
                     conn.execute("INSERT INTO order_items (order_id, offer_id, offer_name, quantity, unit_price) VALUES (?, ?, ?, ?, ?)", (order_id, item["offer_id"], cart_offer["name"], item["quantity"], unit))
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 قيد التنفيذ", callback_data=f"status:{order_id}:processing"), InlineKeyboardButton("✅ مكتمل", callback_data=f"status:{order_id}:completed")],
         [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"status:{order_id}:rejected")],
     ])
-    await dispatch_order_to_group(context, order_id, user, draft, player_id, "رصيد المحفظة", price, points_used)
+    await dispatch_order_to_group(context, order_id, user, draft, player_id, draft.get("method", "رصيد المحفظة"), price, points_used)
     context.user_data.pop("order_draft", None)
     context.user_data.pop("pending_player_id", None)
     context.user_data.pop("awaiting_player_id", None)
@@ -2116,7 +2184,7 @@ async def create_wallet_order(message, context, player_id, user=None):
     if task and not task.done(): task.cancel()
     if draft.get("cart_mode"):
         context.user_data.pop("cart", None)
-    await message.reply_text(f"✅ تم تسجيل طلبك #{order_id}.\n💰 المبلغ المخصوم: {price} DA\n🎁 النقاط المستخدمة: {points_used}\nسيتم إعلامك عند تحديث الحالة.", reply_markup=main_keyboard(user.id))
+    await message.reply_text(f"✅ تم تسجيل طلبك #{order_id}.\n💰 المبلغ المخصوم: {price} {wallet_ccy}\n🎁 النقاط المستخدمة: {points_used}\nسيتم إعلامك عند تحديث الحالة.", reply_markup=main_keyboard(user.id))
 
 
 async def create_credit_order(message, context, player_id, user=None):
@@ -2155,7 +2223,7 @@ async def create_order(update, context):
         )
         return
 
-    if draft.get("payment_type") == "balance":
+    if draft.get("payment_type") in ("balance", "trader_wallet"):
         await create_wallet_order(update.effective_message, context, player_id)
         return
     if draft.get("payment_type") == "credit":
@@ -4826,7 +4894,7 @@ async def callback_handler(update, context):
         await query.message.reply_text(
             f"💰 تعديل سعر العرض: {offer['name']}\n\n"
             f"الأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\n"
-            f"تاجر Baridi {price_row['price_baridi_trader']} DA | تاجر Flexy {price_row['price_flexy_trader']} DA\n\n"
+            f"تاجر DA {price_row['price_baridi_trader']} DA | تاجر USD {price_row['price_usd_trader']} USD\n\n"
             "اختار السعر اللي تحب تبدله فقط؛ باقي الأسعار تبقى كما هي:",
             reply_markup=InlineKeyboardMarkup(price_buttons)
         )
@@ -5115,7 +5183,8 @@ async def callback_handler(update, context):
                 if order["coupon_id"]:
                     conn.execute("UPDATE user_coupons SET status='available', used_order_id=NULL WHERE id=? AND user_id=? AND status='used' AND expires_at>?", (int(order["coupon_id"]), int(customer_id), now_text()))
                 if int(order["wallet_charged"] or 0) and not int(order["wallet_refunded"] or 0):
-                    conn.execute("UPDATE users SET balance = balance + ?, points = points + ? WHERE user_id = ?", (int(conn.execute("SELECT price FROM orders WHERE id = ?", (order_id,)).fetchone()[0]), int(order["points_used"] or 0), customer_id))
+                    refund_col = "balance_usd" if str(order["currency"] or "DA").upper() == "USD" else "balance"
+                    conn.execute(f"UPDATE users SET {refund_col} = {refund_col} + ?, points = points + ? WHERE user_id = ?", (float(order["price"] or 0) if refund_col == "balance_usd" else int(order["price"] or 0), int(order["points_used"] or 0), customer_id))
                     conn.execute("UPDATE orders SET wallet_refunded = 1 WHERE id = ?", (order_id,))
                 elif int(order["points_used"] or 0):
                     conn.execute("UPDATE users SET points = points + ? WHERE user_id = ?", (int(order["points_used"] or 0), customer_id))
@@ -5435,7 +5504,7 @@ async def callback_handler(update, context):
         except ValueError:
             return
         platform = parts[3] if len(parts) >= 4 and parts[3] != "none" else None
-        price_mode = parts[4] if len(parts) == 5 and parts[4] in ("baridi", "flexy", "usd") else "choose"
+        price_mode = parts[4] if len(parts) == 5 and parts[4] in ("baridi", "flexy", "usd", "trader_da", "trader_usd") else "choose"
         context.user_data["selected_platform"] = platform or ""
         context.user_data["selected_price_mode"] = price_mode
         current_coupon = context.user_data.get("offer_coupon") or {}
@@ -6109,7 +6178,7 @@ async def text_handler(update, context):
             await message.reply_text("❌ انتهت جلسة الطلب. ابدأ من جديد.")
             return
         draft["login_mode"] = True
-        if draft.get("payment_type") == "balance":
+        if draft.get("payment_type") in ("balance", "trader_wallet"):
             await create_wallet_order(message, context, context.user_data["pending_player_id"])
             return
         if draft.get("payment_type") == "credit":
@@ -6789,7 +6858,7 @@ async def text_handler(update, context):
         # تعديل سعر واحد فقط لعرض مع الحفاظ على بقية الأسعار
         if step == "edit_single_offer_price":
             try:
-                new_price = int(text)
+                new_price = float(text.replace(",", ".")) if context.user_data.get("pending_offer_price_column") == "price_usd_trader" else int(text)
                 if new_price < 0:
                     raise ValueError
             except ValueError:
@@ -6810,7 +6879,7 @@ async def text_handler(update, context):
             if not result.rowcount or not offer_name_row:
                 await message.reply_text("❌ العرض غير موجود.", reply_markup=admin_keyboard())
             else:
-                await message.reply_text(f"✅ تم تعديل السعر فقط إلى {new_price} DA للعرض {offer_name_row['name']}. بقية الأسعار بقيت كما هي.", reply_markup=admin_keyboard())
+                await message.reply_text(f"✅ تم تعديل السعر فقط إلى {new_price} {'USD' if column == 'price_usd_trader' else 'DA'} للعرض {offer_name_row['name']}. بقية الأسعار بقيت كما هي.", reply_markup=admin_keyboard())
             return
 
         # تعديل أسعار عرض
