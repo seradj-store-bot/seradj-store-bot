@@ -5496,19 +5496,16 @@ async def callback_handler(update, context):
                 "تأكد أن البوت مسؤول في القناة ويملك صلاحية نشر الرسائل."
             )
             return
-        preview_prefix = "📨 معاينة الإشعار:\\n\\n"
+        preview_prefix = "📨 معاينة الإشعار:\n\n"
         preview_body = context.user_data.get("pending_broadcast_text", "")
-        # Preserve Premium custom emoji and formatting in the admin preview.
-        # Telegram entity offsets are UTF-16 code units, so shift them by the
-        # prefix length before sending the combined preview text.
         preview_entities = []
-        prefix_utf16_len = len(preview_prefix.encode("utf-16-le")) // 2
+        preview_shift = len(preview_prefix.encode("utf-16-le")) // 2
         try:
             for item in context.user_data.get("pending_broadcast_entities", []):
                 if not isinstance(item, dict):
                     continue
                 shifted = dict(item)
-                shifted["offset"] = int(shifted.get("offset", 0)) + prefix_utf16_len
+                shifted["offset"] = int(shifted.get("offset", 0)) + preview_shift
                 entity = MessageEntity.de_json(shifted, context.bot)
                 if entity:
                     preview_entities.append(entity)
@@ -5580,26 +5577,22 @@ async def callback_handler(update, context):
             try:
                 if not channel_id:
                     raise ValueError("لم يتم ضبط قناة النشر")
-                source_chat_id = context.user_data.get("pending_broadcast_source_chat_id")
-                source_message_id = context.user_data.get("pending_broadcast_source_message_id")
-                if source_chat_id and source_message_id:
-                    # Copy the original Telegram message instead of rebuilding it
-                    # from text/entities; this preserves custom (premium) emojis.
-                    await context.bot.copy_message(
-                        chat_id=channel_id,
-                        from_chat_id=source_chat_id,
-                        message_id=source_message_id,
-                        reply_markup=keyboard,
-                    )
-                else:
-                    kwargs = {"entities": [
-                        MessageEntity.de_json(item, context.bot)
-                        for item in raw_entities
-                    ]} if raw_entities else {}
-                    await context.bot.send_message(
-                        chat_id=channel_id, text=broadcast_text,
-                        reply_markup=keyboard, **kwargs
-                    )
+                # Send the original text with its original Telegram entities.
+                # This explicitly preserves custom_emoji_id instead of relying
+                # on copy_message behavior for messages received by the bot.
+                channel_entities = []
+                for item in raw_entities:
+                    if not isinstance(item, dict):
+                        continue
+                    entity = MessageEntity.de_json(dict(item), context.bot)
+                    if entity:
+                        channel_entities.append(entity)
+                await context.bot.send_message(
+                    chat_id=channel_id,
+                    text=broadcast_text,
+                    entities=channel_entities or None,
+                    reply_markup=keyboard,
+                )
                 sent += 1
             except Exception as exc:
                 failed += 1
@@ -7030,10 +7023,7 @@ async def text_handler(update, context):
             context.user_data["pending_broadcast_entities"] = [
                 entity.to_dict() for entity in (message.entities or [])
             ]
-            # Keep the original Telegram message as the source so copy_message
-            # preserves premium/custom emoji entities exactly in channel posts.
-            context.user_data["pending_broadcast_source_chat_id"] = message.chat_id
-            context.user_data["pending_broadcast_source_message_id"] = message.message_id
+            # Preserve the original Telegram entities, including custom_emoji_id.
             context.user_data["admin_step"] = "notify_broadcast_buttons"
             await message.reply_text(
                 "✅ حفظت نص الإشعار.\n\n"
