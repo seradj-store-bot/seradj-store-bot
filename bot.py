@@ -5454,7 +5454,11 @@ async def callback_handler(update, context):
             await query.answer("غير مسموح", show_alert=True); return
         cid = int(data.split(":",1)[1]); approve = data.startswith("feedback_approve:")
         with db() as conn:
-            row = conn.execute("SELECT comment FROM feedback_comments WHERE id=?", (cid,)).fetchone()
+            row = conn.execute("""SELECT f.comment, f.user_id, f.created_at,
+                COALESCE(u.full_name, '') AS full_name,
+                COALESCE(u.username, '') AS username
+                FROM feedback_comments f LEFT JOIN users u ON u.user_id=f.user_id
+                WHERE f.id=?""", (cid,)).fetchone()
             if row:
                 conn.execute("UPDATE feedback_comments SET approved=?, published=? WHERE id=?", (1 if approve else 0, 1 if approve else 0, cid))
         if row and approve:
@@ -5472,11 +5476,21 @@ async def callback_handler(update, context):
     if data == "feedback_review":
         if not is_admin(user_id): await query.answer("غير مسموح", show_alert=True); return
         with db() as conn:
-            rows = conn.execute("SELECT id,comment,created_at FROM feedback_comments WHERE approved=0 ORDER BY id DESC LIMIT 30").fetchall()
+            rows = conn.execute("""SELECT f.id, f.comment, f.created_at, f.user_id,
+                COALESCE(u.full_name, '') AS full_name,
+                COALESCE(u.username, '') AS username
+                FROM feedback_comments f LEFT JOIN users u ON u.user_id=f.user_id
+                WHERE f.approved=0 ORDER BY f.id DESC LIMIT 30""").fetchall()
         if not rows:
             await query.edit_message_text("لا توجد تعليقات تنتظر المراجعة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]])); return
         for row in rows:
-            await query.message.reply_text("💬 تعليق للمراجعة (مجهول):\n\n" + row['comment'] + "\n\n" + str(row['created_at']), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر مجهول", callback_data=f"feedback_approve:{row['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{row['id']}")]]))
+            sender_name = row['full_name'] or "غير متوفر"
+            sender_username = ("@" + row['username'].lstrip('@')) if row['username'] else "لا يوجد"
+            admin_details = (f"👤 صاحب الرأي: {sender_name}\n"
+                             f"🔗 username: {sender_username}\n"
+                             f"🆔 Telegram ID: {row['user_id']}\n"
+                             f"📅 التاريخ: {row['created_at']}\n\n")
+            await query.message.reply_text("💬 رأي جديد (معلومات المرسل للإدارة فقط):\n" + admin_details + row['comment'], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر دون هوية", callback_data=f"feedback_approve:{row['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{row['id']}")]]))
         return
 
     # اختيار وجهة الإشعار الجماعي
@@ -5577,22 +5591,28 @@ async def callback_handler(update, context):
             try:
                 if not channel_id:
                     raise ValueError("لم يتم ضبط قناة النشر")
-                # Send the original text with its original Telegram entities.
-                # This explicitly preserves custom_emoji_id instead of relying
-                # on copy_message behavior for messages received by the bot.
-                channel_entities = []
-                for item in raw_entities:
-                    if not isinstance(item, dict):
-                        continue
-                    entity = MessageEntity.de_json(dict(item), context.bot)
-                    if entity:
-                        channel_entities.append(entity)
-                await context.bot.send_message(
-                    chat_id=channel_id,
-                    text=broadcast_text,
-                    entities=channel_entities or None,
-                    reply_markup=keyboard,
-                )
+                source_chat_id = context.user_data.get("pending_broadcast_source_chat_id")
+                source_message_id = context.user_data.get("pending_broadcast_source_message_id")
+                if source_chat_id is not None and source_message_id is not None:
+                    # Telegram copies the original message server-side, preserving
+                    # custom emoji entities, formatting and their exact offsets.
+                    await context.bot.copy_message(
+                        chat_id=channel_id,
+                        from_chat_id=source_chat_id,
+                        message_id=source_message_id,
+                        reply_markup=keyboard,
+                    )
+                else:
+                    # Safe fallback for broadcasts created before source tracking.
+                    channel_entities = [
+                        MessageEntity.de_json(dict(item), context.bot)
+                        for item in raw_entities if isinstance(item, dict)
+                    ]
+                    await context.bot.send_message(
+                        chat_id=channel_id, text=broadcast_text,
+                        entities=[e for e in channel_entities if e] or None,
+                        reply_markup=keyboard,
+                    )
                 sent += 1
             except Exception as exc:
                 failed += 1
@@ -5741,7 +5761,17 @@ async def text_handler(update, context):
             conn.execute("INSERT INTO feedback_comments(user_id,comment,created_at,approved,published) VALUES(?,?,?,0,0)", (update.effective_user.id, text, now_text()))
             cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         try:
-            await context.bot.send_message(chat_id=ADMIN_ID, text="💬 رأي جديد ينتظر الموافقة (هوية المشترك غير معروضة):\n\n" + text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر مجهول", callback_data=f"feedback_approve:{cid}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{cid}")]]))
+            sender = update.effective_user
+            sender_name = sender.full_name or "غير متوفر"
+            sender_username = ("@" + sender.username) if sender.username else "لا يوجد"
+            admin_text = (f"💬 رأي جديد ينتظر الموافقة\n\n"
+                          f"👤 صاحب الرأي: {sender_name}\n"
+                          f"🔗 username: {sender_username}\n"
+                          f"🆔 Telegram ID: {sender.id}\n"
+                          f"📅 التاريخ: {now_text()}\n\n"
+                          f"📝 الرأي:\n{text}\n\n"
+                          f"ملاحظة: هذه المعلومات تظهر للإدارة فقط، ولن تُنشر مع الرأي.")
+            await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر دون هوية", callback_data=f"feedback_approve:{cid}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{cid}")]]))
         except Exception:
             logger.exception("تعذر إرسال التعليق للإدارة")
         await message.reply_text("✅ وصل رأيك للإدارة. لن يظهر للناس إلا بعد الموافقة، وسيُنشر بدون اسم أو صورة أو اسم مستخدم.")
@@ -7019,11 +7049,15 @@ async def text_handler(update, context):
             return
 
         if step == "notify_broadcast_message":
-            context.user_data["pending_broadcast_text"] = text
+            # Keep the exact original Telegram message (including UTF-16 entity offsets).
+            original_text = message.text if message.text is not None else text
+            context.user_data["pending_broadcast_text"] = original_text
             context.user_data["pending_broadcast_entities"] = [
                 entity.to_dict() for entity in (message.entities or [])
             ]
-            # Preserve the original Telegram entities, including custom_emoji_id.
+            context.user_data["pending_broadcast_source_chat_id"] = message.chat_id
+            context.user_data["pending_broadcast_source_message_id"] = message.message_id
+            # The channel will receive a Telegram-side copy of this exact message.
             context.user_data["admin_step"] = "notify_broadcast_buttons"
             await message.reply_text(
                 "✅ حفظت نص الإشعار.\n\n"
@@ -7729,11 +7763,21 @@ async def text_handler(update, context):
             return
         if text == "💬 مراجعة الآراء":
             with db() as conn:
-                rows = conn.execute("SELECT id,comment,created_at FROM feedback_comments WHERE approved=0 ORDER BY id DESC LIMIT 30").fetchall()
+                rows = conn.execute("""SELECT f.id, f.comment, f.created_at, f.user_id,
+                COALESCE(u.full_name, '') AS full_name,
+                COALESCE(u.username, '') AS username
+                FROM feedback_comments f LEFT JOIN users u ON u.user_id=f.user_id
+                WHERE f.approved=0 ORDER BY f.id DESC LIMIT 30""").fetchall()
             if not rows:
                 await message.reply_text("لا توجد تعليقات تنتظر المراجعة.", reply_markup=admin_keyboard()); return
             for row in rows:
-                await message.reply_text("💬 تعليق للمراجعة (مجهول):\n\n" + row['comment'] + "\n\n" + str(row['created_at']), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر مجهول", callback_data=f"feedback_approve:{row['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{row['id']}")]]))
+                sender_name = row['full_name'] or "غير متوفر"
+                sender_username = ("@" + row['username'].lstrip('@')) if row['username'] else "لا يوجد"
+                admin_details = (f"👤 صاحب الرأي: {sender_name}\n"
+                                 f"🔗 username: {sender_username}\n"
+                                 f"🆔 Telegram ID: {row['user_id']}\n"
+                                 f"📅 التاريخ: {row['created_at']}\n\n")
+                await message.reply_text("💬 رأي جديد (معلومات المرسل للإدارة فقط):\n" + admin_details + row['comment'], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر دون هوية", callback_data=f"feedback_approve:{row['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{row['id']}")]]))
             return
 
         if text == "📨 إرسال إشعار":
