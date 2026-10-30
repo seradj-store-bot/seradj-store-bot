@@ -3630,18 +3630,84 @@ async def callback_handler(update, context):
         except Exception: pass
         await query.edit_message_text(f"تمت معالجة طلب متجر النقاط #{redemption_id}.")
         return
+    if data.startswith("game_request_view:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
+        try:
+            req_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("رقم الطلب غير صالح.", show_alert=True); return
+        with db() as conn:
+            row = conn.execute("SELECT gr.*, u.username, u.full_name, u.phone_number, u.created_at AS user_created_at FROM game_requests gr LEFT JOIN users u ON u.user_id=gr.user_id WHERE gr.id=?", (req_id,)).fetchone()
+        if not row:
+            await query.answer("الطلب غير موجود.", show_alert=True); return
+        username = ("@" + row["username"].lstrip("@")) if row["username"] else "غير متوفر"
+        phone = row["phone_number"] or "غير مسجل"
+        name = row["full_name"] or "غير متوفر"
+        status_names = {"pending":"قيد الانتظار", "reviewed":"قيد المراجعة", "added":"تمت الإضافة", "rejected":"مرفوض"}
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("👀 قيد المراجعة", callback_data=f"game_request_status:{req_id}:reviewed"), InlineKeyboardButton("✅ تمت الإضافة", callback_data=f"game_request_status:{req_id}:added")],
+            [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"game_request_status:{req_id}:rejected")],
+            [InlineKeyboardButton("🔄 تحديث القائمة", callback_data="game_requests_list")],
+        ])
+        text_out = (f"📬 تفاصيل طلب اللعبة/التطبيق #{req_id}\n\n"
+                    f"🎮 الطلب: {row['request_text']}\n"
+                    f"👤 اسم المشترك: {name}\n"
+                    f"🔗 اسم المستخدم: {username}\n"
+                    f"🆔 Telegram ID: {row['user_id']}\n"
+                    f"📱 رقم الهاتف: {phone}\n"
+                    f"📅 تاريخ الطلب: {row['created_at'] or 'غير متوفر'}\n"
+                    f"📅 تاريخ التسجيل: {row['user_created_at'] or 'غير متوفر'}\n"
+                    f"📌 الحالة: {status_names.get(row['status'], row['status'])}")
+        await query.edit_message_text(text_out, reply_markup=keyboard)
+        return
+
+    if data == "game_requests_list":
+        if not is_admin(user_id):
+            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
+        with db() as conn:
+            rows = conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT 30").fetchall()
+        if not rows:
+            await query.edit_message_text("📬 لا توجد طلبات ألعاب أو تطبيقات."); return
+        buttons = [[InlineKeyboardButton(f"#{r['id']} {r['request_text'][:32]} ({r['status']})", callback_data=f"game_request_view:{r['id']}")] for r in rows]
+        await query.edit_message_text("📬 اختر طلبًا لعرض تفاصيله ومعلومات المشترك:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
     if data.startswith("game_request_status:"):
         if not is_admin(user_id):
             await query.answer("⛔ غير مسموح لك.", show_alert=True); return
-        _, req_id, status = data.split(":", 2); req_id=int(req_id)
-        if status not in ("reviewed", "added", "rejected"): return
+        try:
+            _, req_id, status = data.split(":", 2); req_id = int(req_id)
+        except (ValueError, IndexError):
+            await query.answer("بيانات الطلب غير صالحة.", show_alert=True); return
+        if status not in ("reviewed", "added", "rejected"):
+            await query.answer("حالة غير صالحة.", show_alert=True); return
         with db() as conn:
-            req=conn.execute("SELECT * FROM game_requests WHERE id=?",(req_id,)).fetchone()
-            if not req: await query.answer("الطلب غير موجود.", show_alert=True); return
-            conn.execute("UPDATE game_requests SET status=? WHERE id=?",(status,req_id))
-        await query.edit_message_text(f"تم تحديث حالة طلب اللعبة #{req_id} إلى {status}.")
-        try: await context.bot.send_message(req['user_id'], f"📬 تحديث طلب اللعبة #{req_id}: {status}")
-        except Exception: pass
+            req = conn.execute("SELECT gr.*, u.username, u.full_name, u.phone_number, u.created_at AS user_created_at FROM game_requests gr LEFT JOIN users u ON u.user_id=gr.user_id WHERE gr.id=?", (req_id,)).fetchone()
+            if not req:
+                await query.answer("الطلب غير موجود.", show_alert=True); return
+            conn.execute("UPDATE game_requests SET status=? WHERE id=?", (status, req_id))
+        status_names = {"reviewed":"قيد المراجعة", "added":"تمت الإضافة", "rejected":"مرفوض"}
+        username = ("@" + req["username"].lstrip("@")) if req["username"] else "غير متوفر"
+        details = (f"📬 تم تحديث طلب اللعبة/التطبيق #{req_id}\n\n"
+                   f"🎮 الطلب: {req['request_text']}\n"
+                   f"👤 اسم المشترك: {req['full_name'] or 'غير متوفر'}\n"
+                   f"🔗 اسم المستخدم: {username}\n"
+                   f"🆔 Telegram ID: {req['user_id']}\n"
+                   f"📱 رقم الهاتف: {req['phone_number'] or 'غير مسجل'}\n"
+                   f"📅 تاريخ الطلب: {req['created_at'] or 'غير متوفر'}\n"
+                   f"📌 الحالة الجديدة: {status_names[status]}")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("👀 قيد المراجعة", callback_data=f"game_request_status:{req_id}:reviewed"), InlineKeyboardButton("✅ تمت الإضافة", callback_data=f"game_request_status:{req_id}:added")],
+            [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"game_request_status:{req_id}:rejected")],
+            [InlineKeyboardButton("📬 رجوع إلى طلبات الألعاب", callback_data="game_requests_list")],
+        ])
+        await query.edit_message_text(details, reply_markup=keyboard)
+        customer_status = {"reviewed":"طلبك قيد المراجعة 👀", "added":"خبر مفرح! تمت إضافة اللعبة/التطبيق الذي اقترحته ✅🎮", "rejected":"نعتذر، لم نتمكن من قبول اقتراح اللعبة/التطبيق حاليًا ❌"}
+        try:
+            await context.bot.send_message(int(req["user_id"]), f"📬 تحديث طلبك #{req_id}\n🎮 {req['request_text']}\n{customer_status[status]}")
+        except Exception:
+            logger.exception("Could not notify customer about game request status")
         return
 
     # Group members can claim a pending order; only the first claim succeeds.
@@ -5413,14 +5479,44 @@ async def callback_handler(update, context):
             await query.message.reply_text("💬 تعليق للمراجعة (مجهول):\n\n" + row['comment'] + "\n\n" + str(row['created_at']), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر مجهول", callback_data=f"feedback_approve:{row['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{row['id']}")]]))
         return
 
+    # اختيار وجهة الإشعار الجماعي
+    elif data.startswith("notify_target:"):
+        if not is_admin(user_id):
+            await query.answer("غير مسموح", show_alert=True); return
+        target = data.split(":", 1)[1]
+        if target not in ("users", "channel", "both"):
+            await query.answer("اختيار غير صالح", show_alert=True); return
+        context.user_data["pending_broadcast_target"] = target
+        context.user_data.pop("admin_step", None)
+        channel_id = get_setting("broadcast_channel_id", "").strip()
+        if target in ("channel", "both") and not channel_id:
+            context.user_data["admin_step"] = "broadcast_channel_id"
+            await query.message.reply_text(
+                "📢 أرسل @username القناة أو ID القناة (مثال: -1001234567890).\\n"
+                "تأكد أن البوت مسؤول في القناة ويملك صلاحية نشر الرسائل."
+            )
+            return
+        await query.message.reply_text(
+            "📨 معاينة الإشعار:\\n\\n" + context.user_data.get("pending_broadcast_text", ""),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ تأكيد الإرسال", callback_data="notify_broadcast_confirm")],
+                [InlineKeyboardButton("❌ إلغاء", callback_data="notify_cancel")]
+            ])
+        )
+        return
+
     # تأكيد إرسال إشعار
     elif data == "notify_broadcast_confirm":
         broadcast_text = context.user_data.get("pending_broadcast_text", "")
         if not broadcast_text:
             await query.answer("ما كاين حتى نص للإرسال", show_alert=True)
             return
+        target = context.user_data.get("pending_broadcast_target", "users")
         with db() as conn:
-            recipients = [r[0] for r in conn.execute("SELECT user_id FROM users").fetchall()]
+            recipients = [int(r[0]) for r in conn.execute(
+                "SELECT user_id FROM users WHERE COALESCE(is_banned,0)=0"
+            ).fetchall()] if target in ("users", "both") else []
+        channel_id = get_setting("broadcast_channel_id", "").strip()
         sent = failed = 0
         failure_details = []
         raw_entities = context.user_data.get("pending_broadcast_entities", [])
@@ -5461,7 +5557,24 @@ async def callback_handler(update, context):
                     reason = f"{type(exc).__name__}: {str(exc)[:180]}"
                 failure_details.append((recipient, reason))
                 logger.warning("Broadcast failed for user_id=%s: %s: %s", recipient, type(exc).__name__, exc)
-        for key in ("pending_broadcast_text", "pending_broadcast_entities", "pending_broadcast_buttons"):
+        if target in ("channel", "both"):
+            try:
+                if not channel_id:
+                    raise ValueError("لم يتم ضبط قناة النشر")
+                kwargs = {"entities": [
+                    MessageEntity.de_json(item, context.bot)
+                    for item in raw_entities
+                ]} if raw_entities else {}
+                await context.bot.send_message(
+                    chat_id=channel_id, text=broadcast_text,
+                    reply_markup=keyboard, **kwargs
+                )
+                sent += 1
+            except Exception as exc:
+                failed += 1
+                failure_details.append(("القناة", f"{type(exc).__name__}: {str(exc)[:180]}"))
+                logger.exception("Channel broadcast failed")
+        for key in ("pending_broadcast_text", "pending_broadcast_entities", "pending_broadcast_buttons", "pending_broadcast_target"):
             context.user_data.pop(key, None)
         context.user_data.pop("admin_step", None)
         summary = f"✅ انتهى إرسال الإشعار.\nوصل إلى: {sent}\nتعذّر الإرسال إلى: {failed}"
@@ -6863,6 +6976,24 @@ async def text_handler(update, context):
             )
             return
 
+        if step == "broadcast_channel_id":
+            channel_id = text.strip()
+            if not (channel_id.startswith("@") or re.fullmatch(r"-100[0-9]+", channel_id)):
+                await message.reply_text("❌ أرسل @username صحيح أو ID يبدأ بـ -100.")
+                return
+            set_setting("broadcast_channel_id", channel_id)
+            context.user_data.pop("admin_step", None)
+            await message.reply_text(
+                "✅ تم حفظ القناة. اختر الآن وجهة الإشعار:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("👥 المشتركين", callback_data="notify_target:users"),
+                     InlineKeyboardButton("📢 القناة", callback_data="notify_target:channel")],
+                    [InlineKeyboardButton("👥 + 📢 معًا", callback_data="notify_target:both")],
+                    [InlineKeyboardButton("❌ إلغاء", callback_data="notify_cancel")]
+                ])
+            )
+            return
+
         if step == "notify_broadcast_message":
             context.user_data["pending_broadcast_text"] = text
             context.user_data["pending_broadcast_entities"] = [
@@ -6978,7 +7109,11 @@ async def text_handler(update, context):
                 for b in buttons
             ]
             preview_rows.append([
-                InlineKeyboardButton("✅ إرسال للجميع", callback_data="notify_broadcast_confirm"),
+                InlineKeyboardButton("👥 المشتركين", callback_data="notify_target:users"),
+                InlineKeyboardButton("📢 القناة", callback_data="notify_target:channel")
+            ])
+            preview_rows.append([
+                InlineKeyboardButton("👥 + 📢 معًا", callback_data="notify_target:both"),
                 InlineKeyboardButton("❌ إلغاء", callback_data="notify_cancel")
             ])
             await message.reply_text(
@@ -7400,12 +7535,12 @@ async def text_handler(update, context):
             await message.reply_text("أرسل العرض بهذا الشكل:\nالاسم | الوصف | تكلفة النقاط | المخزون (-1 لمخزون غير محدود)\nمثال: اشتراك تجريبي | اشتراك رقمي | 200 | 10\nللإلغاء /cancel")
             return
         if text == "📬 طلبات الألعاب":
-            with db() as conn: rows=conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT 30").fetchall()
-            if not rows: await message.reply_text("لا توجد طلبات ألعاب."); return
-            buttons=[]
-            for r in rows:
-                buttons.append([InlineKeyboardButton(f"#{r['id']} {r['request_text'][:35]} ({r['status']})",callback_data=f"game_request_status:{r['id']}:reviewed")])
-            await message.reply_text("📬 طلبات الألعاب والتطبيقات الأخيرة:",reply_markup=InlineKeyboardMarkup(buttons)); return
+            with db() as conn:
+                rows = conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT 30").fetchall()
+            if not rows:
+                await message.reply_text("📬 لا توجد طلبات ألعاب أو تطبيقات."); return
+            buttons = [[InlineKeyboardButton(f"#{r['id']} {r['request_text'][:32]} ({r['status']})", callback_data=f"game_request_view:{r['id']}")] for r in rows]
+            await message.reply_text("📬 اختر طلبًا لعرض تفاصيله ومعلومات المشترك:", reply_markup=InlineKeyboardMarkup(buttons)); return
 
         if text == "📦 إدارة العروض":
             await message.reply_text(
