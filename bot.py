@@ -8,6 +8,8 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import asyncio
+import base64
+from types import SimpleNamespace
 
 from telegram import (
     Update,
@@ -511,6 +513,7 @@ def init_db():
             trader_requested INTEGER DEFAULT 0,
             balance INTEGER DEFAULT 0,
             balance_usd REAL DEFAULT 0,
+            trader_wallet_currency TEXT DEFAULT 'DA',
             points INTEGER DEFAULT 0,
             credit_limit INTEGER DEFAULT 0,
             credit_debt INTEGER DEFAULT 0,
@@ -545,6 +548,7 @@ def init_db():
             price_flexy INTEGER DEFAULT 0,
             price_baridi_trader INTEGER DEFAULT 0,
             price_flexy_trader INTEGER DEFAULT 0,
+            price_usd_trader REAL DEFAULT 0,
             reward_points INTEGER DEFAULT 0,
             android_active INTEGER DEFAULT 1,
             ios_active INTEGER DEFAULT 1,
@@ -712,6 +716,7 @@ def init_db():
                 "credit_debt": "INTEGER DEFAULT 0",
                 "credit_term_days": "INTEGER DEFAULT 0",
                 "credit_due_at": "TEXT DEFAULT ''",
+                "trader_wallet_currency": "TEXT DEFAULT 'DA'",
             },
             "games": {
                 "description": "TEXT DEFAULT ''",
@@ -724,6 +729,7 @@ def init_db():
                 "recharge_method_id": "INTEGER",
                 "price_baridi_trader": "INTEGER DEFAULT 0",
                 "price_flexy_trader": "INTEGER DEFAULT 0",
+                "price_usd_trader": "REAL DEFAULT 0",
                 "reward_points": "INTEGER DEFAULT 0",
                 "android_active": "INTEGER DEFAULT 1",
                 "ios_active": "INTEGER DEFAULT 1",
@@ -970,6 +976,12 @@ def offer_price(offer, method, user_id):
     return int(offer["price_flexy_trader"] if trader else offer["price_flexy"])
 
 
+def trader_wallet_currency(user_id):
+    row = get_user_row(user_id)
+    value = (row["trader_wallet_currency"] if row and "trader_wallet_currency" in row.keys() else "DA")
+    return "USD" if str(value or "DA").upper() == "USD" else "DA"
+
+
 def status_label(status):
     labels = {
         "pending": "⏳ قيد الانتظار",
@@ -1044,6 +1056,8 @@ async def admin_person_card(query, target_id):
         [InlineKeyboardButton("✏️ تعديل رصيد USD", callback_data=f"person_balance_usd_edit:{target_id}")],
     ]
     if row["account_type"] == "trader":
+        wallet_ccy = trader_wallet_currency(target_id)
+        buttons.append([InlineKeyboardButton(f"💱 محفظة التاجر: {wallet_ccy} (تغيير)", callback_data=f"person_wallet_currency:{target_id}")])
         buttons.append([InlineKeyboardButton("💵 منح سلفية للتاجر", callback_data=f"person_loan_grant:{target_id}")])
         buttons.append([InlineKeyboardButton("✏️ تعديل الدين", callback_data=f"person_debtedit:{target_id}")])
         buttons.append([InlineKeyboardButton("🧹 تصفير الدين", callback_data=f"person_debtzero:{target_id}")])
@@ -1097,6 +1111,21 @@ async def is_subscribed(bot, user_id):
         return False
 
 # ====== أوامر البداية ======
+
+class _PrivateStartCallbackQuery:
+    """Adapt a channel-button deep link into a private callback navigation."""
+    def __init__(self, message, user, data):
+        self.message = message
+        self.from_user = user
+        self.data = data
+    async def answer(self, *args, **kwargs):
+        return None
+    async def edit_message_text(self, text, **kwargs):
+        # Never edit the original channel post; send the destination privately.
+        return await self.message.reply_text(text, **kwargs)
+    async def edit_message_reply_markup(self, **kwargs):
+        return await self.message.reply_text("تم فتح القسم المطلوب.")
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1189,6 +1218,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔒 لاستخدام بوت SERADJ STORE، لازم تشترك أولًا في قناتنا ثم تضغط على «تحققت من الاشتراك».",
             reply_markup=subscription_keyboard(),
         )
+        return
+
+    # Buttons published in channels use t.me/<bot>?start=nav_<payload>.
+    # Re-run their callback privately so a click never edits the shared channel post.
+    if payload.startswith("nav_"):
+        try:
+            encoded = payload[4:]
+            padded = encoded + ("=" * (-len(encoded) % 4))
+            nav_data = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+            if not nav_data or len(nav_data.encode("utf-8")) > 64:
+                raise ValueError("invalid navigation payload")
+        except Exception:
+            await update.message.reply_text("❌ رابط الزر غير صالح. افتح المتجر من القائمة الرئيسية.", reply_markup=main_keyboard(user.id))
+            return
+        fake_query = _PrivateStartCallbackQuery(update.message, user, nav_data)
+        fake_update = SimpleNamespace(callback_query=fake_query, effective_user=user, effective_message=update.message)
+        await callback_handler(fake_update, context)
         return
 
     welcome_text = get_setting(
@@ -1496,7 +1542,16 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
 
     # Ask customers whether to use a coupon immediately after selecting an offer (not in the cart).
     coupon_key = f"{game_id}:{offer_id}:{platform or ''}:{price_mode}"
+    # Show the coupon prompt only to customers who actually own at least one
+    # currently valid, unused coupon. Traders and customers without coupons
+    # proceed directly to the offer details.
+    customer_has_coupon = False
     if context is not None and points_enabled(user_id) and price_mode != "usd":
+        try:
+            customer_has_coupon = bool(_valid_coupons(user_id))
+        except Exception:
+            logger.exception("Could not check coupons for user %s", user_id)
+    if context is not None and customer_has_coupon:
         pending = context.user_data.get("pending_offer_coupon") or {}
         selected_coupon = context.user_data.get("offer_coupon") or {}
         selected_matches = selected_coupon.get("key") == coupon_key
@@ -3794,7 +3849,7 @@ async def callback_handler(update, context):
 
     if data.startswith("offer_price_one:"):
         parts = data.split(":")
-        if len(parts) != 3 or parts[2] not in ("price_baridi", "price_flexy", "price_baridi_trader", "price_flexy_trader"):
+        if len(parts) != 3 or parts[2] not in ("price_baridi", "price_flexy", "price_baridi_trader", "price_flexy_trader", "price_usd_trader"):
             await query.answer("اختيار غير صالح.", show_alert=True)
             return
         offer_id, column = int(parts[1]), parts[2]
@@ -3806,7 +3861,7 @@ async def callback_handler(update, context):
         context.user_data["admin_step"] = "edit_single_offer_price"
         context.user_data["pending_offer_id"] = offer_id
         context.user_data["pending_offer_price_column"] = column
-        labels = {"price_baridi":"سعر الزبون عبر BaridiMob/CCP", "price_flexy":"سعر الزبون عبر Flexy", "price_baridi_trader":"سعر التاجر عبر BaridiMob/CCP", "price_flexy_trader":"سعر التاجر عبر Flexy"}
+        labels = {"price_baridi":"سعر الزبون عبر BaridiMob/CCP", "price_flexy":"سعر الزبون عبر Flexy", "price_baridi_trader":"سعر التاجر عبر BaridiMob/CCP", "price_flexy_trader":"سعر التاجر عبر Flexy", "price_usd_trader":"سعر التاجر بالدولار"}
         await query.message.reply_text(f"✏️ {offer['name']}\n{labels[column]} الحالي: {offer['current_price']} DA\nأرسل السعر الجديد فقط. بقية الأسعار لن تتغير.\nللإلغاء أرسل /cancel.")
         return
     if data.startswith("offer_price_all:"):
@@ -3855,6 +3910,18 @@ async def callback_handler(update, context):
             pass
         await admin_person_card(query, target)
         return
+    if data.startswith("person_wallet_currency:"):
+        target = int(data.split(":", 1)[1])
+        with db() as conn:
+            person = conn.execute("SELECT account_type FROM users WHERE user_id=?", (target,)).fetchone()
+            if not person or person["account_type"] != "trader":
+                await query.answer("هذا الحساب ليس تاجرًا.", show_alert=True); return
+            new_ccy = "USD" if trader_wallet_currency(target) == "DA" else "DA"
+            conn.execute("UPDATE users SET trader_wallet_currency=? WHERE user_id=?", (new_ccy, target))
+        await query.answer(f"تم تعيين محفظة التاجر إلى {new_ccy}.", show_alert=True)
+        await admin_person_card(query, target)
+        return
+
     if data.startswith("person_balance_usd_edit:"):
         target = int(data.split(":", 1)[1])
         with db() as conn:
@@ -4741,14 +4808,14 @@ async def callback_handler(update, context):
 
         context.user_data["pending_offer_id"] = offer_id
         with db() as conn:
-            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
+            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, price_usd_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
             custom_methods = conn.execute("SELECT * FROM custom_payment_methods ORDER BY id").fetchall()
             offer_method_states = {int(r["method_id"]): int(r["enabled"] or 0) for r in conn.execute("SELECT method_id, enabled FROM offer_payment_methods WHERE offer_id=?", (offer_id,)).fetchall()}
         price_buttons = [
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else '🚫'} BaridiMob / CCP — {'إيقاف' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:baridi")],
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
             [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
-            [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy_trader")],
+            [InlineKeyboardButton("🏪 التاجر — DA", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — USD", callback_data=f"offer_price_one:{offer_id}:price_usd_trader")],
             [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         if custom_methods:
@@ -4788,14 +4855,14 @@ async def callback_handler(update, context):
         # أعد فتح لوحة أسعار العرض لتحديث أزرار الحالة
         with db() as conn:
             offer = conn.execute("SELECT name FROM offers WHERE id=?", (offer_id,)).fetchone()
-            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
+            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, price_usd_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
             custom_methods = conn.execute("SELECT * FROM custom_payment_methods ORDER BY id").fetchall()
             offer_method_states = {int(r["method_id"]): int(r["enabled"] or 0) for r in conn.execute("SELECT method_id, enabled FROM offer_payment_methods WHERE offer_id=?", (offer_id,)).fetchall()}
         price_buttons = [
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else '🚫'} BaridiMob / CCP — {'إيقاف' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:baridi")],
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
             [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
-            [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy_trader")],
+            [InlineKeyboardButton("🏪 التاجر — DA", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — USD", callback_data=f"offer_price_one:{offer_id}:price_usd_trader")],
             [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         for cm in custom_methods:
@@ -4826,14 +4893,14 @@ async def callback_handler(update, context):
         # Refresh the offer's price/payment controls
         with db() as conn:
             offer = conn.execute("SELECT name FROM offers WHERE id=?", (offer_id,)).fetchone()
-            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
+            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, price_usd_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
             custom_methods = conn.execute("SELECT * FROM custom_payment_methods ORDER BY id").fetchall()
             offer_method_states = {int(r["method_id"]): int(r["enabled"] or 0) for r in conn.execute("SELECT method_id, enabled FROM offer_payment_methods WHERE offer_id=?", (offer_id,)).fetchall()}
         price_buttons = [
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else '🚫'} BaridiMob / CCP — {'إيقاف' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:baridi")],
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
             [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
-            [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy_trader")],
+            [InlineKeyboardButton("🏪 التاجر — DA", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — USD", callback_data=f"offer_price_one:{offer_id}:price_usd_trader")],
             [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         for cm in custom_methods:
@@ -5454,11 +5521,7 @@ async def callback_handler(update, context):
             await query.answer("غير مسموح", show_alert=True); return
         cid = int(data.split(":",1)[1]); approve = data.startswith("feedback_approve:")
         with db() as conn:
-            row = conn.execute("""SELECT f.comment, f.user_id, f.created_at,
-                COALESCE(u.full_name, '') AS full_name,
-                COALESCE(u.username, '') AS username
-                FROM feedback_comments f LEFT JOIN users u ON u.user_id=f.user_id
-                WHERE f.id=?""", (cid,)).fetchone()
+            row = conn.execute("SELECT comment FROM feedback_comments WHERE id=?", (cid,)).fetchone()
             if row:
                 conn.execute("UPDATE feedback_comments SET approved=?, published=? WHERE id=?", (1 if approve else 0, 1 if approve else 0, cid))
         if row and approve:
@@ -5476,21 +5539,11 @@ async def callback_handler(update, context):
     if data == "feedback_review":
         if not is_admin(user_id): await query.answer("غير مسموح", show_alert=True); return
         with db() as conn:
-            rows = conn.execute("""SELECT f.id, f.comment, f.created_at, f.user_id,
-                COALESCE(u.full_name, '') AS full_name,
-                COALESCE(u.username, '') AS username
-                FROM feedback_comments f LEFT JOIN users u ON u.user_id=f.user_id
-                WHERE f.approved=0 ORDER BY f.id DESC LIMIT 30""").fetchall()
+            rows = conn.execute("SELECT id,comment,created_at FROM feedback_comments WHERE approved=0 ORDER BY id DESC LIMIT 30").fetchall()
         if not rows:
             await query.edit_message_text("لا توجد تعليقات تنتظر المراجعة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]])); return
         for row in rows:
-            sender_name = row['full_name'] or "غير متوفر"
-            sender_username = ("@" + row['username'].lstrip('@')) if row['username'] else "لا يوجد"
-            admin_details = (f"👤 صاحب الرأي: {sender_name}\n"
-                             f"🔗 username: {sender_username}\n"
-                             f"🆔 Telegram ID: {row['user_id']}\n"
-                             f"📅 التاريخ: {row['created_at']}\n\n")
-            await query.message.reply_text("💬 رأي جديد (معلومات المرسل للإدارة فقط):\n" + admin_details + row['comment'], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر دون هوية", callback_data=f"feedback_approve:{row['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{row['id']}")]]))
+            await query.message.reply_text("💬 تعليق للمراجعة (مجهول):\n\n" + row['comment'] + "\n\n" + str(row['created_at']), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر مجهول", callback_data=f"feedback_approve:{row['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{row['id']}")]]))
         return
 
     # اختيار وجهة الإشعار الجماعي
@@ -5510,24 +5563,8 @@ async def callback_handler(update, context):
                 "تأكد أن البوت مسؤول في القناة ويملك صلاحية نشر الرسائل."
             )
             return
-        preview_prefix = "📨 معاينة الإشعار:\n\n"
-        preview_body = context.user_data.get("pending_broadcast_text", "")
-        preview_entities = []
-        preview_shift = len(preview_prefix.encode("utf-16-le")) // 2
-        try:
-            for item in context.user_data.get("pending_broadcast_entities", []):
-                if not isinstance(item, dict):
-                    continue
-                shifted = dict(item)
-                shifted["offset"] = int(shifted.get("offset", 0)) + preview_shift
-                entity = MessageEntity.de_json(shifted, context.bot)
-                if entity:
-                    preview_entities.append(entity)
-        except Exception:
-            logger.exception("Could not restore entities for broadcast preview")
         await query.message.reply_text(
-            preview_prefix + preview_body,
-            entities=preview_entities or None,
+            "📨 معاينة الإشعار:\\n\\n" + context.user_data.get("pending_broadcast_text", ""),
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ تأكيد الإرسال", callback_data="notify_broadcast_confirm")],
                 [InlineKeyboardButton("❌ إلغاء", callback_data="notify_cancel")]
@@ -5556,10 +5593,22 @@ async def callback_handler(update, context):
         # Telegram entity offsets use UTF-16 code units, not Python character count.
         prefix_utf16_len = len(prefix.encode("utf-16-le")) // 2
         buttons = context.user_data.get("pending_broadcast_buttons", [])
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(b["text"], **({"url": b["url"]} if "url" in b else {"callback_data": b["callback_data"]}))]
-            for b in buttons
-        ]) if buttons else None
+        # Callback buttons are converted to bot deep links. Telegram opens the bot
+        # privately, then /start dispatches the chosen navigation callback there.
+        bot_username = (await context.bot.get_me()).username
+        keyboard_rows = []
+        for b in buttons:
+            if "url" in b:
+                button = InlineKeyboardButton(b["text"], url=b["url"])
+            else:
+                raw_target = b["callback_data"]
+                encoded_target = base64.urlsafe_b64encode(raw_target.encode("utf-8")).decode("ascii").rstrip("=")
+                start_payload = "nav_" + encoded_target
+                if len(start_payload) > 64:
+                    raise ValueError(f"وجهة الزر طويلة ولا يمكن تحويلها إلى رابط بوت: {raw_target}")
+                button = InlineKeyboardButton(b["text"], url=f"https://t.me/{bot_username}?start={start_payload}")
+            keyboard_rows.append([button])
+        keyboard = InlineKeyboardMarkup(keyboard_rows) if keyboard_rows else None
         for recipient in recipients:
             try:
                 kwargs = {}
@@ -5593,9 +5642,9 @@ async def callback_handler(update, context):
                     raise ValueError("لم يتم ضبط قناة النشر")
                 source_chat_id = context.user_data.get("pending_broadcast_source_chat_id")
                 source_message_id = context.user_data.get("pending_broadcast_source_message_id")
-                if source_chat_id is not None and source_message_id is not None:
-                    # Telegram copies the original message server-side, preserving
-                    # custom emoji entities, formatting and their exact offsets.
+                if source_chat_id and source_message_id:
+                    # Copy the original Telegram message instead of rebuilding it
+                    # from text/entities; this preserves custom (premium) emojis.
                     await context.bot.copy_message(
                         chat_id=channel_id,
                         from_chat_id=source_chat_id,
@@ -5603,15 +5652,13 @@ async def callback_handler(update, context):
                         reply_markup=keyboard,
                     )
                 else:
-                    # Safe fallback for broadcasts created before source tracking.
-                    channel_entities = [
-                        MessageEntity.de_json(dict(item), context.bot)
-                        for item in raw_entities if isinstance(item, dict)
-                    ]
+                    kwargs = {"entities": [
+                        MessageEntity.de_json(item, context.bot)
+                        for item in raw_entities
+                    ]} if raw_entities else {}
                     await context.bot.send_message(
                         chat_id=channel_id, text=broadcast_text,
-                        entities=[e for e in channel_entities if e] or None,
-                        reply_markup=keyboard,
+                        reply_markup=keyboard, **kwargs
                     )
                 sent += 1
             except Exception as exc:
@@ -5761,17 +5808,7 @@ async def text_handler(update, context):
             conn.execute("INSERT INTO feedback_comments(user_id,comment,created_at,approved,published) VALUES(?,?,?,0,0)", (update.effective_user.id, text, now_text()))
             cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         try:
-            sender = update.effective_user
-            sender_name = sender.full_name or "غير متوفر"
-            sender_username = ("@" + sender.username) if sender.username else "لا يوجد"
-            admin_text = (f"💬 رأي جديد ينتظر الموافقة\n\n"
-                          f"👤 صاحب الرأي: {sender_name}\n"
-                          f"🔗 username: {sender_username}\n"
-                          f"🆔 Telegram ID: {sender.id}\n"
-                          f"📅 التاريخ: {now_text()}\n\n"
-                          f"📝 الرأي:\n{text}\n\n"
-                          f"ملاحظة: هذه المعلومات تظهر للإدارة فقط، ولن تُنشر مع الرأي.")
-            await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر دون هوية", callback_data=f"feedback_approve:{cid}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{cid}")]]))
+            await context.bot.send_message(chat_id=ADMIN_ID, text="💬 رأي جديد ينتظر الموافقة (هوية المشترك غير معروضة):\n\n" + text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر مجهول", callback_data=f"feedback_approve:{cid}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{cid}")]]))
         except Exception:
             logger.exception("تعذر إرسال التعليق للإدارة")
         await message.reply_text("✅ وصل رأيك للإدارة. لن يظهر للناس إلا بعد الموافقة، وسيُنشر بدون اسم أو صورة أو اسم مستخدم.")
@@ -6760,7 +6797,7 @@ async def text_handler(update, context):
                 return
             offer_id = context.user_data.get("pending_offer_id")
             column = context.user_data.get("pending_offer_price_column")
-            if column not in ("price_baridi", "price_flexy", "price_baridi_trader", "price_flexy_trader") or not offer_id:
+            if column not in ("price_baridi", "price_flexy", "price_baridi_trader", "price_flexy_trader", "price_usd_trader") or not offer_id:
                 context.user_data.pop("admin_step", None)
                 await message.reply_text("❌ انتهت جلسة تعديل السعر. افتح تعديل سعر العرض من جديد.")
                 return
@@ -7049,15 +7086,14 @@ async def text_handler(update, context):
             return
 
         if step == "notify_broadcast_message":
-            # Keep the exact original Telegram message (including UTF-16 entity offsets).
-            original_text = message.text if message.text is not None else text
-            context.user_data["pending_broadcast_text"] = original_text
+            context.user_data["pending_broadcast_text"] = text
             context.user_data["pending_broadcast_entities"] = [
                 entity.to_dict() for entity in (message.entities or [])
             ]
+            # Keep the original Telegram message as the source so copy_message
+            # preserves premium/custom emoji entities exactly in channel posts.
             context.user_data["pending_broadcast_source_chat_id"] = message.chat_id
             context.user_data["pending_broadcast_source_message_id"] = message.message_id
-            # The channel will receive a Telegram-side copy of this exact message.
             context.user_data["admin_step"] = "notify_broadcast_buttons"
             await message.reply_text(
                 "✅ حفظت نص الإشعار.\n\n"
@@ -7070,7 +7106,7 @@ async def text_handler(update, context):
                 "قسم | اسم الزر | offer:GAME_ID:OFFER_ID (عرض محدد)\n"
                 "قسم | اسم الزر | recharge_select:GAME_ID:METHOD_ID:none (طريقة شحن/سيرفر محدد)\n"
                 "قسم | اسم الزر | freefire أو store أو back_main\n\n"
-                "تقدر تستعمل callback_data لأي زر تنقل موجود في البوت. الحد الأقصى 8 أزرار.\n"
+                "تقدر تستعمل callback_data لأي زر تنقل موجود في البوت؛ الضغط من القناة يفتح الوجهة في الخاص وما يبدلش منشور القناة. الحد الأقصى 8 أزرار.\n"
                 "إذا ما تحتاجش أزرار ابعث: بدون\n"
                 "للإلغاء ابعث /cancel."
             )
@@ -7763,21 +7799,11 @@ async def text_handler(update, context):
             return
         if text == "💬 مراجعة الآراء":
             with db() as conn:
-                rows = conn.execute("""SELECT f.id, f.comment, f.created_at, f.user_id,
-                COALESCE(u.full_name, '') AS full_name,
-                COALESCE(u.username, '') AS username
-                FROM feedback_comments f LEFT JOIN users u ON u.user_id=f.user_id
-                WHERE f.approved=0 ORDER BY f.id DESC LIMIT 30""").fetchall()
+                rows = conn.execute("SELECT id,comment,created_at FROM feedback_comments WHERE approved=0 ORDER BY id DESC LIMIT 30").fetchall()
             if not rows:
                 await message.reply_text("لا توجد تعليقات تنتظر المراجعة.", reply_markup=admin_keyboard()); return
             for row in rows:
-                sender_name = row['full_name'] or "غير متوفر"
-                sender_username = ("@" + row['username'].lstrip('@')) if row['username'] else "لا يوجد"
-                admin_details = (f"👤 صاحب الرأي: {sender_name}\n"
-                                 f"🔗 username: {sender_username}\n"
-                                 f"🆔 Telegram ID: {row['user_id']}\n"
-                                 f"📅 التاريخ: {row['created_at']}\n\n")
-                await message.reply_text("💬 رأي جديد (معلومات المرسل للإدارة فقط):\n" + admin_details + row['comment'], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر دون هوية", callback_data=f"feedback_approve:{row['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{row['id']}")]]))
+                await message.reply_text("💬 تعليق للمراجعة (مجهول):\n\n" + row['comment'] + "\n\n" + str(row['created_at']), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر مجهول", callback_data=f"feedback_approve:{row['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{row['id']}")]]))
             return
 
         if text == "📨 إرسال إشعار":
