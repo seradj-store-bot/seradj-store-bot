@@ -16,6 +16,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     KeyboardButton,
     ForceReply,
 )
@@ -360,7 +361,10 @@ async def set_order_group_command(update, context):
     if context.args[0].lower() == "all":
         with db() as conn:
             conn.execute("INSERT INTO settings(key,value) VALUES('order_group_all',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(chat.id),))
-        await update.effective_message.reply_text("✅ تم ربط هذا القروب بجميع طلبات المتجر الجديدة.")
+        await update.effective_message.reply_text(
+            "✅ تم ربط هذا القروب بجميع طلبات المتجر الجديدة.\nهذا القروب مخصص لاستلام الطلبات والوصول فقط.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
         return
     if not context.args[0].isdigit():
         await update.effective_message.reply_text("الاستعمال: /setordergroup all أو /setordergroup GAME_ID")
@@ -372,7 +376,10 @@ async def set_order_group_command(update, context):
             await update.effective_message.reply_text("❌ ما لقيتش لعبة بهذا الرقم. شوف /ordergames.")
             return
         conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (f"order_group_{game_id}", str(chat.id)))
-    await update.effective_message.reply_text(f"✅ تم ربط {game['name']} بهذا القروب.")
+    await update.effective_message.reply_text(
+        f"✅ تم ربط {game['name']} بهذا القروب.\nهذا القروب مخصص لاستلام الطلبات والوصول فقط.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
 
 async def order_games_command(update, context):
     if not is_admin(update.effective_user.id):
@@ -1206,6 +1213,11 @@ class _PrivateStartCallbackQuery:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # The bot is an order receiver in work groups, not a customer-facing shop UI.
+    # Never publish the persistent customer keyboard in a group.
+    chat = update.effective_chat
+    if chat and chat.type in ("group", "supergroup"):
+        return
     user = update.effective_user
 
     with db() as conn:
@@ -1350,6 +1362,9 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat and chat.type in ("group", "supergroup"):
+        return
     uid = update.effective_user.id if update.effective_user else 0
     task = CART_TIMEOUT_TASKS.pop(uid, None)
     if task and not task.done(): task.cancel()
@@ -6251,6 +6266,13 @@ async def callback_handler(update, context):
 
 async def text_handler(update, context):
     message = update.effective_message
+    chat = update.effective_chat
+    # Work groups only receive shop orders and shipping receipts. Do not show
+    # customer keyboards or answer normal staff conversation with the shop fallback.
+    if chat and chat.type in ("group", "supergroup"):
+        return
+    if not update.effective_user or not message:
+        return
     user_id = update.effective_user.id
     text = (message.text or "").strip()
     if context.user_data.pop("feedback_waiting", False):
