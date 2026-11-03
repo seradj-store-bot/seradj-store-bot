@@ -3232,8 +3232,12 @@ async def callback_handler(update, context):
     if not is_admin(user_id) and not store_is_open():
         await query.answer(store_closed_notice(), show_alert=True)
         return
-    # Coupon callbacks answer themselves so alerts/errors can be shown exactly once.
-    if not data.startswith(("coupon_", "cart_coupon_", "offer_coupon_")):
+    # Defer acknowledgement for work-group order actions: their handlers answer
+    # only after validating/updating the order. A second answer makes Telegram
+    # raise "query is already answered" and interrupts the workflow.
+    group_order_callbacks = ("order_claim:", "order_release:", "order_cancel:", "order_finish:")
+    defer_ack = query.message.chat.type in ("group", "supergroup") and data.startswith(group_order_callbacks)
+    if not defer_ack and not data.startswith(("coupon_", "cart_coupon_", "offer_coupon_")):
         await query.answer()
 
     if data.startswith("cart_add:"):
@@ -3458,26 +3462,40 @@ async def callback_handler(update, context):
         await query.edit_message_text(f"🧪 تم إنشاء الطلب التجريبي #{test_order_id} للعبة {game['name']}، بلا خصم رصيد وبلا شحن حقيقي.")
         return
 
-    # Receipt is optional: ask admin whether to attach a receipt before completion.
+    # Receipt is optional in private admin chat. In work groups, the claimant
+    # completes the order directly; normalize it to the shared status processor.
     if data.startswith("order_finish:"):
         try:
             finish_id = int(data.split(":", 1)[1])
         except (ValueError, IndexError):
             await query.answer("رقم الطلب غير صالح.", show_alert=True)
             return
-        if query.message.chat.type == "private" and not is_admin(user_id):
-            await query.answer("هذا الإجراء خاص بمالك المتجر.", show_alert=True)
-            return
-        if query.message.chat.type != "private":
-            # Preserve the existing claimed-order completion workflow in work groups.
-            pass
-        else:
+        if query.message.chat.type == "private":
+            if not is_admin(user_id):
+                await query.answer("هذا الإجراء خاص بمالك المتجر.", show_alert=True)
+                return
             await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📷 إرفاق وصل الشحن", callback_data=f"order_receipt:{finish_id}")],
-            [InlineKeyboardButton("⏭️ إتمام بدون صورة", callback_data=f"order_finish_now:{finish_id}")],
-            [InlineKeyboardButton("↩️ رجوع", callback_data=f"order_finish_back:{finish_id}")],
+                [InlineKeyboardButton("📷 إرفاق وصل الشحن", callback_data=f"order_receipt:{finish_id}")],
+                [InlineKeyboardButton("⏭️ إتمام بدون صورة", callback_data=f"order_finish_now:{finish_id}")],
+                [InlineKeyboardButton("↩️ رجوع", callback_data=f"order_finish_back:{finish_id}")],
             ]))
             return
+        if query.message.chat.type not in ("group", "supergroup"):
+            await query.answer("هذا الإجراء متاح من قروب العمل فقط.", show_alert=True)
+            return
+        with db() as conn:
+            claimed = conn.execute("SELECT claimed_by, status FROM orders WHERE id=?", (finish_id,)).fetchone()
+        if not claimed:
+            await query.answer("الطلب غير موجود.", show_alert=True)
+            return
+        if int(claimed["claimed_by"] or 0) != user_id:
+            await query.answer("فقط العضو الذي استلم الطلب يمكنه إتمامه.", show_alert=True)
+            return
+        if claimed["status"] in ("completed", "rejected"):
+            await query.answer("تمت معالجة الطلب مسبقًا.", show_alert=True)
+            return
+        group_order_terminal_action = True
+        data = f"status:{finish_id}:completed"
 
     if data.startswith("order_receipt:"):
         try:
@@ -3510,7 +3528,7 @@ async def callback_handler(update, context):
             return
         group_order_terminal_action = True
         data = f"status:{finish_id}:completed"
-    else:
+    elif not group_order_terminal_action:
         group_order_terminal_action = False
 
     # Normalize group-order cancellation before entering the main callback routing chain.
@@ -4321,43 +4339,116 @@ async def callback_handler(update, context):
         return
 
     if data.startswith("deposit_approve:") or data.startswith("deposit_reject:"):
+        # callback_handler acknowledges ordinary callbacks near its entry point.
+        # Do not call query.answer() a second time here: Telegram rejects duplicate
+        # callback answers, which previously caused approval to abort before crediting.
+        if not is_admin(user_id):
+            await query.message.reply_text("⛔ هذا الإجراء خاص بالإدارة.")
+            return
+        # Approval/rejection must be atomic: never mark approved unless the wallet
+        # credit and ledger entry have both succeeded.
         try:
             deposit_id = int(data.split(":", 1)[1])
-        except ValueError:
+        except (ValueError, IndexError):
+            await query.message.reply_text("❌ رقم طلب التعبئة غير صالح.")
             return
+
         approve = data.startswith("deposit_approve:")
-        with db() as conn:
-            dep = conn.execute("SELECT * FROM wallet_deposits WHERE id=?", (deposit_id,)).fetchone()
-            if not dep or dep["status"] != "pending":
-                await query.answer("تمت معالجة هذا الطلب مسبقًا.", show_alert=True)
-                return
-            currency = (dep["currency"] or "DA").upper()
-            is_usd = currency == "USD"
-            amount_usd = float(dep["amount_usd"] or 0)
-            credit = amount_usd if is_usd else int(dep["amount"] or 0)
-            paid = float(dep["paid_amount"] or 0) if "paid_amount" in dep.keys() else 0
-            if paid <= 0:
-                paid = amount_usd if is_usd else (int(round(credit * 1.18)) if "flexy" in str(dep["payment_method"]).lower() else credit)
-            before = after = 0
-            if approve:
-                col = "balance_usd" if is_usd else "balance"
-                row = conn.execute(f"SELECT COALESCE({col},0) AS bal FROM users WHERE user_id=?", (dep["user_id"],)).fetchone()
-                before = float(row["bal"] or 0) if row else 0
-                after = before + credit
-                conn.execute(f"UPDATE users SET {col}=? WHERE user_id=?", (after, dep["user_id"]))
-                conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (dep["user_id"], currency, "تعبئة رصيد", credit, before, after, f"طلب #{deposit_id} عبر {dep['payment_method']} | المدفوع: {paid:g} {currency}", user_id, now_text()))
-            conn.execute("UPDATE wallet_deposits SET status=?,processed_at=? WHERE id=?", ("approved" if approve else "rejected", now_text(), deposit_id))
         try:
+            with db() as conn:
+                # Older production databases may not yet have the paid_amount column.
+                cols = {r["name"] for r in conn.execute("PRAGMA table_info(wallet_deposits)").fetchall()}
+                if "paid_amount" not in cols:
+                    conn.execute("ALTER TABLE wallet_deposits ADD COLUMN paid_amount REAL DEFAULT 0")
+                # Ensure older installations also have the ledger table before approval.
+                conn.execute("""CREATE TABLE IF NOT EXISTS wallet_transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    currency TEXT NOT NULL DEFAULT 'DA',
+                    kind TEXT NOT NULL,
+                    amount REAL NOT NULL DEFAULT 0,
+                    balance_before REAL NOT NULL DEFAULT 0,
+                    balance_after REAL NOT NULL DEFAULT 0,
+                    note TEXT DEFAULT '',
+                    admin_id INTEGER DEFAULT NULL,
+                    created_at TEXT NOT NULL
+                )""")
+
+                dep = conn.execute("SELECT * FROM wallet_deposits WHERE id=?", (deposit_id,)).fetchone()
+                if not dep:
+                    await query.message.reply_text(f"❌ طلب التعبئة #{deposit_id} غير موجود في قاعدة البيانات.")
+                    return
+                if dep["status"] != "pending":
+                    await query.message.reply_text(f"ℹ️ طلب التعبئة #{deposit_id} تمت معالجته مسبقًا: {dep['status']}.")
+                    return
+
+                currency = (dep["currency"] or "DA").upper()
+                is_usd = currency == "USD"
+                credit = float(dep["amount_usd"] or 0) if is_usd else int(dep["amount"] or 0)
+                paid = float(dep["paid_amount"] or 0)
+                if paid <= 0:
+                    paid = credit if is_usd else (int(round(credit * 1.18)) if "flexy" in str(dep["payment_method"]).lower() else credit)
+
+                if approve:
+                    col = "balance_usd" if is_usd else "balance"
+                    user_row = conn.execute(f"SELECT COALESCE({col},0) AS bal FROM users WHERE user_id=?", (dep["user_id"],)).fetchone()
+                    if not user_row:
+                        raise RuntimeError(f"User {dep['user_id']} not found for deposit {deposit_id}")
+                    before = float(user_row["bal"] or 0)
+                    after = before + credit
+                    updated = conn.execute(f"UPDATE users SET {col}=? WHERE user_id=?", (after, dep["user_id"]))
+                    if updated.rowcount != 1:
+                        raise RuntimeError(f"Wallet update failed for user {dep['user_id']} deposit {deposit_id}")
+                    conn.execute("""INSERT INTO wallet_transactions
+                        (user_id,currency,kind,amount,balance_before,balance_after,note,admin_id,created_at)
+                        VALUES(?,?,?,?,?,?,?,?,?)""",
+                        (dep["user_id"], currency, "تعبئة رصيد", credit, before, after,
+                         f"طلب #{deposit_id} عبر {dep['payment_method']} | المدفوع: {paid:g} {currency}", user_id, now_text()))
+                    new_status = "approved"
+                else:
+                    before = after = 0
+                    new_status = "rejected"
+
+                changed = conn.execute("UPDATE wallet_deposits SET status=?,processed_at=? WHERE id=? AND status='pending'",
+                                       (new_status, now_text(), deposit_id))
+                if changed.rowcount != 1:
+                    raise RuntimeError(f"Deposit {deposit_id} status changed concurrently")
+
+            unit = "USD" if is_usd else "DA"
             if approve:
-                unit = "USD" if is_usd else "DA"
-                await context.bot.send_message(dep["user_id"], f"✅ تمت الموافقة على تعبئة #{deposit_id}.\nالمبلغ المدفوع: {paid:g} {unit} عبر {dep['payment_method']}\nالمبلغ المضاف للمحفظة: {credit:g} {unit}\nالرصيد السابق: {before:g} {unit}\nالرصيد الجديد: {after:g} {unit}.")
+                customer_text = (f"✅ تمت الموافقة على تعبئة #{deposit_id}.\n"
+                                 f"المبلغ المدفوع: {paid:g} {unit} عبر {dep['payment_method']}\n"
+                                 f"المبلغ المضاف للمحفظة: {credit:g} {unit}\n"
+                                 f"الرصيد السابق: {before:g} {unit}\nالرصيد الجديد: {after:g} {unit}.")
+                admin_text = (f"✅ تمت الموافقة على تعبئة الرصيد #{deposit_id}\n"
+                              f"المدفوع: {paid:g} {unit} | المضاف: {credit:g} {unit}\n"
+                              f"الرصيد: {before:g} ← {after:g} {unit}\nالطريقة: {dep['payment_method']}\nالزبون: {dep['user_id']}")
             else:
-                await context.bot.send_message(dep["user_id"], f"❌ تم رفض تعبئة الرصيد #{deposit_id}. إذا كان هناك خطأ، تواصل مع الإدارة.")
-        except Exception:
-            logger.exception("تعذر إشعار الزبون بنتيجة التعبئة")
-        unit = "USD" if is_usd else "DA"
-        await query.edit_message_caption(caption=f"{'✅ تمت الموافقة' if approve else '❌ تم الرفض'} على تعبئة الرصيد #{deposit_id}\nالمبلغ المدفوع: {paid:g} {unit}\nالمضاف للمحفظة: {credit:g} {unit}\nالطريقة: {dep['payment_method']}\nالزبون: {dep['user_id']}" , reply_markup=None)
-        return
+                customer_text = f"❌ تم رفض تعبئة الرصيد #{deposit_id}. إذا كان هناك خطأ، تواصل مع الإدارة."
+                admin_text = f"❌ تم رفض تعبئة الرصيد #{deposit_id}\nالطريقة: {dep['payment_method']}\nالزبون: {dep['user_id']}"
+
+            try:
+                await context.bot.send_message(dep["user_id"], customer_text)
+            except Exception:
+                logger.exception("تعذر إشعار صاحب طلب التعبئة %s", deposit_id)
+
+            # Photo messages use caption editing; fall back to a normal reply if editing fails.
+            try:
+                await query.edit_message_caption(caption=admin_text, reply_markup=None)
+            except Exception:
+                logger.exception("تعذر تعديل رسالة طلب التعبئة %s", deposit_id)
+                try:
+                    await query.message.reply_text(admin_text, reply_markup=None)
+                except Exception:
+                    logger.exception("تعذر إرسال نتيجة معالجة التعبئة %s", deposit_id)
+            return
+        except Exception as exc:
+            logger.exception("Deposit %s %s failed", deposit_id, "approval" if approve else "rejection")
+            try:
+                await query.message.reply_text(f"❌ تعذرت معالجة طلب التعبئة #{deposit_id}. لم يتم اعتماد العملية. راجع سجل أخطاء البوت.")
+            except Exception:
+                pass
+            return
 
     if data.startswith("trader_approve:") or data.startswith("trader_reject:"):
         try:
