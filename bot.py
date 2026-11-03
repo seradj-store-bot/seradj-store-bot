@@ -17,6 +17,7 @@ from telegram import (
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
     KeyboardButton,
+    ForceReply,
 )
 
 from telegram.ext import (
@@ -203,6 +204,7 @@ MAIN_MENU = [
 
 ADMIN_MAIN_MENU = [
     ["🛠️ لوحة التحكم"],
+    ["💰 طلبات التعبئة"],
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "🛍️ المتجر", "💰 تعبئة الرصيد"],
     ["📦 طلباتي", "➕ طلب لعبة غير موجودة"],
@@ -212,6 +214,15 @@ ADMIN_MAIN_MENU = [
 
 # لوحة الإدارة الرئيسية: أزرار قليلة وواضحة، وباقي الوظائف داخل أقسامها.
 ADMIN_PANEL_MENU = [
+    ["💰 طلبات التعبئة", "📦 الطلبات والعملاء"],
+    ["👥 المشتركين والتجار", "🛍️ إدارة المتجر"],
+    ["💎 الأسعار والرصيد", "📣 التسويق والتواصل"],
+    ["⚙️ إعدادات البوت", "📊 التقارير والصيانة"],
+    ["🔙 القائمة الرئيسية"],
+]
+
+# Legacy layout retained for compatibility with saved references.
+ADMIN_PANEL_MENU_OLD = [
     ["📦 الطلبات والعملاء", "👥 المشتركين والتجار"],
     ["🛍️ إدارة المتجر", "💎 الأسعار والرصيد"],
     ["📣 التسويق والتواصل", "⚙️ إعدادات البوت"],
@@ -221,8 +232,9 @@ ADMIN_PANEL_MENU = [
 
 ADMIN_SUBMENUS = {
     "📦 الطلبات والعملاء": [
-        ["📋 كل الطلبات", "🧪 الطلب التجريبي"],
-        ["📬 طلبات الألعاب", "💬 مراجعة الآراء"],
+        ["📋 كل الطلبات", "💰 طلبات تعبئة الرصيد"],
+        ["🧪 الطلب التجريبي", "📬 طلبات الألعاب"],
+        ["💬 مراجعة الآراء"],
         ["💬 مراسلة زبون"],
         ["🔙 لوحة الإدارة"],
     ],
@@ -578,7 +590,10 @@ def init_db():
             points_used INTEGER DEFAULT 0,
             platform TEXT DEFAULT '',
             credit_charged INTEGER DEFAULT 0,
-            credit_refunded INTEGER DEFAULT 0
+            credit_refunded INTEGER DEFAULT 0,
+            shipping_receipt_file_id TEXT DEFAULT '',
+            shipping_receipt_by INTEGER DEFAULT NULL,
+            shipping_receipt_at TEXT DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS order_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -871,6 +886,15 @@ def init_db():
         conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('marketing_reminder_text',?)", ("👋 ما زلت ما طلبتش من SERADJ STORE؟ 🛍️\\nتصفح العروض واختار الخدمة اللي تحتاجها!",))
 
         # Safe additive migrations for an existing production database.
+        order_cols = {r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()}
+        for column, definition in {
+            "shipping_receipt_file_id": "TEXT DEFAULT ''",
+            "shipping_receipt_by": "INTEGER DEFAULT NULL",
+            "shipping_receipt_at": "TEXT DEFAULT ''",
+        }.items():
+            if column not in order_cols:
+                conn.execute(f"ALTER TABLE orders ADD COLUMN {column} {definition}")
+
         user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         if "balance_usd" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN balance_usd REAL DEFAULT 0")
@@ -1059,12 +1083,13 @@ async def offer_contact_message(message):
     )
 
 
-async def admin_show_people(message, banned=False):
+async def admin_show_people(message, banned=False, page=0):
+    page=max(0,int(page or 0)); per_page=12
     with db() as conn:
         rows = conn.execute(
             "SELECT user_id, username, full_name, phone_number, is_banned, account_type, balance "
-            "FROM users WHERE COALESCE(is_banned,0)=? ORDER BY user_id DESC LIMIT 30",
-            (1 if banned else 0,),
+            "FROM users WHERE COALESCE(is_banned,0)=? ORDER BY user_id DESC LIMIT ? OFFSET ?",
+            (1 if banned else 0, per_page, page*per_page),
         ).fetchall()
         total = conn.execute("SELECT COUNT(*) FROM users WHERE COALESCE(is_banned,0)=?", (1 if banned else 0,)).fetchone()[0]
     buttons = []
@@ -1076,12 +1101,18 @@ async def admin_show_people(message, banned=False):
             f"{kind} | {label} | {balance} DA | ID:{row['user_id']}"[:60],
             callback_data=f"person_view:{row['user_id']}",
         )])
+    pages=(int(total)+per_page-1)//per_page
+    nav=[]
+    if page>0: nav.append(InlineKeyboardButton("⬅️ السابق",callback_data=f"people_page:{1 if banned else 0}:{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{max(1,pages)}",callback_data="people_page:noop"))
+    if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️",callback_data=f"people_page:{1 if banned else 0}:{page+1}"))
+    buttons.append(nav)
     buttons.append([InlineKeyboardButton("🔎 البحث بالاسم أو ID", callback_data="person_search")])
     buttons.append([InlineKeyboardButton("🚫 المحظورون" if not banned else "👥 المشتركين النشطون",
                                           callback_data="people_banned" if not banned else "people_active")])
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
     title = "🚫 قائمة المحظورين" if banned else "👥 المشتركين النشطون"
-    await message.reply_text(f"{title} — العدد: {total}\n\nكل زر يعرض نوع الحساب والاسم والرصيد وID. اضغط على الشخص لإدارة رصيده ودينه وحظره أو حذف حسابه.\nيعرض هنا آخر 30 حسابًا؛ استعمل البحث للوصول إلى غيرهم.",
+    await message.reply_text(f"{title} — العدد: {total}\nالصفحة {page+1} من {max(1,(int(total)+per_page-1)//per_page)}\nاضغط على الشخص لإدارة حسابه.",
                              reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -2283,6 +2314,28 @@ async def photo_handler(update, context):
     if user and context.user_data.pop("expired_order_checkout", False):
         await message.reply_text("⏰ انتهت مهلة الدفع (15 دقيقة)، ولم يتم تسجيل الطلب. أعد الطلب من المتجر إذا كنت لا تزال ترغب في الشراء.", reply_markup=main_keyboard(user.id))
         return
+    # Work-group shipping receipts must remain available even when the customer store is closed.
+    if user and context.user_data.get("awaiting_order_receipt") and context.user_data.get("order_receipt_group_id"):
+        receipt_order_id = int(context.user_data.get("awaiting_order_receipt"))
+        source_group = int(context.user_data.get("order_receipt_group_id"))
+        if message.chat_id != source_group:
+            await message.reply_text("📷 أرسل الوصل في نفس قروب الطلب الذي بدأت منه العملية.")
+            return
+        with db() as conn:
+            claimed = conn.execute("SELECT claimed_by,status FROM orders WHERE id=?", (receipt_order_id,)).fetchone()
+        if not claimed or not int(claimed["claimed_by"] or 0) or claimed["status"] in ("completed", "rejected"):
+            context.user_data.pop("awaiting_order_receipt", None)
+            context.user_data.pop("order_receipt_group_id", None)
+            await message.reply_text("⛔ لم يعد الطلب مفتوحًا لإرفاق وصل الشحن.")
+            return
+        context.user_data.pop("awaiting_order_receipt", None)
+        context.user_data.pop("order_receipt_group_id", None)
+        context.user_data[f"order_receipt_photo:{receipt_order_id}"] = message.photo[-1].file_id
+        await message.reply_text(
+            f"✅ تم حفظ صورة الوصل للطلب #{receipt_order_id}. اضغط لإتمام الطلب وإرسال الوصل للزبون:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ إتمام وإرسال الوصل", callback_data=f"order_finish_with_receipt:{receipt_order_id}")]])
+        )
+        return
     if user and not is_admin(user.id) and not store_is_open():
         await message.reply_text(store_closed_notice())
         return
@@ -2293,11 +2346,32 @@ async def photo_handler(update, context):
             return
 
     if context.user_data.get("awaiting_order_receipt"):
-        if not user or not is_admin(user.id):
-            context.user_data.pop("awaiting_order_receipt", None)
-            return
-        receipt_order_id = int(context.user_data.pop("awaiting_order_receipt"))
+        if not user:
+            context.user_data.pop("awaiting_order_receipt", None); return
+        receipt_order_id = int(context.user_data.get("awaiting_order_receipt"))
+        source_group = context.user_data.get("order_receipt_group_id")
+        if source_group:
+            if message.chat_id != int(source_group):
+                await message.reply_text("📷 أرسل الوصل في نفس قروب الطلب الذي بدأت منه العملية."); return
+            with db() as conn:
+                claimed = conn.execute("SELECT claimed_by,status FROM orders WHERE id=?", (receipt_order_id,)).fetchone()
+                valid_receipt_order = bool(claimed and int(claimed["claimed_by"] or 0) and claimed["status"] not in ("completed", "rejected"))
+                if valid_receipt_order:
+                    conn.execute("UPDATE orders SET shipping_receipt_file_id=?, shipping_receipt_by=?, shipping_receipt_at=? WHERE id=?",
+                                 (message.photo[-1].file_id, user.id, now_text(), receipt_order_id))
+            if not valid_receipt_order:
+                context.user_data.pop("awaiting_order_receipt", None)
+                context.user_data.pop("order_receipt_group_id", None)
+                await message.reply_text("⛔ الطلب غير مستلم أو تمت معالجته؛ لا يمكن إرفاق وصل له."); return
+        elif not is_admin(user.id):
+            context.user_data.pop("awaiting_order_receipt", None); return
+        context.user_data.pop("awaiting_order_receipt", None)
+        context.user_data.pop("order_receipt_group_id", None)
         context.user_data[f"order_receipt_photo:{receipt_order_id}"] = message.photo[-1].file_id
+        if not source_group:
+            with db() as conn:
+                conn.execute("UPDATE orders SET shipping_receipt_file_id=?, shipping_receipt_by=?, shipping_receipt_at=? WHERE id=?",
+                             (message.photo[-1].file_id, user.id, now_text(), receipt_order_id))
         await message.reply_text(
             f"✅ تم حفظ صورة الوصل للطلب #{receipt_order_id}. اختر إتمام الطلب بالصورة:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ إتمام وإرسال الوصل", callback_data=f"order_finish_with_receipt:{receipt_order_id}")], [InlineKeyboardButton("❌ إلغاء الخطوة", callback_data=f"order_finish_back:{receipt_order_id}")]])
@@ -2655,11 +2729,11 @@ async def show_admin_panel(update, context):
 # اختيار لعبة لإضافة عرض
 # =========================
 
-async def admin_choose_offer_game(query):
+async def admin_choose_offer_game(query, page=0):
+    page=max(0,int(page or 0)); per_page=8
     with db() as conn:
-        games = conn.execute(
-            "SELECT id, name, emoji FROM games ORDER BY id"
-        ).fetchall()
+        total=int(conn.execute("SELECT COUNT(*) FROM games").fetchone()[0])
+        games = conn.execute("SELECT id, name, emoji FROM games ORDER BY id LIMIT ? OFFSET ?", (per_page,page*per_page)).fetchall()
 
     buttons = [
         [
@@ -2672,12 +2746,13 @@ async def admin_choose_offer_game(query):
         for game in games
     ]
 
-    buttons.append([
-        InlineKeyboardButton(
-            "🔙 رجوع",
-            callback_data="adm_home",
-        )
-    ])
+    pages=max(1,(total+per_page-1)//per_page)
+    nav=[]
+    if page>0: nav.append(InlineKeyboardButton("⬅️ السابق",callback_data=f"adm_add_offer:{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{pages}",callback_data="adm_add_offer:noop"))
+    if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️",callback_data=f"adm_add_offer:{page+1}"))
+    if nav: buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 رجوع",callback_data="adm_home")])
 
     await query.edit_message_text(
         "🎮 اختار اللعبة لي حاب تزيدلها عرض:",
@@ -2689,26 +2764,26 @@ async def admin_choose_offer_game(query):
 # إدارة الألعاب
 # =========================
 
-async def admin_games(query):
-    """قائمة مختصرة: اضغط على التطبيق لفتح لوحة التحكم الخاصة به."""
+async def admin_games(query, page=0):
+    """Paginated game/app administration list."""
+    page=max(0, int(page or 0)); per_page=8
     with db() as conn:
-        games = conn.execute("SELECT * FROM games ORDER BY CASE WHEN lower(COALESCE(category,''))='app' THEN 0 ELSE 1 END, name COLLATE NOCASE").fetchall()
-
-    buttons = []
+        total=int(conn.execute("SELECT COUNT(*) FROM games").fetchone()[0])
+        games = conn.execute("SELECT * FROM games ORDER BY CASE WHEN lower(COALESCE(category,''))='app' THEN 0 ELSE 1 END, name COLLATE NOCASE LIMIT ? OFFSET ?", (per_page,page*per_page)).fetchall()
+    pages=max(1,(total+per_page-1)//per_page)
+    if page >= pages: page=pages-1
+    buttons=[]
     for game in games:
-        state = "🟢" if game["active"] else "🔴"
-        buttons.append([InlineKeyboardButton(
-            f"{state} [ID: {game['id']}] {game_button_label(game)}",
-            callback_data=f"game_manage:{game['id']}",
-            **premium_button_kwargs(game['id']),
-        )])
-    buttons.append([InlineKeyboardButton("🔄 تحديث", callback_data="adm_games")])
+        state="🟢" if game["active"] else "🔴"
+        buttons.append([InlineKeyboardButton(f"{state} [ID: {game['id']}] {game_button_label(game)}", callback_data=f"game_manage:{game['id']}", **premium_button_kwargs(game['id']))])
+    nav=[]
+    if page>0: nav.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"adm_games_page:{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="adm_games_page:noop"))
+    if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"adm_games_page:{page+1}"))
+    buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔄 تحديث", callback_data=f"adm_games_page:{page}")])
     buttons.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")])
-    await query.edit_message_text(
-        "🎮 <b>إدارة الألعاب والتطبيقات</b>\n\n"
-        "اضغط على اسم أي لعبة أو تطبيق لفتح خيارات التحكم: التفعيل، الاسم، الأجهزة، طرق الشحن والأسعار، الوصف، ورسالة طلب المعلومات.",
-        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons),
-    )
+    await query.edit_message_text("🎮 <b>إدارة الألعاب والتطبيقات</b>\n\nاضغط على اسم أي لعبة أو تطبيق لفتح خيارات التحكم.\n🟢 مفعّل | 🔴 متوقف", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def admin_game_manage(query, game_id):
@@ -2737,29 +2812,29 @@ async def admin_game_manage(query, game_id):
 # عرض عروض لعبة معينة
 # =========================
 
-async def admin_offers(query, game_id):
+async def admin_offers(query, game_id, page=0):
+    page=max(0,int(page or 0)); per_page=8
     with db() as conn:
-        game = conn.execute("SELECT name, emoji FROM games WHERE id = ?", (game_id,)).fetchone()
-        offers = conn.execute(
-            """SELECT id, name, active FROM offers WHERE game_id = ?
-               ORDER BY CASE WHEN COALESCE(sort_order,0)>0 THEN sort_order ELSE 1000000+id END, id""",
-            (game_id,),
-        ).fetchall()
+        game=conn.execute("SELECT name, emoji FROM games WHERE id=?",(game_id,)).fetchone()
+        total=int(conn.execute("SELECT COUNT(*) FROM offers WHERE game_id=?",(game_id,)).fetchone()[0])
+        offers=conn.execute("SELECT id,name,active FROM offers WHERE game_id=? ORDER BY CASE WHEN COALESCE(sort_order,0)>0 THEN sort_order ELSE 1000000+id END,id LIMIT ? OFFSET ?",(game_id,per_page,page*per_page)).fetchall()
     if not game:
-        await query.edit_message_text("❌ اللعبة غير موجودة.")
-        return
-    buttons = []
+        await query.edit_message_text("❌ اللعبة غير موجودة."); return
+    pages=max(1,(total+per_page-1)//per_page)
+    if page>=pages: page=pages-1
+    buttons=[]
     for offer in offers:
-        state = "🟢" if offer["active"] else "🔴"
-        buttons.append([InlineKeyboardButton(
-            f"{state} {offer['name']}  ·  إدارة العرض",
-            callback_data=f"offer_manage:{offer['id']}"
-        )])
-    buttons.append([InlineKeyboardButton("🔙 اختيار لعبة أخرى", callback_data="adm_offers")])
-    text = f"{game['emoji']} <b>عروض {game['name']}</b>\n\nاختر أي عرض لفتح جميع إعداداته.\n🟢 مفعّل | 🔴 متوقف"
-    if not offers:
-        text += "\n\nما كاين حتى عرض لهذه اللعبة حاليا."
-    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
+        state="🟢" if offer["active"] else "🔴"
+        buttons.append([InlineKeyboardButton(f"{state} {offer['name']} · إدارة العرض",callback_data=f"offer_manage:{offer['id']}")])
+    nav=[]
+    if page>0: nav.append(InlineKeyboardButton("⬅️ السابق",callback_data=f"offers_game_page:{game_id}:{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{pages}",callback_data="offers_game_page:noop"))
+    if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️",callback_data=f"offers_game_page:{game_id}:{page+1}"))
+    buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 اختيار لعبة أخرى",callback_data="adm_offers")])
+    text=f"{game['emoji']} <b>عروض {game['name']}</b>\n\nاختر العرض لفتح إعداداته.\n🟢 مفعّل | 🔴 متوقف\nالعدد: {total}"
+    if not total: text+="\n\nما كاين حتى عرض لهذه اللعبة حاليا."
+    await query.edit_message_text(text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def admin_offer_manage(query, offer_id):
@@ -2790,40 +2865,29 @@ async def admin_offer_manage(query, offer_id):
 # اختيار لعبة لإدارة عروضها
 # =========================
 
-async def admin_choose_manage_game(query):
+async def admin_choose_manage_game(query, page=0):
+    page=max(0,int(page or 0)); per_page=8
     with db() as conn:
-        games = conn.execute(
-            "SELECT id, name, emoji FROM games ORDER BY id"
-        ).fetchall()
+        total=int(conn.execute("SELECT COUNT(*) FROM games").fetchone()[0])
+        games=conn.execute("SELECT id,name,emoji FROM games ORDER BY id LIMIT ? OFFSET ?",(per_page,page*per_page)).fetchall()
+    pages=max(1,(total+per_page-1)//per_page)
+    if page>=pages: page=pages-1
+    buttons=[[InlineKeyboardButton(game_button_label(game),callback_data=f"offers_game:{game['id']}",**premium_button_kwargs(game['id']))] for game in games]
+    nav=[]
+    if page>0: nav.append(InlineKeyboardButton("⬅️ السابق",callback_data=f"adm_offers_page:{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{pages}",callback_data="adm_offers_page:noop"))
+    if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️",callback_data=f"adm_offers_page:{page+1}"))
+    buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 رجوع",callback_data="adm_home")])
+    await query.edit_message_text("📦 اختار اللعبة باش تشوف عروضها وتتحكم فيها:",reply_markup=InlineKeyboardMarkup(buttons))
 
-    buttons = [
-        [
-            InlineKeyboardButton(
-                game_button_label(game),
-                callback_data=f"offers_game:{game['id']}",
-                **premium_button_kwargs(game['id']),
-            )
-        ]
-        for game in games
-    ]
-
-    buttons.append([
-        InlineKeyboardButton(
-            "🔙 رجوع",
-            callback_data="adm_home",
-        )
-    ])
-
-    await query.edit_message_text(
-        "📦 اختار اللعبة باش تشوف عروضها وتتحكم فيها:",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
 
 # =========================
 # عرض جميع الطلبات للإدارة
 # =========================
 
-async def admin_all_orders(query):
+async def admin_all_orders(query, page=0):
+    page=max(0, int(page or 0)); per_page=12
     with db() as conn:
         orders = conn.execute(
             """
@@ -2836,9 +2900,11 @@ async def admin_all_orders(query):
             LEFT JOIN games g ON g.id = o.game_id
             LEFT JOIN offers f ON f.id = o.offer_id
             ORDER BY o.id DESC
-            LIMIT 15
-            """
+            LIMIT ? OFFSET ?
+            """,
+            (per_page, page * per_page),
         ).fetchall()
+        total_orders = int(conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0])
 
     if not orders:
         await query.edit_message_text(
@@ -2859,19 +2925,19 @@ async def admin_all_orders(query):
             )
         ])
 
+    pages=(total_orders + per_page - 1)//per_page
+    nav=[]
+    if page>0: nav.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"adm_orders:{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{max(1,pages)}", callback_data="adm_orders:noop"))
+    if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"adm_orders:{page+1}"))
+    buttons.append(nav)
     buttons.append([
-        InlineKeyboardButton(
-            "🔄 تحديث",
-            callback_data="adm_orders",
-        ),
-        InlineKeyboardButton(
-            "🔙 رجوع",
-            callback_data="adm_home",
-        ),
+        InlineKeyboardButton("🔄 تحديث", callback_data=f"adm_orders:{page}"),
+        InlineKeyboardButton("🔙 رجوع", callback_data="adm_home"),
     ])
 
     await query.edit_message_text(
-        "📋 <b>آخر 15 طلب</b>\n\n"
+        f"📋 <b>طلبات المتجر — {total_orders} طلب</b>\n\n"
         "اختار طلب باش تشوف التفاصيل وتبدل حالته.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -3144,6 +3210,49 @@ async def admin_payment_settings(query):
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
+async def show_pending_deposits(target, page=0, edit=False):
+    """Admin-only paginated queue of pending wallet deposit requests."""
+    if isinstance(page, str):
+        try: page = int(page)
+        except ValueError: page = 0
+    page = max(0, page)
+    per_page = 8
+    with db() as conn:
+        total = int(conn.execute("SELECT COUNT(*) FROM wallet_deposits WHERE status='pending'").fetchone()[0])
+        rows = conn.execute("""SELECT d.id,d.user_id,d.amount,d.amount_usd,d.currency,d.payment_method,d.created_at,
+                                    u.full_name,u.username
+                             FROM wallet_deposits d LEFT JOIN users u ON u.user_id=d.user_id
+                             WHERE d.status='pending' ORDER BY d.id DESC LIMIT ? OFFSET ?""",
+                            (per_page, page * per_page)).fetchall()
+    if total == 0:
+        text = "💰 لا توجد طلبات تعبئة رصيد معلّقة حاليًا."
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 تحديث", callback_data="deposit_queue:0")], [InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]])
+    else:
+        pages = (total + per_page - 1) // per_page
+        if page >= pages:
+            page = pages - 1
+            return await show_pending_deposits(target, page, edit=edit)
+        buttons = []
+        for r in rows:
+            curr = (r["currency"] or "DA").upper()
+            amount = f"{float(r['amount_usd'] or 0):g} USD" if curr == "USD" else f"{int(r['amount'] or 0)} DA"
+            name = r["full_name"] or ("@" + r["username"] if r["username"] else str(r["user_id"]))
+            buttons.append([InlineKeyboardButton(f"#{r['id']} | {name[:18]} | {amount}", callback_data=f"deposit_open:{r['id']}:{page}")])
+        nav=[]
+        if page > 0: nav.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"deposit_queue:{page-1}"))
+        nav.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="deposit_queue:noop"))
+        if page + 1 < pages: nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"deposit_queue:{page+1}"))
+        buttons.append(nav)
+        buttons.append([InlineKeyboardButton("🔄 تحديث", callback_data=f"deposit_queue:{page}"), InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")])
+        text = f"💰 طلبات تعبئة الرصيد المعلّقة\nعدد الطلبات: {total}\nاختر طلبًا لمراجعة الوصل واتخاذ القرار."
+        markup = InlineKeyboardMarkup(buttons)
+    if edit:
+        try: await target.edit_message_text(text, reply_markup=markup)
+        except Exception: await target.message.reply_text(text, reply_markup=markup)
+    else:
+        await target.reply_text(text, reply_markup=markup)
+
+
 # =========================
 # معالجة أزرار لوحة التحكم
 # =========================
@@ -3179,7 +3288,8 @@ async def callback_handler(update, context):
     # Defer acknowledgement for work-group order actions: their handlers answer
     # only after validating/updating the order. A second answer makes Telegram
     # raise "query is already answered" and interrupts the workflow.
-    group_order_callbacks = ("order_claim:", "order_release:", "order_cancel:", "order_finish:")
+    group_order_callbacks = ("order_claim:", "order_release:", "order_cancel:", "order_finish:",
+                            "order_receipt:", "order_finish_now:", "order_finish_with_receipt:")
     defer_ack = query.message.chat.type in ("group", "supergroup") and data.startswith(group_order_callbacks)
     if not defer_ack and not data.startswith(("coupon_", "cart_coupon_", "offer_coupon_")):
         await query.answer()
@@ -3432,25 +3542,49 @@ async def callback_handler(update, context):
         if not claimed:
             await query.answer("الطلب غير موجود.", show_alert=True)
             return
-        if int(claimed["claimed_by"] or 0) != user_id:
-            await query.answer("فقط العضو الذي استلم الطلب يمكنه إتمامه.", show_alert=True)
-            return
         if claimed["status"] in ("completed", "rejected"):
             await query.answer("تمت معالجة الطلب مسبقًا.", show_alert=True)
             return
-        group_order_terminal_action = True
-        data = f"status:{finish_id}:completed"
+        is_claimant = int(claimed["claimed_by"] or 0) == user_id
+        if not is_claimant:
+            # مساعد المجموعة يستطيع فتح خيار إرفاق الوصل فقط؛ لا يستطيع الإتمام دون وصل.
+            await query.answer("يمكنك إرسال وصل الشحن كمساعد. الإتمام بدون وصل متاح لمستلم الطلب فقط.")
+            await query.message.reply_text(
+                f"📷 إذا كنت تساعد في شحن الطلب #{finish_id}، اضغط زر إرسال الوصل الموجود أسفل الطلب الأصلي."
+            )
+            return
+        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📷 إرفاق وصل الشحن", callback_data=f"order_receipt:{finish_id}")],
+            [InlineKeyboardButton("⏭️ إتمام بدون صورة", callback_data=f"order_finish_now:{finish_id}")],
+            [InlineKeyboardButton("🔄 تنازل عن الطلب", callback_data=f"order_release:{finish_id}")],
+        ]))
+        await query.answer("اختر إرفاق الوصل أو إتمام الطلب بدون صورة.")
+        return
 
     if data.startswith("order_receipt:"):
         try:
             receipt_order_id = int(data.split(":", 1)[1])
         except (ValueError, IndexError):
-            return
-        if query.message.chat.type != "private" or not is_admin(user_id):
-            await query.answer("هذا الإجراء خاص بمالك المتجر.", show_alert=True)
-            return
+            await query.answer("رقم الطلب غير صالح.", show_alert=True); return
+        chat_type = query.message.chat.type
+        if chat_type == "private":
+            if not is_admin(user_id):
+                await query.answer("هذا الإجراء خاص بالإدارة.", show_alert=True); return
+        elif chat_type in ("group", "supergroup"):
+            with db() as conn:
+                claimed = conn.execute("SELECT claimed_by,status FROM orders WHERE id=?", (receipt_order_id,)).fetchone()
+            if not claimed or not int(claimed["claimed_by"] or 0) or claimed["status"] in ("completed", "rejected"):
+                await query.answer("لازم يكون الطلب مستلمًا من أحد أعضاء المجموعة قبل إرفاق الوصل.", show_alert=True); return
+            context.user_data["order_receipt_group_id"] = query.message.chat_id
+        else:
+            await query.answer("هذا الإجراء غير متاح هنا.", show_alert=True); return
         context.user_data["awaiting_order_receipt"] = receipt_order_id
-        await query.message.reply_text(f"📷 ابعث صورة وصل الشحن للطلب #{receipt_order_id}.\nللإلغاء أرسل /cancel_receipt.")
+        await query.message.reply_text(
+            f"📷 ابعث صورة وصل الشحن للطلب #{receipt_order_id} كردّ مباشر على هذه الرسالة حتى يستقبلها البوت داخل المجموعة.\nللإلغاء أرسل /cancel_receipt.",
+            reply_markup=ForceReply(selective=True, input_field_placeholder="ردّ بصورة وصل الشحن")
+        )
+        if chat_type in ("group", "supergroup"):
+            await query.answer("بانتظار صورة الوصل.")
         return
 
     if data.startswith("order_finish_back:"):
@@ -3467,9 +3601,20 @@ async def callback_handler(update, context):
 
     if data.startswith("order_finish_now:") or data.startswith("order_finish_with_receipt:"):
         finish_id = int(data.split(":", 1)[1])
-        if query.message.chat.type != "private" or not is_admin(user_id):
-            await query.answer("هذا الإجراء خاص بمالك المتجر.", show_alert=True)
-            return
+        if query.message.chat.type == "private":
+            if not is_admin(user_id):
+                await query.answer("هذا الإجراء خاص بمالك المتجر.", show_alert=True); return
+        elif query.message.chat.type in ("group", "supergroup"):
+            with db() as conn:
+                claimed = conn.execute("SELECT claimed_by,status,shipping_receipt_file_id FROM orders WHERE id=?", (finish_id,)).fetchone()
+            if not claimed or not int(claimed["claimed_by"] or 0) or claimed["status"] in ("completed", "rejected"):
+                await query.answer("الطلب غير مستلم أو تمت معالجته.", show_alert=True); return
+            if data.startswith("order_finish_now:") and int(claimed["claimed_by"] or 0) != user_id:
+                await query.answer("إتمام الطلب بدون وصل متاح فقط للعضو الذي استلمه.", show_alert=True); return
+            if data.startswith("order_finish_with_receipt:") and not (claimed["shipping_receipt_file_id"] or context.user_data.get(f"order_receipt_photo:{finish_id}")):
+                await query.answer("أرسل صورة الوصل أولاً من زر إرسال وصل الشحن.", show_alert=True); return
+        else:
+            await query.answer("هذا الإجراء غير متاح هنا.", show_alert=True); return
         group_order_terminal_action = True
         data = f"status:{finish_id}:completed"
     elif not group_order_terminal_action:
@@ -3787,15 +3932,27 @@ async def callback_handler(update, context):
         await query.edit_message_text(text_out, reply_markup=keyboard)
         return
 
-    if data == "game_requests_list":
+    if data.startswith("game_requests_list"):
         if not is_admin(user_id):
             await query.answer("⛔ غير مسموح لك.", show_alert=True); return
+        if data.endswith(":noop"):
+            return
+        try: page = int(data.split(":",1)[1]) if ":" in data else 0
+        except ValueError: page = 0
+        page=max(0,page); per_page=8
         with db() as conn:
-            rows = conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT 30").fetchall()
+            total=int(conn.execute("SELECT COUNT(*) FROM game_requests").fetchone()[0])
+            rows = conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT ? OFFSET ?", (per_page,page*per_page)).fetchall()
         if not rows:
             await query.edit_message_text("📬 لا توجد طلبات ألعاب أو تطبيقات."); return
+        pages=(total+per_page-1)//per_page
         buttons = [[InlineKeyboardButton(f"#{r['id']} {r['request_text'][:32]} ({r['status']})", callback_data=f"game_request_view:{r['id']}")] for r in rows]
-        await query.edit_message_text("📬 اختر طلبًا لعرض تفاصيله ومعلومات المشترك:", reply_markup=InlineKeyboardMarkup(buttons))
+        nav=[]
+        if page>0: nav.append(InlineKeyboardButton("⬅️ السابق",callback_data=f"game_requests_list:{page-1}"))
+        nav.append(InlineKeyboardButton(f"{page+1}/{pages}",callback_data="game_requests_list:noop"))
+        if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️",callback_data=f"game_requests_list:{page+1}"))
+        buttons.append(nav); buttons.append([InlineKeyboardButton("🔙 لوحة الإدارة",callback_data="adm_home")])
+        await query.edit_message_text(f"📬 اختر طلبًا لعرض التفاصيل — {total} طلب:", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
     if data.startswith("game_request_status:"):
@@ -3854,10 +4011,12 @@ async def callback_handler(update, context):
             check = conn.execute("SELECT claimed_by FROM orders WHERE id=?", (order_id,)).fetchone()
             if not check or int(check["claimed_by"] or 0) != user_id:
                 await query.answer("سبقك عضو آخر واستلم الطلب.", show_alert=True); return
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ إتمام الطلب", callback_data=f"order_finish:{order_id}"),
-            InlineKeyboardButton("❌ إلغاء الطلب", callback_data=f"order_cancel:{order_id}"),
-        ], [InlineKeyboardButton("🔄 تنازل عن الطلب", callback_data=f"order_release:{order_id}")]])
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ إتمام الطلب", callback_data=f"order_finish:{order_id}"),
+             InlineKeyboardButton("❌ إلغاء الطلب", callback_data=f"order_cancel:{order_id}")],
+            [InlineKeyboardButton("📷 إرسال وصل الشحن (للمساعدين)", callback_data=f"order_receipt:{order_id}")],
+            [InlineKeyboardButton("🔄 تنازل عن الطلب", callback_data=f"order_release:{order_id}")],
+        ])
         try: await query.edit_message_reply_markup(reply_markup=keyboard)
         except Exception: pass
         await query.answer("تم استلام الطلب باسمك!")
@@ -3910,7 +4069,8 @@ async def callback_handler(update, context):
                 action_order_id = int(data.split(":")[1])
                 with db() as conn:
                     claimed = conn.execute("SELECT claimed_by FROM orders WHERE id=?", (action_order_id,)).fetchone()
-                group_finish_allowed = bool(claimed and int(claimed["claimed_by"] or 0) == user_id)
+                owns_receipt = bool(context.user_data.get(f"order_receipt_photo:{action_order_id}"))
+                group_finish_allowed = bool(claimed and (int(claimed["claimed_by"] or 0) == user_id or owns_receipt))
             except Exception:
                 group_finish_allowed = False
         if not group_finish_allowed:
@@ -3961,6 +4121,16 @@ async def callback_handler(update, context):
         return
     if data == "people_banned":
         await admin_show_people(query.message, banned=True)
+        return
+    if data.startswith("people_page:"):
+        if not is_admin(user_id):
+            await query.answer("غير مسموح", show_alert=True); return
+        if data.endswith(":noop"):
+            return
+        try: _, banned_flag, page = data.split(":",2); banned_flag=int(banned_flag); page=int(page)
+        except ValueError:
+            await query.answer("صفحة غير صالحة",show_alert=True); return
+        await admin_show_people(query.message, banned=bool(banned_flag), page=page)
         return
     if data == "person_search":
         context.user_data["person_search_wait"] = True
@@ -4282,6 +4452,41 @@ async def callback_handler(update, context):
         await query.edit_message_text(f"💳 تعبئة محفظة الدينار\nالمبلغ الذي سيضاف للمحفظة: {amount} DA\nالمبلغ المطلوب دفعه عبر {method_names[method]}: {paid_amount} DA\n\n{details}\n\n📸 بعد الدفع، أرسل صورة وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
         return
 
+    if data.startswith("deposit_queue:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ هذا القسم خاص بالإدارة.", show_alert=True); return
+        raw_page = data.split(":", 1)[1]
+        if raw_page == "noop":
+            return
+        await show_pending_deposits(query, page=raw_page, edit=True)
+        return
+
+    if data.startswith("deposit_open:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ هذا القسم خاص بالإدارة.", show_alert=True); return
+        try:
+            _, dep_id, page = data.split(":", 2); dep_id=int(dep_id); page=int(page)
+        except (ValueError, IndexError):
+            await query.answer("طلب غير صالح.", show_alert=True); return
+        with db() as conn:
+            dep = conn.execute("SELECT d.*,u.full_name FROM wallet_deposits d LEFT JOIN users u ON u.user_id=d.user_id WHERE d.id=?", (dep_id,)).fetchone()
+        if not dep:
+            await query.answer("طلب التعبئة غير موجود.", show_alert=True); return
+        if dep["status"] != "pending":
+            await query.answer("تمت معالجة هذا الطلب مسبقًا.", show_alert=True); return
+        currency=(dep["currency"] or "DA").upper()
+        amount=f"{float(dep['amount_usd'] or 0):g} USD" if currency=="USD" else f"{int(dep['amount'] or 0)} DA"
+        caption=(f"💰 طلب تعبئة رصيد #{dep_id}\nالمشترك: {dep['full_name'] or dep['user_id']}\nID: {dep['user_id']}\n"
+                 f"المبلغ المطلوب إضافته: {amount}\nطريقة الدفع: {dep['payment_method']}\nالتاريخ: {dep['created_at']}\nالحالة: قيد المراجعة")
+        actions=InlineKeyboardMarkup([[InlineKeyboardButton("✅ قبول التعبئة",callback_data=f"deposit_approve:{dep_id}"),InlineKeyboardButton("❌ رفض",callback_data=f"deposit_reject:{dep_id}")], [InlineKeyboardButton("🔙 قائمة طلبات التعبئة",callback_data=f"deposit_queue:{page}")]])
+        try:
+            await context.bot.send_photo(chat_id=user_id, photo=dep["receipt_file_id"], caption=caption, reply_markup=actions)
+        except Exception:
+            logger.exception("Could not display deposit %s from admin queue", dep_id)
+            await query.message.reply_text(caption, reply_markup=actions)
+        await query.answer("تم فتح طلب التعبئة.")
+        return
+
     if data.startswith("deposit_approve:") or data.startswith("deposit_reject:"):
         # callback_handler acknowledges ordinary callbacks near its entry point.
         # Do not call query.answer() a second time here: Telegram rejects duplicate
@@ -4408,6 +4613,31 @@ async def callback_handler(update, context):
                 pass
             return
 
+    if data.startswith("trader_requests_page:"):
+        if not is_admin(user_id):
+            await query.answer("⛔ هذا القسم خاص بالإدارة.", show_alert=True); return
+        raw=data.split(":",1)[1]
+        if raw == "noop": return
+        try: page=max(0,int(raw))
+        except ValueError: page=0
+        per_page=8
+        with db() as conn:
+            total=int(conn.execute("SELECT COUNT(*) FROM users WHERE trader_requested=1 AND account_type!='trader'").fetchone()[0])
+            rows=conn.execute("SELECT user_id,username,full_name FROM users WHERE trader_requested=1 AND account_type!='trader' ORDER BY user_id DESC LIMIT ? OFFSET ?",(per_page,page*per_page)).fetchall()
+        pages=max(1,(total+per_page-1)//per_page)
+        if page>=pages: page=pages-1
+        buttons=[]
+        for row in rows:
+            label=(row['full_name'] or row['username'] or row['user_id'])
+            buttons.append([InlineKeyboardButton(f"{label} — قبول",callback_data=f"trader_approve:{row['user_id']}"),InlineKeyboardButton("رفض",callback_data=f"trader_reject:{row['user_id']}")])
+        nav=[]
+        if page>0: nav.append(InlineKeyboardButton("⬅️ السابق",callback_data=f"trader_requests_page:{page-1}"))
+        nav.append(InlineKeyboardButton(f"{page+1}/{pages}",callback_data="trader_requests_page:noop"))
+        if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️",callback_data=f"trader_requests_page:{page+1}"))
+        buttons.append(nav); buttons.append([InlineKeyboardButton("🔙 رجوع",callback_data="adm_home")])
+        await query.edit_message_text(f"🏪 طلبات حسابات التجار المعلّقة — {total}",reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
     if data.startswith("trader_approve:") or data.startswith("trader_reject:"):
         try:
             target_id = int(data.split(":", 1)[1])
@@ -4461,15 +4691,30 @@ async def callback_handler(update, context):
         )
 
     # عرض الطلبات
-    elif data == "adm_orders":
-        await admin_all_orders(query)
+    elif data.startswith("adm_orders"):
+        if data.endswith(":noop"):
+            return
+        try: orders_page=int(data.split(":",1)[1]) if ":" in data else 0
+        except ValueError: orders_page=0
+        await admin_all_orders(query, orders_page)
 
-    elif data == "adm_customers":
+    elif data == "adm_customers" or data.startswith("adm_customers_page:"):
+        try: page = int(data.split(":",1)[1]) if ":" in data and not data.endswith(":noop") else 0
+        except ValueError: page = 0
+        if data.endswith(":noop"): return
+        page=max(0,page); per_page=8
         with db() as conn:
-            rows = conn.execute("SELECT u.user_id, u.username, u.full_name, COUNT(o.id) AS order_count, COALESCE(SUM(CASE WHEN o.status != 'rejected' THEN o.price ELSE 0 END), 0) AS total FROM users u JOIN orders o ON o.user_id = u.user_id GROUP BY u.user_id ORDER BY MAX(o.id) DESC LIMIT 50").fetchall()
+            total=int(conn.execute("SELECT COUNT(*) FROM (SELECT user_id FROM orders GROUP BY user_id)").fetchone()[0])
+            rows = conn.execute("SELECT u.user_id, u.username, u.full_name, COUNT(o.id) AS order_count, COALESCE(SUM(CASE WHEN o.status != 'rejected' THEN o.price ELSE 0 END), 0) AS total FROM users u JOIN orders o ON o.user_id = u.user_id GROUP BY u.user_id ORDER BY MAX(o.id) DESC LIMIT ? OFFSET ?",(per_page,page*per_page)).fetchall()
+        pages=max(1,(total+per_page-1)//per_page)
+        if page>=pages: page=pages-1
         buttons = [[InlineKeyboardButton(f"{(r['full_name'] or r['username'] or r['user_id'])} | {r['order_count']} طلب | {r['total']} DA"[:60], callback_data=f"customer_orders:{r['user_id']}")] for r in rows]
-        buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
-        await query.edit_message_text("👤 اختر زبونًا:", reply_markup=InlineKeyboardMarkup(buttons))
+        nav=[]
+        if page>0: nav.append(InlineKeyboardButton("⬅️ السابق",callback_data=f"adm_customers_page:{page-1}"))
+        nav.append(InlineKeyboardButton(f"{page+1}/{pages}",callback_data="adm_customers_page:noop"))
+        if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️",callback_data=f"adm_customers_page:{page+1}"))
+        buttons.append(nav); buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
+        await query.edit_message_text(f"👤 اختر زبونًا — {total} زبون:", reply_markup=InlineKeyboardMarkup(buttons))
 
     # الإحصائيات
     elif data == "adm_stats":
@@ -4594,11 +4839,17 @@ async def callback_handler(update, context):
 
     # إدارة الألعاب
     elif data == "adm_games":
-        await admin_games(query)
+        await admin_games(query, 0)
+    elif data.startswith("adm_games_page:"):
+        raw=data.split(":",1)[1]
+        if raw != "noop": await admin_games(query, int(raw))
 
     # إدارة العروض
     elif data == "adm_offers":
-        await admin_choose_manage_game(query)
+        await admin_choose_manage_game(query, 0)
+    elif data.startswith("adm_offers_page:"):
+        raw=data.split(":",1)[1]
+        if raw != "noop": await admin_choose_manage_game(query, int(raw))
 
     elif data.startswith("offer_manage:"):
         try:
@@ -4661,8 +4912,11 @@ async def callback_handler(update, context):
         await admin_payment_settings(query)
 
     # اختيار لعبة لإضافة عرض
-    elif data == "adm_add_offer":
-        await admin_choose_offer_game(query)
+    elif data.startswith("adm_add_offer"):
+        if data.endswith(":noop"): return
+        try: page=int(data.split(":",1)[1]) if ":" in data else 0
+        except ValueError: page=0
+        await admin_choose_offer_game(query,page)
 
     # تحديد الأجهزة المتاحة للعبة: none -> both -> android -> ios -> none
     elif data.startswith("game_platform:"):
@@ -4865,6 +5119,11 @@ async def callback_handler(update, context):
         await admin_games(query)
 
     # فتح عروض لعبة
+    elif data.startswith("offers_game_page:"):
+        parts=data.split(":")
+        if len(parts)==3 and parts[1].isdigit() and parts[2].isdigit():
+            await admin_offers(query, int(parts[1]), int(parts[2]))
+        return
     elif data.startswith("offers_game:"):
         try:
             game_id = int(data.split(":", 1)[1])
@@ -5251,7 +5510,7 @@ async def callback_handler(update, context):
                 """SELECT o.user_id, o.game_id, o.offer_id, o.player_id, o.payment_method,
                           o.status, o.points_awarded, o.points_used, o.wallet_charged, o.coupon_id, o.coupon_discount,
                           o.wallet_refunded, o.credit_charged, o.credit_refunded, o.price,
-                          o.currency,
+                          o.currency, o.shipping_receipt_file_id,
                           g.name AS game_name, f.name AS offer_name
                    FROM orders o
                    LEFT JOIN games g ON g.id = o.game_id
@@ -5378,7 +5637,7 @@ async def callback_handler(update, context):
                     cta_markup = InlineKeyboardMarkup([
                         [InlineKeyboardButton("🚀 اشحن وانطلق!", url=f"https://t.me/{bot_username}")]
                     ])
-                receipt_file_id = context.user_data.pop(f"order_receipt_photo:{order_id}", None)
+                receipt_file_id = context.user_data.pop(f"order_receipt_photo:{order_id}", None) or order["shipping_receipt_file_id"]
                 if receipt_file_id:
                     await context.bot.send_photo(
                         chat_id=customer_id, photo=receipt_file_id, caption=customer_notice,
@@ -5927,30 +6186,36 @@ async def callback_handler(update, context):
         )
 
     # التنقل داخل المتجر: الرجوع إلى قائمة الألعاب/التطبيقات أو المستوى السابق.
-    elif data in ("back_games", "back_apps"):
-        category = "app" if data == "back_apps" else "game"
+    elif data in ("back_games", "back_apps") or data.startswith("store_list_page:"):
+        if data.startswith("store_list_page:"):
+            _, category, raw_page = data.split(":", 2)
+            if category == "noop": return
+            page = max(0, int(raw_page))
+        else:
+            category = "app" if data == "back_apps" else "game"
+            page = 0
+        per_page = 8
         with db() as conn:
             if category == "app":
-                rows = conn.execute("""
-                    SELECT * FROM games WHERE active=1 AND (
-                        lower(trim(COALESCE(category,'')))='app'
-                        OR lower(trim(name)) IN (
-                            'tiktok','tik tok','snapchat+','snapchat plus','netflix','azar',
-                            'app store','apple store','telegram premium','telegram','spotify',
-                            'youtube premium','youtube','instagram','facebook','discord',
-                            'capcut','chatgpt','canva','shahid','osn+','crunchyroll',
-                            'imo','tinder','truecaller','google play','google play gift card'
-                        )
-                    ) ORDER BY id
-                """).fetchall()
+                where = "(lower(trim(COALESCE(category,'')))='app' OR lower(trim(name)) IN ('tiktok','tik tok','snapchat+','snapchat plus','netflix','azar','app store','apple store','telegram premium','telegram','spotify','youtube premium','youtube','instagram','facebook','discord','capcut','chatgpt','canva','shahid','osn+','crunchyroll','imo','tinder','truecaller','google play','google play gift card'))"
             else:
-                rows = conn.execute("SELECT * FROM games WHERE active=1 AND COALESCE(NULLIF(trim(category),''),'game')='game' ORDER BY id").fetchall()
+                where = "COALESCE(NULLIF(trim(category),''),'game')='game'"
+            total = int(conn.execute(f"SELECT COUNT(*) FROM games WHERE active=1 AND {where}").fetchone()[0])
+            rows = conn.execute(f"SELECT * FROM games WHERE active=1 AND {where} ORDER BY id LIMIT ? OFFSET ?", (per_page, page*per_page)).fetchall()
         if not rows:
             await query.edit_message_text("😕 لا توجد خدمات في هذا القسم حالياً.")
             return
+        pages = max(1, (total + per_page - 1)//per_page)
+        if page >= pages: page = pages - 1
         buttons = [[InlineKeyboardButton(game_button_label(g), callback_data=f"game:{g['id']}", **premium_button_kwargs(g['id']))] for g in rows]
+        nav=[]
+        if page > 0: nav.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"store_list_page:{category}:{page-1}"))
+        nav.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="store_list_page:noop:0"))
+        if page+1 < pages: nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"store_list_page:{category}:{page+1}"))
+        if nav: buttons.append(nav)
         buttons.append([InlineKeyboardButton("🔙 الأقسام", callback_data="back_main")])
-        await query.edit_message_text("🎮 قائمة الألعاب:" if category == "game" else "📱 قائمة التطبيقات:", reply_markup=InlineKeyboardMarkup(buttons))
+        title = "🎮 قائمة الألعاب" if category == "game" else "📱 قائمة التطبيقات"
+        await query.edit_message_text(f"{title} — {total} خدمة", reply_markup=InlineKeyboardMarkup(buttons))
     elif data.startswith("game_back:"):
         parts = data.split(":")
         if len(parts) != 3:
@@ -7834,11 +8099,10 @@ async def text_handler(update, context):
             return
         if text == "📬 طلبات الألعاب":
             with db() as conn:
-                rows = conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT 30").fetchall()
-            if not rows:
+                total = int(conn.execute("SELECT COUNT(*) FROM game_requests").fetchone()[0])
+            if not total:
                 await message.reply_text("📬 لا توجد طلبات ألعاب أو تطبيقات."); return
-            buttons = [[InlineKeyboardButton(f"#{r['id']} {r['request_text'][:32]} ({r['status']})", callback_data=f"game_request_view:{r['id']}")] for r in rows]
-            await message.reply_text("📬 اختر طلبًا لعرض تفاصيله ومعلومات المشترك:", reply_markup=InlineKeyboardMarkup(buttons)); return
+            await message.reply_text("📬 طلبات الألعاب والتطبيقات:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"عرض الطلبات ({total})", callback_data="game_requests_list:0")]])); return
 
         if text == "📦 إدارة العروض":
             await message.reply_text(
@@ -7881,6 +8145,10 @@ async def text_handler(update, context):
 
         if text == "📋 كل الطلبات":
             await message.reply_text("📋 إدارة الطلبات:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض جميع الطلبات", callback_data="adm_orders")], [InlineKeyboardButton("🗑️ حذف جميع الطلبات", callback_data="orders_delete_all")]]))
+            return
+
+        if text in ("💰 طلبات التعبئة", "💰 طلبات تعبئة الرصيد"):
+            await show_pending_deposits(message, page=0)
             return
 
         if text == "📊 الإحصائيات":
@@ -7972,29 +8240,17 @@ async def text_handler(update, context):
 
         if text == "👤 طلبات حسب الزبون":
             with db() as conn:
-                rows = conn.execute("SELECT u.user_id, u.username, u.full_name, COUNT(o.id) AS order_count, COALESCE(SUM(CASE WHEN o.status != 'rejected' THEN o.price ELSE 0 END), 0) AS total FROM users u JOIN orders o ON o.user_id = u.user_id GROUP BY u.user_id ORDER BY MAX(o.id) DESC LIMIT 50").fetchall()
-            if not rows:
-                await message.reply_text("لا توجد طلبات مسجلة.", reply_markup=admin_keyboard())
-                return
-            buttons = []
-            for row in rows:
-                label = f"{row['full_name'] or row['username'] or row['user_id']} | {row['order_count']} طلب | {row['total']} DA"
-                buttons.append([InlineKeyboardButton(label[:60], callback_data=f"customer_orders:{row['user_id']}")])
-            buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
-            await message.reply_text("👤 الطلبات مجمعة حسب كل زبون (المرفوضة مستثناة من الإجمالي):", reply_markup=InlineKeyboardMarkup(buttons))
-            return
+                total=int(conn.execute("SELECT COUNT(*) FROM (SELECT user_id FROM orders GROUP BY user_id)").fetchone()[0])
+            if not total:
+                await message.reply_text("لا توجد طلبات مسجلة.", reply_markup=admin_keyboard()); return
+            await message.reply_text("👤 الطلبات مجمعة حسب الزبون:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"عرض الزبائن ({total})",callback_data="adm_customers")]])); return
 
         if text == "👥 إدارة التجار":
             with db() as conn:
-                rows = conn.execute("SELECT user_id, username, full_name FROM users WHERE trader_requested = 1 AND account_type != 'trader' ORDER BY user_id DESC LIMIT 30").fetchall()
-            if not rows:
-                await message.reply_text("لا توجد طلبات تاجر معلّقة.", reply_markup=admin_keyboard())
-                return
-            buttons = []
-            for row in rows:
-                buttons.append([InlineKeyboardButton(f"{row['full_name'] or row['username'] or row['user_id']} — قبول", callback_data=f"trader_approve:{row['user_id']}"), InlineKeyboardButton("رفض", callback_data=f"trader_reject:{row['user_id']}")])
-            await message.reply_text("🏪 طلبات حسابات التجار:", reply_markup=InlineKeyboardMarkup(buttons))
-            return
+                total=int(conn.execute("SELECT COUNT(*) FROM users WHERE trader_requested=1 AND account_type!='trader'").fetchone()[0])
+            if not total:
+                await message.reply_text("لا توجد طلبات تاجر معلّقة.", reply_markup=admin_keyboard()); return
+            await message.reply_text("🏪 طلبات حسابات التجار:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"عرض الطلبات المعلّقة ({total})",callback_data="trader_requests_page:0")]])); return
 
         if text == "⏰ إشعار مجدول":
             context.user_data["admin_step"] = "scheduled_broadcast_message"
