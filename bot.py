@@ -881,6 +881,23 @@ def init_db():
             conn.execute("ALTER TABLE wallet_deposits ADD COLUMN currency TEXT DEFAULT 'DA'")
         if "paid_amount" not in deposit_cols:
             conn.execute("ALTER TABLE wallet_deposits ADD COLUMN paid_amount REAL DEFAULT 0")
+        # Migrate older wallet ledgers in-place. CREATE TABLE IF NOT EXISTS does not
+        # add columns to an existing production table, so add every field used by
+        # current deposit/admin history queries without deleting existing records.
+        wallet_tx_cols = {r["name"] for r in conn.execute("PRAGMA table_info(wallet_transactions)").fetchall()}
+        wallet_tx_migrations = {
+            "currency": "TEXT NOT NULL DEFAULT 'DA'",
+            "kind": "TEXT NOT NULL DEFAULT 'عملية قديمة'",
+            "amount": "REAL NOT NULL DEFAULT 0",
+            "balance_before": "REAL NOT NULL DEFAULT 0",
+            "balance_after": "REAL NOT NULL DEFAULT 0",
+            "note": "TEXT DEFAULT ''",
+            "admin_id": "INTEGER DEFAULT NULL",
+            "created_at": "TEXT NOT NULL DEFAULT ''",
+        }
+        for column, definition in wallet_tx_migrations.items():
+            if column not in wallet_tx_cols:
+                conn.execute(f"ALTER TABLE wallet_transactions ADD COLUMN {column} {definition}")
 
 
 def get_setting(key, default=""):
@@ -4300,6 +4317,20 @@ async def callback_handler(update, context):
                     admin_id INTEGER DEFAULT NULL,
                     created_at TEXT NOT NULL
                 )""")
+                ledger_cols = {r["name"] for r in conn.execute("PRAGMA table_info(wallet_transactions)").fetchall()}
+                ledger_migrations = {
+                    "currency": "TEXT NOT NULL DEFAULT 'DA'",
+                    "kind": "TEXT NOT NULL DEFAULT 'عملية قديمة'",
+                    "amount": "REAL NOT NULL DEFAULT 0",
+                    "balance_before": "REAL NOT NULL DEFAULT 0",
+                    "balance_after": "REAL NOT NULL DEFAULT 0",
+                    "note": "TEXT DEFAULT ''",
+                    "admin_id": "INTEGER DEFAULT NULL",
+                    "created_at": "TEXT NOT NULL DEFAULT ''",
+                }
+                for column, definition in ledger_migrations.items():
+                    if column not in ledger_cols:
+                        conn.execute(f"ALTER TABLE wallet_transactions ADD COLUMN {column} {definition}")
 
                 dep = conn.execute("SELECT * FROM wallet_deposits WHERE id=?", (deposit_id,)).fetchone()
                 if not dep:
