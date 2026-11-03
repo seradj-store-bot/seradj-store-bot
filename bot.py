@@ -1492,36 +1492,15 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None, pric
             price = trader_offer_price(offer, user_id)
             label = f"{price:.2f} USD" if wallet_ccy == "USD" else f"{price} DA"
             buttons.append([InlineKeyboardButton(f"{offer['name']} | 🏪 {label}", callback_data=f"offer:{game_id}:{offer['id']}:{platform or 'none'}:{price_mode}")])
-    # لا نعرض أسعارًا مختلطة عند الدخول؛ يختار الزبون طريقة العرض أولاً.
-    elif price_mode != "choose":
-        for offer in offers:
-            if price_mode == "usd":
-                try:
-                    rate = Decimal(get_setting("usd_exchange_rate", "254"))
-                    if not rate.is_finite() or rate <= 0: rate = Decimal("254")
-                except Exception:
-                    rate = Decimal("254")
-                usd_price = (Decimal(offer_price(offer, "baridi", user_id)) / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                price_label = f"💵 {usd_price} USD"
-            elif price_mode == "flexy":
-                price_label = f"📱 {offer_price(offer, 'flexy', user_id)} DA"
-            elif price_mode == "baridi":
-                price_label = f"💳 {offer_price(offer, 'baridi', user_id)} DA"
-            else:
-                price_label = f"💳 {offer_price(offer, 'baridi', user_id)} DA | 📱 {offer_price(offer, 'flexy', user_id)} DA"
-            buttons.append([InlineKeyboardButton(f"{offer['name']} | {price_label}", callback_data=f"offer:{game_id}:{offer['id']}:{platform or 'none'}:{price_mode}")])
-
-    # Retail payment filters are never shown to traders.
-    price_buttons = [] if is_trader(user_id) else [
-        InlineKeyboardButton("💳 أسعار بريدي موب و CCP", callback_data=f"price_view:{game_id}:baridi:{platform or 'none'}:{context_method_id}"),
-        InlineKeyboardButton("📱 أسعار الفليكسي", callback_data=f"price_view:{game_id}:flexy:{platform or 'none'}:{context_method_id}"),
-    ]
-    # USD price viewing is independent from whether USD payment is currently enabled.
+    # Customers see one price only: the DA wallet price. Payment-provider prices
+    # are shown only in the wallet top-up flow, never in the shop catalogue.
     if not is_trader(user_id):
-        price_buttons.append(InlineKeyboardButton("💵 أسعار USD", callback_data=f"price_view:{game_id}:usd:{platform or 'none'}:{context_method_id}"))
-        buttons.insert(0, [price_buttons[1]])
-        buttons.insert(0, [price_buttons[0]])
-        buttons.insert(2, [price_buttons[2]])
+        for offer in offers:
+            price = offer_price(offer, "baridi", user_id)
+            buttons.append([InlineKeyboardButton(
+                f"{offer['name']} | 💰 {price} DA",
+                callback_data=f"offer:{game_id}:{offer['id']}:{platform or 'none'}:wallet_da",
+            )])
 
     # TikTok: let the customer request a custom coin quantity in addition to preset offers.
     if (game["name"] or "").strip().lower() == "tiktok":
@@ -1625,78 +1604,29 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
         await query.edit_message_text(f"🛍️ تفاصيل عرض التاجر\n\n🎮 اللعبة: {game['name']}\n📦 العرض: {offer['name']}\n💰 السعر: {shown_price}\n💳 الدفع من محفظتك المحددة من الإدارة فقط.", reply_markup=InlineKeyboardMarkup(buttons))
         return
     selected_coupon = context.user_data.get("offer_coupon") if context is not None else None
-    if not selected_coupon or selected_coupon.get("key") != coupon_key or price_mode == "usd":
+    if not selected_coupon or selected_coupon.get("key") != coupon_key:
         selected_coupon = None
     coupon_cut = int(selected_coupon.get("discount", 0)) if selected_coupon else 0
-    if price_mode in ("choose", "baridi") and get_setting("payment_baridi_enabled", "1") == "1" and get_setting(f"offer_payment_baridi_{offer_id}", "1") == "1":
-        buttons.append([InlineKeyboardButton(
-            f"💳 BaridiMob / CCP — {max(0, offer_price(offer, 'baridi', user_id)-coupon_cut)} DA",
-            callback_data=f"pay:{game_id}:{offer_id}:baridi",
-        )])
-    if price_mode in ("choose", "flexy") and get_setting("payment_flexy_enabled", "1") == "1" and get_setting(f"offer_payment_flexy_{offer_id}", "1") == "1":
-        buttons.append([InlineKeyboardButton(
-            f"📱 Flexy — {max(0, offer_price(offer, 'flexy', user_id)-coupon_cut)} DA",
-            callback_data=f"pay:{game_id}:{offer_id}:flexy",
-        )])
-    with db() as conn:
-        custom_methods = conn.execute(
-            "SELECT m.*, o.enabled AS offer_method_enabled FROM custom_payment_methods m LEFT JOIN offer_payment_methods o ON o.method_id=m.id AND o.offer_id=? WHERE m.enabled=1 ORDER BY m.id",
-            (offer_id,),
-        ).fetchall()
-    for custom_method in custom_methods:
-        method_currency = (custom_method["currency"] or "USD").upper()
-        if method_currency == "USD" and (price_mode not in ("choose", "usd") or get_setting("usd_payments_enabled", "0") != "1"):
-            continue
-        # Per-offer switches apply to USD and DZD custom methods alike.
-        if custom_method["offer_method_enabled"] is not None and not int(custom_method["offer_method_enabled"] or 0):
-            continue
-        try:
-            currency = (custom_method["currency"] or "USD").upper()
-            if currency == "USD":
-                rate = Decimal(get_setting("usd_exchange_rate", "254"))
-                if rate <= 0:
-                    rate = Decimal("254")
-                usd_price = (Decimal(offer_price(offer, "baridi", user_id)) / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                label_price = f"{usd_price} USD"
-            else:
-                label_price = f"{offer_price(offer, 'baridi', user_id)} DA"
-        except Exception:
-            label_price = f"{offer_price(offer, 'baridi', user_id)} DA"
-        buttons.append([InlineKeyboardButton(
-            f"{custom_method['emoji']} {custom_method['name']} — {label_price}",
-            callback_data=f"pay:{game_id}:{offer_id}:custom_{custom_method['id']}"
-        )])
-    if selected_coupon and selected_coupon.get("key") == coupon_key and price_mode != "usd":
-        buttons.append([InlineKeyboardButton(f"🎟️ القسيمة المختارة: -{int(selected_coupon['discount'])} دج", callback_data="offer_coupon_yes")])
-        buttons.append([InlineKeyboardButton("❌ إلغاء القسيمة", callback_data="offer_coupon_remove")])
-    buttons += [
-        [InlineKeyboardButton("🛒 إضافة إلى السلة دون قسيمة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}:{price_mode}")],
+    wallet_price = max(0, int(offer_price(offer, "baridi", user_id)) - coupon_cut)
+    buttons = [
+        [InlineKeyboardButton(f"💰 الدفع من محفظة الدينار — {wallet_price} DA", callback_data=f"pay:{game_id}:{offer_id}:balance")],
+        [InlineKeyboardButton("🛒 إضافة إلى السلة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}:wallet_da")],
         [InlineKeyboardButton("🛒 عرض السلة", callback_data="cart_view")],
     ]
-    # Wallet payment is intentionally unavailable from Flexy/USD price views.
-    # It remains available in the general view and the BaridiMob/CCP view only.
-    if price_mode not in ("flexy", "usd"):
-        buttons.append([InlineKeyboardButton("💰 الدفع من رصيد المحفظة", callback_data=f"pay:{game_id}:{offer_id}:balance")])
-    buttons.append([
-        InlineKeyboardButton(
-            "🔙 رجوع للعروض",
-            callback_data=f"recharge_select:{game_id}:{int(offer['recharge_method_id'])}:{platform or 'none'}",
-        )
-    ])
-    # النقاط لا تخصم تلقائيًا من طلب الشحن؛ تُستخدم فقط لشراء عروض النقاط أو شراء القسائم.
+    if selected_coupon:
+        buttons.append([InlineKeyboardButton(f"🎟️ القسيمة المختارة: -{int(selected_coupon['discount'])} دج", callback_data="offer_coupon_yes")])
+        buttons.append([InlineKeyboardButton("❌ إلغاء القسيمة", callback_data="offer_coupon_remove")])
+    buttons.append([InlineKeyboardButton("🔙 رجوع للعروض", callback_data=f"recharge_select:{game_id}:{int(offer['recharge_method_id'])}:{platform or 'none'}")])
     if context is not None:
         context.user_data["use_points_for_order"] = False
-
     await query.edit_message_text(
         "🛍️ تفاصيل العرض\n\n"
         f"🎮 اللعبة: {game['name']}\n"
         f"📦 العرض: {offer['name']}\n"
         f"📱 الجهاز: {'Android' if platform == 'android' else 'iPhone (iOS)' if platform == 'ios' else 'غير مطلوب'}\n\n"
-        + (f"💳 BaridiMob / CCP: {max(0, offer_price(offer, 'baridi', user_id)-coupon_cut)} DA\n" if price_mode in ("choose", "baridi") and get_setting("payment_baridi_enabled", "1") == "1" else "")
-        + (f"📱 Flexy: {max(0, offer_price(offer, 'flexy', user_id)-coupon_cut)} DA\n" if price_mode in ("choose", "flexy") and get_setting("payment_flexy_enabled", "1") == "1" else "")
-        + (f"💵 USD: {(Decimal(offer_price(offer, 'baridi', user_id)) / max(Decimal(get_setting('usd_exchange_rate', '254')), Decimal('0.01'))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)} USD\n" if price_mode == "usd" else "")
-        + (f"🎟️ القسيمة المختارة: -{int(selected_coupon['discount'])} دج\n" if selected_coupon and selected_coupon.get("key") == coupon_key and price_mode != "usd" else "")
-        + f"🏷️ فئة السعر: {'تاجر' if is_trader(user_id) else 'زبون عادي'}\n\nاختر طريقة الدفع:",
+        f"💰 السعر: {wallet_price} DA\n"
+        + (f"🎟️ القسيمة المختارة: -{int(selected_coupon['discount'])} دج\n" if selected_coupon else "")
+        + "💳 الدفع من محفظة الدينار فقط.",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
@@ -1787,7 +1717,7 @@ async def _cart_add(query, context, game_id, offer_id, platform, price_mode="cho
     method_id = int(offer["recharge_method_id"] or 0)
     if cart and (int(cart["game_id"]) != int(game_id) or int(cart.get("recharge_method_id", 0)) != method_id or cart.get("platform", "") != (platform if platform != "none" else "")):
         await query.answer("السلة تقبل عروض نفس اللعبة ونفس طريقة الشحن والجهاز فقط. أفرغ السلة أو أكمل الطلب الحالي أولًا.", show_alert=True); return
-    selected_mode = price_mode if price_mode in ("baridi", "flexy", "usd", "trader_da", "trader_usd") else "choose"
+    selected_mode = price_mode if price_mode in ("baridi", "flexy", "usd", "trader_da", "trader_usd", "wallet_da") else "choose"
     if cart and cart.get("price_mode", "choose") != selected_mode:
         await query.answer("السلة الحالية من فئة أسعار مختلفة. أكمل الطلب أو أفرغ السلة أولًا.", show_alert=True); return
     if not cart:
@@ -1880,18 +1810,12 @@ async def _cart_checkout(query, context):
         buttons.append([InlineKeyboardButton("🔙 رجوع للسلة", callback_data="cart_view")])
         await query.edit_message_text("💳 إتمام طلب التاجر\nسيتم الخصم من المحفظة التي حددتها الإدارة فقط.", reply_markup=InlineKeyboardMarkup(buttons))
         return
-    # Coupon controls belong ONLY to this checkout/payment screen, never the cart contents screen.
-    price_mode = cart.get("price_mode", "choose")
-    if price_mode == "usd":
-        await query.edit_message_text("💵 عروض USD تُدفع عبر طرق الدفع بالدولار مباشرة من صفحة العرض، ولا يمكن إتمامها من السلة حاليًا. ارجع للعرض واختر طريقة دفع USD.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للسلة", callback_data="cart_view")]])); return
-    if price_mode in ("choose", "baridi") and get_setting("payment_baridi_enabled", "1") == "1":
-        buttons.append([InlineKeyboardButton(f"💳 BaridiMob / CCP — {_cart_total(cart, 'baridi', query.from_user.id)} DA", callback_data="cart_pay:baridi")])
-    if price_mode in ("choose", "flexy") and get_setting("payment_flexy_enabled", "1") == "1":
-        buttons.append([InlineKeyboardButton(f"📱 Flexy — {_cart_total(cart, 'flexy', query.from_user.id)} DA", callback_data="cart_pay:flexy")])
-    if price_mode in ("choose", "baridi"):
-        buttons.append([InlineKeyboardButton("💰 الدفع من رصيد محفظة الدينار", callback_data="cart_pay:balance")])
+    # Customers purchase exclusively from their DA wallet; external methods
+    # are used only to deposit money into the wallet.
+    price_mode = cart.get("price_mode", "wallet_da")
+    buttons.append([InlineKeyboardButton(f"💰 الدفع من محفظة الدينار — {_cart_total(cart, 'balance', query.from_user.id)} DA", callback_data="cart_pay:balance")])
     buttons.append([InlineKeyboardButton("🔙 رجوع للسلة", callback_data="cart_view")])
-    checkout_text = "💳 إتمام الطلب — اختر طريقة الدفع للسلة كاملة.\n🎟️ القسائم تُختار مباشرة بعد اختيار العرض الفردي، وليست متاحة من شاشة السلة.\n⏳ عند اختيار الدفع تبدأ مهلة 15 دقيقة."
+    checkout_text = "💳 إتمام الطلب\nسيتم الخصم من محفظة الدينار فقط.\n⏳ عند اختيار الدفع تبدأ مهلة 15 دقيقة."
     await query.edit_message_text(checkout_text, reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -5535,8 +5459,11 @@ async def callback_handler(update, context):
         except ValueError:
             return
         platform = parts[3] if parts[3] in ("android", "ios") else None
-        # Allow viewing USD price estimates even when USD payment is disabled.
-        await open_game(query, game_id, platform, method_id, parts[2])
+        # Legacy price-view buttons are retired; return customers to the wallet-price catalogue.
+        if not is_trader(query.from_user.id):
+            await open_game(query, game_id, platform, method_id, "wallet_da")
+        else:
+            await open_game(query, game_id, platform, method_id, "trader_da" if trader_wallet_currency(query.from_user.id) == "DA" else "trader_usd")
 
     # اختيار جهاز الهاتف
     elif data.startswith("platform:"):
@@ -5666,7 +5593,7 @@ async def callback_handler(update, context):
         except ValueError:
             return
         platform = parts[3] if len(parts) >= 4 and parts[3] != "none" else None
-        price_mode = parts[4] if len(parts) == 5 and parts[4] in ("baridi", "flexy", "usd", "trader_da", "trader_usd") else "choose"
+        price_mode = parts[4] if len(parts) == 5 and parts[4] in ("baridi", "flexy", "usd", "trader_da", "trader_usd", "wallet_da") else "choose"
         context.user_data["selected_platform"] = platform or ""
         context.user_data["selected_price_mode"] = price_mode
         current_coupon = context.user_data.get("offer_coupon") or {}
