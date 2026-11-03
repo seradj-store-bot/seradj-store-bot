@@ -3211,6 +3211,9 @@ async def callback_handler(update, context):
     query = update.callback_query
     data = query.data or ""
     user_id = query.from_user.id
+    # Default for ordinary section/navigation callbacks; set True only when
+    # a group/admin terminal order action is normalized to status:... below.
+    group_order_terminal_action = False
 
     if data == "check_subscription":
         if not await is_subscribed(context.bot, user_id):
