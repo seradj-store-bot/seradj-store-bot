@@ -294,7 +294,7 @@ def get_setting(key, default=""):
 async def dispatch_order_to_group(context, order_id, user, draft, player_id, payment_method, price, points_used=0, photo=None):
     """Send an order to the group configured for its game, falling back to admin DM."""
     game_id = int(draft.get("game_id") or 0)
-    group_id = get_setting(f"order_group_{game_id}", "").strip()
+    group_id = get_setting("order_group_all", "").strip() or get_setting(f"order_group_{game_id}", "").strip()
     is_work_group = bool(group_id)
     if not group_id:
         group_id = str(ADMIN_ID) if ADMIN_ID else ""
@@ -326,7 +326,7 @@ async def dispatch_order_to_group(context, order_id, user, draft, player_id, pay
                 await context.bot.send_message(
                     chat_id=int(ADMIN_ID),
                     text=f"🔌 التحكم في استقبال الطلبات\n🎮 اللعبة: {draft.get('game_name', 'غير محددة')}\n🧾 الطلب: #{order_id}",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔌 عزل الطلبات عن المجموعة", callback_data=f"order_detach:{game_id}")]])
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔌 عزل الطلبات عن المجموعة", callback_data=("order_detach:all" if get_setting("order_group_all", "").strip() == str(group_id) else f"order_detach:{game_id}"))]])
                 )
             except Exception:
                 logger.exception("Could not send owner-only detach button for game %s", game_id)
@@ -342,17 +342,25 @@ async def set_order_group_command(update, context):
     if not chat or chat.type not in ("group", "supergroup"):
         await update.effective_message.reply_text("استعمل هذا الأمر داخل القروب الذي تريد استقبال الطلبات فيه: /setordergroup GAME_ID")
         return
-    if not context.args or not context.args[0].isdigit():
-        await update.effective_message.reply_text("استعمال الأمر: /setordergroup GAME_ID\nمثال: /setordergroup 1")
+    if not context.args:
+        await update.effective_message.reply_text("الاستعمال: /setordergroup all أو /setordergroup GAME_ID")
+        return
+    if context.args[0].lower() == "all":
+        with db() as conn:
+            conn.execute("INSERT INTO settings(key,value) VALUES('order_group_all',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(chat.id),))
+        await update.effective_message.reply_text("✅ تم ربط هذا القروب بجميع طلبات المتجر الجديدة.")
+        return
+    if not context.args[0].isdigit():
+        await update.effective_message.reply_text("الاستعمال: /setordergroup all أو /setordergroup GAME_ID")
         return
     game_id = int(context.args[0])
     with db() as conn:
         game = conn.execute("SELECT name FROM games WHERE id=?", (game_id,)).fetchone()
         if not game:
-            await update.effective_message.reply_text("❌ ما لقيتش لعبة بهذا الرقم. شوف أرقام الألعاب بالأمر /ordergames في الخاص.")
+            await update.effective_message.reply_text("❌ ما لقيتش لعبة بهذا الرقم. شوف /ordergames.")
             return
         conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (f"order_group_{game_id}", str(chat.id)))
-    await update.effective_message.reply_text(f"✅ تم ربط {game['name']} بهذا القروب. الطلبات الجديدة لهذه اللعبة ستصل هنا.")
+    await update.effective_message.reply_text(f"✅ تم ربط {game['name']} بهذا القروب.")
 
 async def order_games_command(update, context):
     if not is_admin(update.effective_user.id):
@@ -661,6 +669,18 @@ def init_db():
             created_at TEXT,
             processed_at TEXT DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS wallet_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'DA',
+            kind TEXT NOT NULL,
+            amount REAL NOT NULL DEFAULT 0,
+            balance_before REAL NOT NULL DEFAULT 0,
+            balance_after REAL NOT NULL DEFAULT 0,
+            note TEXT DEFAULT '',
+            admin_id INTEGER DEFAULT NULL,
+            created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS trader_loan_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -859,6 +879,8 @@ def init_db():
             conn.execute("ALTER TABLE wallet_deposits ADD COLUMN amount_usd REAL DEFAULT 0")
         if "currency" not in deposit_cols:
             conn.execute("ALTER TABLE wallet_deposits ADD COLUMN currency TEXT DEFAULT 'DA'")
+        if "paid_amount" not in deposit_cols:
+            conn.execute("ALTER TABLE wallet_deposits ADD COLUMN paid_amount REAL DEFAULT 0")
 
 
 def get_setting(key, default=""):
@@ -1057,6 +1079,7 @@ async def admin_person_card(query, target_id):
     phone = row["phone_number"] if "phone_number" in row.keys() and row["phone_number"] else "غير مشارك"
     banned = int(row["is_banned"] or 0) if "is_banned" in row.keys() else 0
     buttons = [
+        [InlineKeyboardButton("📜 سجل عمليات المحفظة", callback_data=f"admin_wallet_history:{target_id}")],
         [InlineKeyboardButton("💰 إضافة رصيد DA", callback_data=f"person_balance:{target_id}")],
         [InlineKeyboardButton("✏️ تعديل رصيد DA", callback_data=f"person_balance_edit:{target_id}")],
         [InlineKeyboardButton("💵 إضافة رصيد USD", callback_data=f"person_balance_usd:{target_id}")],
@@ -1400,6 +1423,7 @@ async def show_account(message, user_id):
         f"📅 التسجيل: {user['created_at']}",
         reply_markup=main_keyboard(user_id),
         )
+    await message.reply_text("يمكنك الاطلاع على عمليات الإيداع والتعديلات في:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📜 سجل المحفظة", callback_data="wallet_history")]]))
 
 # ====== عرض عروض اللعبة ======
 
@@ -2370,6 +2394,13 @@ async def photo_handler(update, context):
         return
 
     if context.user_data.get("awaiting_deposit_receipt"):
+        with db() as conn:
+            pending_existing = conn.execute("SELECT id FROM wallet_deposits WHERE user_id=? AND status='pending' LIMIT 1", (user.id,)).fetchone()
+        if pending_existing:
+            await message.reply_text(f"لديك طلب تعبئة قيد المراجعة #{pending_existing['id']}، انتظر قرار الإدارة.", reply_markup=main_keyboard(user.id))
+            for k in ("awaiting_deposit_receipt", "deposit_amount", "deposit_amount_usd", "deposit_method", "deposit_currency"):
+                context.user_data.pop(k, None)
+            return
         method = context.user_data.get("deposit_method", "")
         currency = (context.user_data.get("deposit_currency") or "DA").upper()
         if not method:
@@ -2396,8 +2427,9 @@ async def photo_handler(update, context):
                 return
             amount_usd = 0.0
         photo = message.photo[-1]
+        paid_amount = (int(round(amount * 1.18)) if method.lower() == "flexy" else amount) if currency == "DA" else amount_usd
         with db() as conn:
-            cur = conn.execute("INSERT INTO wallet_deposits (user_id, amount, amount_usd, currency, payment_method, receipt_file_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)", (user.id, amount, amount_usd, currency, method, photo.file_id, now_text()))
+            cur = conn.execute("INSERT INTO wallet_deposits (user_id, amount, amount_usd, currency, payment_method, receipt_file_id, status, created_at, paid_amount) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)", (user.id, amount, amount_usd, currency, method, photo.file_id, now_text(), paid_amount))
             deposit_id = cur.lastrowid
         display_amount = f"{amount_usd:.2f} USD" if currency == "USD" else f"{amount} DA"
         if ADMIN_ID:
@@ -3575,14 +3607,22 @@ async def callback_handler(update, context):
     if data.startswith("order_detach:"):
         if not is_admin(user_id):
             await query.answer("هذا الزر خاص بمالك المتجر.", show_alert=True); return
+        detach_value = data.split(":", 1)[1]
+        if detach_value == "all":
+            with db() as conn:
+                conn.execute("DELETE FROM settings WHERE key='order_group_all'")
+            await query.answer("تم إلغاء ربط القروب بجميع الطلبات.", show_alert=True)
+            try: await query.message.reply_text("🔌 تم فصل القروب عن جميع الطلبات الجديدة؛ تعود الإعدادات الخاصة بكل لعبة للعمل.")
+            except Exception: pass
+            return
         try:
-            detach_game_id = int(data.split(":", 1)[1])
+            detach_game_id = int(detach_value)
         except (ValueError, IndexError):
             await query.answer("اللعبة غير صالحة.", show_alert=True); return
         with db() as conn:
             game = conn.execute("SELECT name FROM games WHERE id=?", (detach_game_id,)).fetchone()
             conn.execute("DELETE FROM settings WHERE key=?", (f"order_group_{detach_game_id}",))
-        await query.answer("تم عزل المجموعة عن الطلبات الجديدة.", show_alert=True)
+        await query.answer("تم عزل المجموعة عن الطلبات الجديدة لهذه اللعبة.", show_alert=True)
         try: await query.message.reply_text(f"🔌 تم فصل استقبال الطلبات الجديدة للعبة {game['name'] if game else detach_game_id} عن هذه المجموعة.")
         except Exception: pass
         return
@@ -4196,8 +4236,39 @@ async def callback_handler(update, context):
         await query.message.reply_text(f"💬 أرسل ردك للزبون {target_id}.\nأرسل /cancel للإلغاء.")
         return
 
+    if data.startswith("admin_wallet_history:"):
+        if not is_admin(user_id):
+            await query.answer("للإدارة فقط.", show_alert=True); return
+        target = int(data.split(":", 1)[1])
+        with db() as conn:
+            rows = conn.execute("SELECT currency,kind,amount,balance_before,balance_after,note,admin_id,created_at FROM wallet_transactions WHERE user_id=? ORDER BY id DESC LIMIT 50", (target,)).fetchall()
+        lines = [f"📜 سجل المحفظة للمشترك {target}:"]
+        for r in rows:
+            unit = "USD" if r["currency"] == "USD" else "DA"
+            lines.append(f"\n{r['created_at']} | {r['kind']}\nالمبلغ: {float(r['amount']):g} {unit} | {float(r['balance_before']):g} ← {float(r['balance_after']):g}\nالسبب: {r['note'] or 'غير محدد'} | Admin ID: {r['admin_id'] or '-'}")
+        await query.message.reply_text("\n".join(lines) if rows else "لا توجد عمليات مسجلة لهذا المشترك.")
+        return
+
+    if data == "wallet_history":
+        with db() as conn:
+            rows = conn.execute("SELECT currency,kind,amount,balance_before,balance_after,note,created_at FROM wallet_transactions WHERE user_id=? ORDER BY id DESC LIMIT 30", (user_id,)).fetchall()
+        if not rows:
+            await query.message.reply_text("📜 لا توجد عمليات مسجلة في محفظتك بعد.")
+        else:
+            lines = ["📜 آخر عمليات محفظتك:"]
+            for r in rows:
+                unit = "USD" if r["currency"] == "USD" else "DA"
+                lines.append(f"\n• {r['created_at']}\n{r['kind']} | {float(r['amount']):g} {unit}\nالرصيد: {float(r['balance_before']):g} ← {float(r['balance_after']):g} {unit}" + (f"\n{r['note']}" if r['note'] else ""))
+            await query.message.reply_text("\n".join(lines))
+        return
+
     if data.startswith("deposit_currency:"):
         currency = data.split(":", 1)[1].upper()
+        with db() as conn:
+            pending = conn.execute("SELECT id FROM wallet_deposits WHERE user_id=? AND status='pending' LIMIT 1", (user_id,)).fetchone()
+        if pending:
+            await query.answer(f"لديك طلب تعبئة قيد المراجعة #{pending['id']}.", show_alert=True)
+            return
         if currency == "DA":
             context.user_data["deposit_currency"] = "DA"
             context.user_data["awaiting_deposit_amount"] = True
@@ -4227,11 +4298,11 @@ async def callback_handler(update, context):
 
     if data.startswith("deposit_method:"):
         method = data.split(":", 1)[1]
-        if method not in ("baridi", "flexy"):
+        if method not in ("baridi", "ccp", "flexy"):
             return
         amount = int(context.user_data.get("deposit_amount", 0) or 0)
         account_type = "trader" if is_trader(user_id) else "customer"
-        minimum, maximum = deposit_limits(account_type, method)
+        minimum, maximum = deposit_limits(account_type, "flexy" if method == "flexy" else "baridi")
         if amount < minimum or amount > maximum:
             context.user_data.pop("deposit_amount", None)
             await query.edit_message_text(
@@ -4239,11 +4310,14 @@ async def callback_handler(update, context):
                 f"الحد الأدنى: {minimum} DA\nالحد الأقصى: {maximum} DA\nابدأ التعبئة من جديد بالمبلغ المناسب."
             )
             return
-        context.user_data["deposit_method"] = "BaridiMob / CCP" if method == "baridi" else "Flexy"
+        method_names = {"baridi": "BaridiMob", "ccp": "CCP", "flexy": "Flexy"}
+        context.user_data["deposit_method"] = method_names[method]
         context.user_data["deposit_currency"] = "DA"
         context.user_data["awaiting_deposit_receipt"] = True
-        details = get_setting("baridi_details" if method == "baridi" else "flexy_details", "تواصل مع الإدارة لمعرفة معلومات الدفع.")
-        await query.edit_message_text(f"💳 معلومات الدفع:\n{details}\n\n📸 بعد الدفع، أرسل صورة وصل الدفع هنا لتعبئة رصيدك.\nلا يُضاف الرصيد إلا بعد مراجعة الإدارة.")
+        paid_amount = int(round(amount * 1.18)) if method == "flexy" else amount
+        details_key = "flexy_details" if method == "flexy" else ("ccp_details" if method == "ccp" else "baridi_details")
+        details = get_setting(details_key, get_setting("baridi_details", "تواصل مع الإدارة لمعرفة معلومات الدفع."))
+        await query.edit_message_text(f"💳 تعبئة محفظة الدينار\nالمبلغ الذي سيضاف للمحفظة: {amount} DA\nالمبلغ المطلوب دفعه عبر {method_names[method]}: {paid_amount} DA\n\n{details}\n\n📸 بعد الدفع، أرسل صورة وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
         return
 
     if data.startswith("deposit_approve:") or data.startswith("deposit_reject:"):
@@ -4253,42 +4327,36 @@ async def callback_handler(update, context):
             return
         approve = data.startswith("deposit_approve:")
         with db() as conn:
-            dep = conn.execute("SELECT * FROM wallet_deposits WHERE id = ?", (deposit_id,)).fetchone()
+            dep = conn.execute("SELECT * FROM wallet_deposits WHERE id=?", (deposit_id,)).fetchone()
             if not dep or dep["status"] != "pending":
                 await query.answer("تمت معالجة هذا الطلب مسبقًا.", show_alert=True)
                 return
-            conn.execute("UPDATE wallet_deposits SET status = ?, processed_at = ? WHERE id = ?", ("approved" if approve else "rejected", now_text(), deposit_id))
-            currency = (dep["currency"] if "currency" in dep.keys() else "DA") or "DA"
-            is_usd = str(currency).upper() == "USD"
-            amount_usd = float(dep["amount_usd"] or 0) if "amount_usd" in dep.keys() else 0.0
-            credited_amount = int(dep["amount"] or 0)
-            credited_usd = amount_usd
-            is_flexy = "flexy" in str(dep["payment_method"] or "").lower() or "فليكسي" in str(dep["payment_method"] or "").lower()
+            currency = (dep["currency"] or "DA").upper()
+            is_usd = currency == "USD"
+            amount_usd = float(dep["amount_usd"] or 0)
+            credit = amount_usd if is_usd else int(dep["amount"] or 0)
+            paid = float(dep["paid_amount"] or 0) if "paid_amount" in dep.keys() else 0
+            if paid <= 0:
+                paid = amount_usd if is_usd else (int(round(credit * 1.18)) if "flexy" in str(dep["payment_method"]).lower() else credit)
+            before = after = 0
             if approve:
-                if is_usd:
-                    conn.execute("UPDATE users SET balance_usd = COALESCE(balance_usd,0) + ? WHERE user_id = ?", (credited_usd, dep["user_id"]))
-                else:
-                    # Flexy deposits receive a 15% deduction; other methods are credited in full.
-                    credited_amount = int(int(dep["amount"]) * 0.85) if is_flexy else int(dep["amount"])
-                    conn.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (credited_amount, dep["user_id"]))
+                col = "balance_usd" if is_usd else "balance"
+                row = conn.execute(f"SELECT COALESCE({col},0) AS bal FROM users WHERE user_id=?", (dep["user_id"],)).fetchone()
+                before = float(row["bal"] or 0) if row else 0
+                after = before + credit
+                conn.execute(f"UPDATE users SET {col}=? WHERE user_id=?", (after, dep["user_id"]))
+                conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (dep["user_id"], currency, "تعبئة رصيد", credit, before, after, f"طلب #{deposit_id} عبر {dep['payment_method']} | المدفوع: {paid:g} {currency}", user_id, now_text()))
+            conn.execute("UPDATE wallet_deposits SET status=?,processed_at=? WHERE id=?", ("approved" if approve else "rejected", now_text(), deposit_id))
         try:
             if approve:
-                deduction_note = f"\nاقتطاع فليكسي (15%): {int(dep['amount']) - credited_amount} DA" if is_flexy else ""
-                if is_usd:
-                    await context.bot.send_message(dep["user_id"], f"✅ تمت الموافقة على تعبئة #{deposit_id}.\nالمبلغ المدفوع: {amount_usd:.2f} USD\nالمبلغ المضاف إلى محفظة الدولار: {credited_usd:.2f} USD.\nإذا رغبت في تحويله إلى الدينار، تواصل مع الإدارة مباشرة.")
-                else:
-                    await context.bot.send_message(dep["user_id"], f"✅ تمت الموافقة على تعبئة #{deposit_id}.\nالمبلغ المدفوع: {dep['amount']} DA{deduction_note}\nالمبلغ المضاف إلى محفظتك: {credited_amount} DA.")
+                unit = "USD" if is_usd else "DA"
+                await context.bot.send_message(dep["user_id"], f"✅ تمت الموافقة على تعبئة #{deposit_id}.\nالمبلغ المدفوع: {paid:g} {unit} عبر {dep['payment_method']}\nالمبلغ المضاف للمحفظة: {credit:g} {unit}\nالرصيد السابق: {before:g} {unit}\nالرصيد الجديد: {after:g} {unit}.")
             else:
                 await context.bot.send_message(dep["user_id"], f"❌ تم رفض تعبئة الرصيد #{deposit_id}. إذا كان هناك خطأ، تواصل مع الإدارة.")
         except Exception:
             logger.exception("تعذر إشعار الزبون بنتيجة التعبئة")
-        if is_usd:
-            amount_label = f"{amount_usd:.2f} USD"
-            deduction_caption = f"\nالمضاف لمحفظة USD: {credited_usd:.2f} USD" if approve else ""
-        else:
-            amount_label = f"{int(dep['amount'] or 0)} DA"
-            deduction_caption = f"\nالمضاف للمحفظة: {credited_amount} DA (بعد خصم 15%)" if approve and is_flexy else (f"\nالمضاف للمحفظة: {credited_amount} DA" if approve else "")
-        await query.edit_message_caption(caption=f"{'✅ تمت الموافقة' if approve else '❌ تم الرفض'} على تعبئة الرصيد #{deposit_id}\nالمبلغ المدفوع: {amount_label}{deduction_caption}\nالطريقة: {dep['payment_method']}\nالزبون: {dep['user_id']}", reply_markup=None)
+        unit = "USD" if is_usd else "DA"
+        await query.edit_message_caption(caption=f"{'✅ تمت الموافقة' if approve else '❌ تم الرفض'} على تعبئة الرصيد #{deposit_id}\nالمبلغ المدفوع: {paid:g} {unit}\nالمضاف للمحفظة: {credit:g} {unit}\nالطريقة: {dep['payment_method']}\nالزبون: {dep['user_id']}" , reply_markup=None)
         return
 
     if data.startswith("trader_approve:") or data.startswith("trader_reject:"):
@@ -6145,10 +6213,10 @@ async def text_handler(update, context):
         context.user_data["deposit_currency"] = "DA"
         context.user_data.pop("awaiting_deposit_amount", None)
         await message.reply_text(
-            f"💰 مبلغ التعبئة: {amount} DA\nإذا اخترت Flexy، يُخصم 15% ويُضاف 85% فقط إلى محفظتك ({int(amount * 0.85)} DA).\nاختر طريقة الدفع:",
+            f"💰 المبلغ الذي تريد إضافته إلى المحفظة: {amount} DA\nBaridiMob وCCP: تدفع {amount} DA.\nFlexy: تدفع {int(round(amount * 1.18))} DA (زيادة 18%) ويضاف للمحفظة {amount} DA كاملة.\nاختر طريقة الدفع:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("BaridiMob / CCP", callback_data="deposit_method:baridi")],
-                [InlineKeyboardButton("Flexy", callback_data="deposit_method:flexy")],
+                [InlineKeyboardButton("BaridiMob", callback_data="deposit_method:baridi"), InlineKeyboardButton("CCP", callback_data="deposit_method:ccp")],
+                [InlineKeyboardButton("Flexy (+18%)", callback_data="deposit_method:flexy")],
             ]),
         )
         return
@@ -6266,7 +6334,10 @@ async def text_handler(update, context):
             person = conn.execute("SELECT full_name FROM users WHERE user_id=?", (target,)).fetchone()
             if not person:
                 await message.reply_text("❌ المشترك غير موجود."); return
+            old_row = conn.execute("SELECT COALESCE(balance_usd,0) AS bal FROM users WHERE user_id=?", (target,)).fetchone()
+            old_balance = float(old_row["bal"] or 0)
             conn.execute("UPDATE users SET balance_usd=? WHERE user_id=?", (new_balance, target))
+            conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (target,"USD","تعديل إداري",new_balance-old_balance,old_balance,new_balance,"تعديل يدوي للرصيد",user_id,now_text()))
         await message.reply_text(f"✅ تم تعديل رصيد الدولار للمشترك إلى {new_balance:.2f} USD.")
         try: await context.bot.send_message(target, f"ℹ️ حدّثت الإدارة رصيد الدولار في محفظتك. الرصيد الجديد: {new_balance:.2f} USD.")
         except Exception: logger.exception("تعذر إشعار المشترك بتعديل رصيد USD")
@@ -6284,8 +6355,10 @@ async def text_handler(update, context):
             person = conn.execute("SELECT full_name FROM users WHERE user_id=?", (target,)).fetchone()
             if not person:
                 await message.reply_text("❌ المشترك غير موجود."); return
+            old_balance = float(conn.execute("SELECT COALESCE(balance_usd,0) FROM users WHERE user_id=?", (target,)).fetchone()[0] or 0)
             conn.execute("UPDATE users SET balance_usd=COALESCE(balance_usd,0)+? WHERE user_id=?", (amount, target))
             balance = conn.execute("SELECT balance_usd FROM users WHERE user_id=?", (target,)).fetchone()["balance_usd"]
+            conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (target,"USD","إضافة إدارية",amount,old_balance,float(balance),"إضافة يدوية",user_id,now_text()))
         await message.reply_text(f"✅ تمت إضافة {amount:.2f} USD. رصيد الدولار الجديد: {float(balance):.2f} USD.")
         try: await context.bot.send_message(target, f"💵 أضافت الإدارة {amount:.2f} USD إلى محفظتك. رصيدك الجديد: {float(balance):.2f} USD.")
         except Exception: logger.exception("تعذر إشعار المشترك بإضافة رصيد USD")
@@ -6306,7 +6379,9 @@ async def text_handler(update, context):
             if not person:
                 await message.reply_text("❌ المشترك غير موجود؛ لم يتم تعديل الرصيد.")
                 return
+            old_balance = int(conn.execute("SELECT COALESCE(balance,0) FROM users WHERE user_id=?", (target,)).fetchone()[0] or 0)
             conn.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, target))
+            conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (target,"DA","تعديل إداري",new_balance-old_balance,old_balance,new_balance,"تعديل يدوي للرصيد",user_id,now_text()))
         await message.reply_text(f"✅ تم تعديل رصيد {person['full_name'] or target} إلى {new_balance} DA.")
         try:
             await context.bot.send_message(target, f"ℹ️ تم تحديث رصيد محفظتك من طرف الإدارة.\nالرصيد الجديد: {new_balance} DA.")
@@ -6325,7 +6400,9 @@ async def text_handler(update, context):
             await message.reply_text("أرسل مبلغًا صحيحًا أكبر من صفر.")
             return
         with db() as conn:
+            old_balance = int(conn.execute("SELECT COALESCE(balance,0) FROM users WHERE user_id=?", (target,)).fetchone()[0] or 0)
             conn.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, target))
+            conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (target,"DA","إضافة إدارية",amount,old_balance,old_balance+amount,"إضافة يدوية",user_id,now_text()))
         await message.reply_text(f"✅ تمت إضافة {amount} DA إلى رصيد المشترك {target}.")
         return
 
@@ -7441,6 +7518,11 @@ async def text_handler(update, context):
         return
 
     if text == "💰 تعبئة الرصيد":
+        with db() as conn:
+            pending_dep = conn.execute("SELECT id FROM wallet_deposits WHERE user_id=? AND status='pending' LIMIT 1", (user_id,)).fetchone()
+        if pending_dep:
+            await message.reply_text(f"⏳ لديك طلب تعبئة قيد المراجعة #{pending_dep['id']}، لا يمكنك إرسال طلب آخر حتى تتم معالجته.", reply_markup=main_keyboard(user_id))
+            return
         for k in ("awaiting_deposit_amount", "awaiting_deposit_amount_usd", "deposit_amount", "deposit_amount_usd", "deposit_method", "deposit_currency", "awaiting_deposit_receipt"):
             context.user_data.pop(k, None)
         await message.reply_text("💰 اختر المحفظة التي تريد تعبئتها:", reply_markup=InlineKeyboardMarkup([
