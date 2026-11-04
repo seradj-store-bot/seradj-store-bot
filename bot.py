@@ -198,8 +198,8 @@ CANCEL_WORDS = {
 MAIN_MENU = [
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "🛍️ المتجر", "💰 تعبئة الرصيد"],
-    ["📦 طلباتي", "➕ طلب لعبة غير موجودة"],
-    ["⭐ نقاطي", "🏪 ترقية الحساب إلى تاجر", "🎯 الإحالة"],
+    ["➕ طلب لعبة غير موجودة"],
+    ["🏪 ترقية الحساب إلى تاجر", "🎯 الإحالة"],
     ["🔐 السياسات والخصوصية", "📞 اتصل بالإدارة"],
 ]
 
@@ -208,8 +208,8 @@ ADMIN_MAIN_MENU = [
     ["💰 طلبات التعبئة"],
     ["✨ مزايا متجرنا"],
     ["👤 حسابي", "🛍️ المتجر", "💰 تعبئة الرصيد"],
-    ["📦 طلباتي", "➕ طلب لعبة غير موجودة"],
-    ["⭐ نقاطي", "🏪 ترقية الحساب إلى تاجر", "🎯 الإحالة"],
+    ["➕ طلب لعبة غير موجودة"],
+    ["🏪 ترقية الحساب إلى تاجر", "🎯 الإحالة"],
     ["🔐 السياسات والخصوصية", "📞 اتصل بالإدارة"],
 ]
 
@@ -600,7 +600,8 @@ def init_db():
             credit_refunded INTEGER DEFAULT 0,
             shipping_receipt_file_id TEXT DEFAULT '',
             shipping_receipt_by INTEGER DEFAULT NULL,
-            shipping_receipt_at TEXT DEFAULT ''
+            shipping_receipt_at TEXT DEFAULT '',
+            completion_message TEXT DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS order_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -912,6 +913,9 @@ def init_db():
             conn.execute("ALTER TABLE wallet_deposits ADD COLUMN currency TEXT DEFAULT 'DA'")
         if "paid_amount" not in deposit_cols:
             conn.execute("ALTER TABLE wallet_deposits ADD COLUMN paid_amount REAL DEFAULT 0")
+        order_cols = {r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()}
+        if "completion_message" not in order_cols:
+            conn.execute("ALTER TABLE orders ADD COLUMN completion_message TEXT DEFAULT ''")
         # Migrate older wallet ledgers in-place. CREATE TABLE IF NOT EXISTS does not
         # add columns to an existing production table, so add every field used by
         # current deposit/admin history queries without deleting existing records.
@@ -1484,9 +1488,12 @@ async def show_account(message, user_id):
         f"🔄 لتحويل الدولار إلى الدينار، تواصل مع الإدارة مباشرة (لا يوجد تحويل آلي داخل البوت).\n"
         f"🎁 نقاط المكافآت: {int(user['points'] or 0) if points_enabled(user_id) else 0} نقطة\n"
         f"📅 التسجيل: {user['created_at']}",
-        reply_markup=main_keyboard(user_id),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💰 محفظتي", callback_data="account_wallet"), InlineKeyboardButton("⭐ نقاطي", callback_data="account_points")],
+            [InlineKeyboardButton("📦 طلباتي", callback_data="account_orders")],
+            [InlineKeyboardButton("📜 سجل المحفظة", callback_data="wallet_history")],
+        ]),
         )
-    await message.reply_text("يمكنك الاطلاع على عمليات الإيداع والتعديلات في:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📜 سجل المحفظة", callback_data="wallet_history")]]))
 
 # ====== عرض عروض اللعبة ======
 
@@ -2360,6 +2367,34 @@ async def photo_handler(update, context):
             await message.reply_text("🚫 حسابك محظور من استعمال البوت.")
             return
 
+    if context.user_data.get("awaiting_order_completion_text"):
+        completion_order_id = int(context.user_data.get("awaiting_order_completion_text"))
+        expected_chat = context.user_data.get("order_completion_chat_id")
+        if expected_chat and message.chat_id != int(expected_chat):
+            await message.reply_text("أرسل نص الإتمام في نفس محادثة/مجموعة الطلب.")
+            return
+        if not text or len(text.strip()) < 2:
+            await message.reply_text("اكتب رسالة واضحة من حرفين على الأقل.")
+            return
+        with db() as conn:
+            row = conn.execute("SELECT claimed_by,status FROM orders WHERE id=?", (completion_order_id,)).fetchone()
+            if not row or row["status"] in ("completed", "rejected"):
+                context.user_data.pop("awaiting_order_completion_text", None)
+                context.user_data.pop("order_completion_chat_id", None)
+                await message.reply_text("الطلب غير متاح أو تمت معالجته.")
+                return
+            if message.chat.type in ("group", "supergroup") and int(row["claimed_by"] or 0) != user.id:
+                await message.reply_text("إتمام الطلب برسالة متاح لمستلم الطلب فقط.")
+                return
+            conn.execute("UPDATE orders SET completion_message=? WHERE id=?", (text.strip(), completion_order_id))
+        context.user_data.pop("awaiting_order_completion_text", None)
+        context.user_data.pop("order_completion_chat_id", None)
+        await message.reply_text(
+            f"✅ تم حفظ رسالة الطلب #{completion_order_id}. اضغط لتأكيد الإتمام وإرسالها للزبون:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الإتمام وإرسال النص", callback_data=f"status:{completion_order_id}:completed")], [InlineKeyboardButton("❌ إلغاء", callback_data=f"order_finish_back:{completion_order_id}")]])
+        )
+        return
+
     if context.user_data.get("awaiting_order_receipt"):
         if not user:
             context.user_data.pop("awaiting_order_receipt", None); return
@@ -2428,7 +2463,7 @@ async def photo_handler(update, context):
             pending_existing = conn.execute("SELECT id FROM wallet_deposits WHERE user_id=? AND status='pending' LIMIT 1", (user.id,)).fetchone()
         if pending_existing:
             await message.reply_text(f"لديك طلب تعبئة قيد المراجعة #{pending_existing['id']}، انتظر قرار الإدارة.", reply_markup=main_keyboard(user.id))
-            for k in ("awaiting_deposit_receipt", "deposit_amount", "deposit_amount_usd", "deposit_method", "deposit_currency"):
+            for k in ("awaiting_deposit_receipt", "deposit_amount", "deposit_amount_usd", "deposit_method", "deposit_currency", "deposit_paid_amount", "deposit_flexy_mode", "deposit_requested_amount"):
                 context.user_data.pop(k, None)
             return
         method = context.user_data.get("deposit_method", "")
@@ -2446,10 +2481,11 @@ async def photo_handler(update, context):
             amount = 0
         else:
             amount = int(context.user_data.get("deposit_amount", 0) or 0)
+            requested_amount = int(context.user_data.get("deposit_requested_amount", amount) or amount)
             method_key = "flexy" if "flexy" in method.lower() else "baridi"
             account_type = "trader" if is_trader(user.id) else "customer"
             minimum, maximum = deposit_limits(account_type, method_key)
-            if amount < minimum or amount > maximum:
+            if requested_amount < minimum or requested_amount > maximum:
                 context.user_data.pop("awaiting_deposit_receipt", None)
                 context.user_data.pop("deposit_amount", None)
                 context.user_data.pop("deposit_method", None)
@@ -2457,7 +2493,7 @@ async def photo_handler(update, context):
                 return
             amount_usd = 0.0
         photo = message.photo[-1]
-        paid_amount = (int(round(amount * 1.18)) if method.lower() == "flexy" else amount) if currency == "DA" else amount_usd
+        paid_amount = (float(context.user_data.get("deposit_paid_amount", 0) or 0) or (int(round(amount * 1.18)) if method.lower() == "flexy" else amount)) if currency == "DA" else amount_usd
         with db() as conn:
             cur = conn.execute("INSERT INTO wallet_deposits (user_id, amount, amount_usd, currency, payment_method, receipt_file_id, status, created_at, paid_amount) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)", (user.id, amount, amount_usd, currency, method, photo.file_id, now_text(), paid_amount))
             deposit_id = cur.lastrowid
@@ -2465,11 +2501,11 @@ async def photo_handler(update, context):
         if ADMIN_ID:
             try:
                 await context.bot.send_photo(ADMIN_ID, photo.file_id,
-                    caption=f"💰 طلب تعبئة رصيد #{deposit_id}\nالزبون: {user.full_name}\nTelegram ID: {user.id}\nالمبلغ: {display_amount}\nالمحفظة: {currency}\nطريقة الدفع: {method}\nالحالة: قيد المراجعة",
+                    caption=f"💰 طلب تعبئة رصيد #{deposit_id}\nالزبون: {user.full_name}\nTelegram ID: {user.id}\nالمبلغ المضاف للمحفظة: {display_amount}\nالمبلغ المدفوع: {paid_amount:g} {'USD' if currency == 'USD' else 'DA'}\nالمحفظة: {currency}\nطريقة الدفع: {method}\nالحالة: قيد المراجعة",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ قبول التعبئة", callback_data=f"deposit_approve:{deposit_id}"), InlineKeyboardButton("❌ رفض", callback_data=f"deposit_reject:{deposit_id}")]]))
             except Exception:
                 logger.exception("تعذر إرسال طلب تعبئة الرصيد للإدارة")
-        for k in ("awaiting_deposit_receipt", "deposit_amount", "deposit_amount_usd", "deposit_method", "deposit_currency"):
+        for k in ("awaiting_deposit_receipt", "deposit_amount", "deposit_amount_usd", "deposit_method", "deposit_currency", "deposit_paid_amount", "deposit_flexy_mode", "deposit_requested_amount"):
             context.user_data.pop(k, None)
         await message.reply_text(f"✅ استلمنا وصل التعبئة #{deposit_id}. سيضاف الرصيد إلى محفظة {currency} بعد تأكيد الإدارة.", reply_markup=main_keyboard(user.id))
         return
@@ -3545,6 +3581,7 @@ async def callback_handler(update, context):
                 return
             await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📷 إرفاق وصل الشحن", callback_data=f"order_receipt:{finish_id}")],
+                [InlineKeyboardButton("📝 إتمام برسالة نصية", callback_data=f"order_finish_text:{finish_id}")],
                 [InlineKeyboardButton("⏭️ إتمام بدون صورة", callback_data=f"order_finish_now:{finish_id}")],
                 [InlineKeyboardButton("↩️ رجوع", callback_data=f"order_finish_back:{finish_id}")],
             ]))
@@ -3570,10 +3607,32 @@ async def callback_handler(update, context):
             return
         await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📷 إرفاق وصل الشحن", callback_data=f"order_receipt:{finish_id}")],
+            [InlineKeyboardButton("📝 إتمام برسالة نصية", callback_data=f"order_finish_text:{finish_id}")],
             [InlineKeyboardButton("⏭️ إتمام بدون صورة", callback_data=f"order_finish_now:{finish_id}")],
             [InlineKeyboardButton("🔄 تنازل عن الطلب", callback_data=f"order_release:{finish_id}")],
         ]))
         await query.answer("اختر إرفاق الوصل أو إتمام الطلب بدون صورة.")
+        return
+
+    if data.startswith("order_finish_text:"):
+        try:
+            text_order_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("رقم الطلب غير صالح.", show_alert=True); return
+        if query.message.chat.type not in ("group", "supergroup", "private"):
+            await query.answer("هذا الإجراء غير متاح هنا.", show_alert=True); return
+        if query.message.chat.type == "private" and not is_admin(user_id):
+            await query.answer("للإدارة فقط.", show_alert=True); return
+        with db() as conn:
+            row = conn.execute("SELECT claimed_by,status FROM orders WHERE id=?", (text_order_id,)).fetchone()
+        if not row or row["status"] in ("completed", "rejected"):
+            await query.answer("الطلب غير متاح أو تمت معالجته.", show_alert=True); return
+        if query.message.chat.type in ("group", "supergroup") and int(row["claimed_by"] or 0) != user_id:
+            await query.answer("إتمام الطلب برسالة متاح لمستلم الطلب فقط.", show_alert=True); return
+        context.user_data["awaiting_order_completion_text"] = text_order_id
+        context.user_data["order_completion_chat_id"] = query.message.chat_id
+        await query.message.reply_text(f"📝 اكتب الرسالة التي تريد إرسالها للزبون بخصوص الطلب #{text_order_id}. أرسل /cancel لإلغاء الخطوة.", reply_markup=ForceReply(selective=True, input_field_placeholder="اكتب رسالة إتمام الطلب"))
+        await query.answer("بانتظار نص الرسالة.")
         return
 
     if data.startswith("order_receipt:"):
@@ -4396,6 +4455,21 @@ async def callback_handler(update, context):
         await query.message.reply_text("\n".join(lines) if rows else "لا توجد عمليات مسجلة لهذا المشترك.")
         return
 
+    if data == "account_wallet":
+        with db() as conn:
+            acc = conn.execute("SELECT balance,balance_usd FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if acc:
+            await query.message.reply_text(f"💰 محفظتك\n\n🇩🇿 الدينار: {int(acc['balance'] or 0)} DA\n🇺🇸 الدولار: {float(acc['balance_usd'] or 0):.2f} USD")
+        return
+
+    if data == "account_points":
+        await show_points_shop(query.message, user_id)
+        return
+
+    if data == "account_orders":
+        await show_my_orders(update, context)
+        return
+
     if data == "wallet_history":
         with db() as conn:
             rows = conn.execute("SELECT currency,kind,amount,balance_before,balance_after,note,created_at FROM wallet_transactions WHERE user_id=? ORDER BY id DESC LIMIT 30", (user_id,)).fetchall()
@@ -4460,11 +4534,44 @@ async def callback_handler(update, context):
         method_names = {"baridi": "BaridiMob", "ccp": "CCP", "flexy": "Flexy"}
         context.user_data["deposit_method"] = method_names[method]
         context.user_data["deposit_currency"] = "DA"
+        if method == "flexy":
+            await query.edit_message_text(
+                f"🟠 اختر طريقة احتساب Flexy لتعبئة {amount} دج:\n\n"
+                f"1️⃣ تدفع {int(round(amount * 1.18))} دج وتُضاف {amount} دج كاملة إلى محفظتك.\n"
+                f"2️⃣ تدفع {amount} دج وتُخصم نسبة 18%، فيُضاف {int(round(amount * 0.82))} دج إلى محفظتك.\n\nاختر الطريقة:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(f"دفع {int(round(amount * 1.18))} دج وإضافة {amount} دج", callback_data="deposit_flexy_mode:full")],
+                    [InlineKeyboardButton(f"دفع {amount} دج وإضافة {int(round(amount * 0.82))} دج", callback_data="deposit_flexy_mode:deduct")],
+                ])
+            )
+            return
         context.user_data["awaiting_deposit_receipt"] = True
-        paid_amount = int(round(amount * 1.18)) if method == "flexy" else amount
-        details_key = "flexy_details" if method == "flexy" else ("ccp_details" if method == "ccp" else "baridi_details")
+        context.user_data["deposit_paid_amount"] = amount
+        details_key = "ccp_details" if method == "ccp" else "baridi_details"
         details = get_setting(details_key, get_setting("baridi_details", "تواصل مع الإدارة لمعرفة معلومات الدفع."))
-        await query.edit_message_text(f"💳 تعبئة محفظة الدينار\nالمبلغ الذي سيضاف للمحفظة: {amount} DA\nالمبلغ المطلوب دفعه عبر {method_names[method]}: {paid_amount} DA\n\n{details}\n\n📸 بعد الدفع، أرسل صورة وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
+        await query.edit_message_text(f"💳 تعبئة محفظة الدينار\nالمبلغ الذي سيضاف للمحفظة: {amount} DA\nالمبلغ المطلوب دفعه عبر {method_names[method]}: {amount} DA\n\n{details}\n\n📸 بعد الدفع، أرسل صورة وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
+        return
+
+    if data.startswith("deposit_flexy_mode:"):
+        mode = data.split(":", 1)[1]
+        amount = int(context.user_data.get("deposit_amount", 0) or 0)
+        if mode not in ("full", "deduct") or amount <= 0:
+            await query.answer("انتهت جلسة التعبئة. ابدأ من جديد.", show_alert=True)
+            return
+        requested_amount = amount
+        credit_amount = amount if mode == "full" else int(round(amount * 0.82))
+        paid_amount = int(round(amount * 1.18)) if mode == "full" else amount
+        context.user_data["deposit_requested_amount"] = requested_amount
+        context.user_data["deposit_amount"] = credit_amount
+        context.user_data["deposit_paid_amount"] = paid_amount
+        context.user_data["deposit_flexy_mode"] = mode
+        context.user_data["awaiting_deposit_receipt"] = True
+        details = get_setting("flexy_details", "تواصل مع الإدارة لمعرفة معلومات Flexy.")
+        await query.edit_message_text(
+            f"🟠 تعبئة محفظة Flexy\nالمبلغ المدفوع: {paid_amount} DA\n"
+            f"المبلغ الذي سيضاف إلى محفظتك بعد الموافقة: {credit_amount} DA\n\n"
+            f"{details}\n\n📸 أرسل صورة وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة."
+        )
         return
 
     if data.startswith("deposit_queue:"):
@@ -5525,7 +5632,7 @@ async def callback_handler(update, context):
                 """SELECT o.user_id, o.game_id, o.offer_id, o.player_id, o.payment_method,
                           o.status, o.points_awarded, o.points_used, o.wallet_charged, o.coupon_id, o.coupon_discount,
                           o.wallet_refunded, o.credit_charged, o.credit_refunded, o.price,
-                          o.currency, o.shipping_receipt_file_id,
+                          o.currency, o.shipping_receipt_file_id, o.completion_message,
                           g.name AS game_name, f.name AS offer_name
                    FROM orders o
                    LEFT JOIN games g ON g.id = o.game_id
@@ -5611,6 +5718,7 @@ async def callback_handler(update, context):
                 f"💰 المبلغ: {format_order_amount(order['price'], order['currency'])}\n"
                 f"💳 طريقة الدفع: {payment_method}\n\n"
                 "✅ تم إتمام طلبك بنجاح.\n"
+                + (f"\n📝 رسالة من فريق الشحن:\n{order['completion_message']}\n" if order["completion_message"] else "")
                 + (f"🎁 تمت إضافة {reward_points_granted} نقطة مكافأة إلى حسابك.\n" if reward_points_granted else "")
                 + "❤️ شكراً لثقتك بـ SERADJ STORE!"
             )
