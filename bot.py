@@ -197,7 +197,7 @@ CANCEL_WORDS = {
 
 MAIN_MENU = [
     ["✨ مزايا متجرنا"],
-    ["👤 حسابي", "🛍️ المتجر", "💰 تعبئة الرصيد"],
+    ["👤 حسابي", "🛍️ المتجر"],
     ["➕ طلب لعبة غير موجودة"],
     ["🏪 ترقية الحساب إلى تاجر", "🎯 الإحالة"],
     ["🔐 السياسات والخصوصية", "📞 اتصل بالإدارة"],
@@ -207,7 +207,7 @@ ADMIN_MAIN_MENU = [
     ["🛠️ لوحة التحكم"],
     ["💰 طلبات التعبئة"],
     ["✨ مزايا متجرنا"],
-    ["👤 حسابي", "🛍️ المتجر", "💰 تعبئة الرصيد"],
+    ["👤 حسابي", "🛍️ المتجر"],
     ["➕ طلب لعبة غير موجودة"],
     ["🏪 ترقية الحساب إلى تاجر", "🎯 الإحالة"],
     ["🔐 السياسات والخصوصية", "📞 اتصل بالإدارة"],
@@ -1489,8 +1489,8 @@ async def show_account(message, user_id):
         f"🎁 نقاط المكافآت: {int(user['points'] or 0) if points_enabled(user_id) else 0} نقطة\n"
         f"📅 التسجيل: {user['created_at']}",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💰 محفظتي", callback_data="account_wallet"), InlineKeyboardButton("⭐ نقاطي", callback_data="account_points")],
-            [InlineKeyboardButton("📦 طلباتي", callback_data="account_orders")],
+            [InlineKeyboardButton("⭐ نقاطي", callback_data="account_points"), InlineKeyboardButton("📦 طلباتي", callback_data="account_orders")],
+            [InlineKeyboardButton("💰 تعبئة المحفظة", callback_data="account_deposit")],
             [InlineKeyboardButton("📜 سجل المحفظة", callback_data="wallet_history")],
         ]),
         )
@@ -2641,6 +2641,9 @@ async def photo_handler(update, context):
 
 async def show_my_orders(update, context):
     user_id = update.effective_user.id
+    target_message = update.effective_message
+    if target_message is None and update.callback_query:
+        target_message = update.callback_query.message
 
     with db() as conn:
         orders = conn.execute(
@@ -2666,7 +2669,7 @@ async def show_my_orders(update, context):
         }
 
     if not orders:
-        await update.message.reply_text(
+        await target_message.reply_text(
             "📦 ما عندك حتى طلب حاليا.",
             reply_markup=main_keyboard(user_id),
         )
@@ -2689,7 +2692,7 @@ async def show_my_orders(update, context):
             f"🕒 التاريخ: {order['created_at']}\n"
         )
 
-    await update.message.reply_text(
+    await target_message.reply_text(
         "\n".join(lines),
         parse_mode="HTML",
         reply_markup=main_keyboard(user_id),
@@ -4088,6 +4091,7 @@ async def callback_handler(update, context):
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ إتمام الطلب", callback_data=f"order_finish:{order_id}"),
              InlineKeyboardButton("❌ إلغاء الطلب", callback_data=f"order_cancel:{order_id}")],
+            [InlineKeyboardButton("📝 إتمام برسالة نصية", callback_data=f"order_finish_text:{order_id}")],
             [InlineKeyboardButton("📷 إرسال وصل الشحن (للمساعدين)", callback_data=f"order_receipt:{order_id}")],
             [InlineKeyboardButton("🔄 تنازل عن الطلب", callback_data=f"order_release:{order_id}")],
         ])
@@ -4456,10 +4460,23 @@ async def callback_handler(update, context):
         return
 
     if data == "account_wallet":
+        await query.answer("عرض رصيد المحفظة موجود ضمن معلومات حسابك.", show_alert=True)
+        return
+
+    if data == "account_deposit":
         with db() as conn:
-            acc = conn.execute("SELECT balance,balance_usd FROM users WHERE user_id=?", (user_id,)).fetchone()
-        if acc:
-            await query.message.reply_text(f"💰 محفظتك\n\n🇩🇿 الدينار: {int(acc['balance'] or 0)} DA\n🇺🇸 الدولار: {float(acc['balance_usd'] or 0):.2f} USD")
+            pending_dep = conn.execute("SELECT id FROM wallet_deposits WHERE user_id=? AND status='pending' LIMIT 1", (user_id,)).fetchone()
+        if pending_dep:
+            await query.message.reply_text(f"⏳ لديك طلب تعبئة قيد المراجعة #{pending_dep['id']}، لا يمكنك إرسال طلب آخر حتى تتم معالجته.")
+            await query.answer()
+            return
+        for k in ("awaiting_deposit_amount", "awaiting_deposit_amount_usd", "deposit_amount", "deposit_amount_usd", "deposit_method", "deposit_currency", "awaiting_deposit_receipt"):
+            context.user_data.pop(k, None)
+        await query.message.reply_text("💰 اختر المحفظة التي تريد تعبئتها:", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🇩🇿 محفظة الدينار DA", callback_data="deposit_currency:DA")],
+            [InlineKeyboardButton("💵 محفظة الدولار USD", callback_data="deposit_currency:USD")],
+        ]))
+        await query.answer()
         return
 
     if data == "account_points":
@@ -4538,10 +4555,10 @@ async def callback_handler(update, context):
             await query.edit_message_text(
                 f"🟠 اختر طريقة احتساب Flexy لتعبئة {amount} دج:\n\n"
                 f"1️⃣ تدفع {int(round(amount * 1.18))} دج وتُضاف {amount} دج كاملة إلى محفظتك.\n"
-                f"2️⃣ تدفع {amount} دج وتُخصم نسبة 18%، فيُضاف {int(round(amount * 0.82))} دج إلى محفظتك.\n\nاختر الطريقة:",
+                f"2️⃣ تدفع {amount} دج وتُخصم نسبة 15%، فيُضاف {int(round(amount * 0.85))} دج إلى محفظتك.\n\nاختر الطريقة:",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton(f"دفع {int(round(amount * 1.18))} دج وإضافة {amount} دج", callback_data="deposit_flexy_mode:full")],
-                    [InlineKeyboardButton(f"دفع {amount} دج وإضافة {int(round(amount * 0.82))} دج", callback_data="deposit_flexy_mode:deduct")],
+                    [InlineKeyboardButton(f"دفع {amount} دج وإضافة {int(round(amount * 0.85))} دج", callback_data="deposit_flexy_mode:deduct")],
                 ])
             )
             return
@@ -4559,7 +4576,7 @@ async def callback_handler(update, context):
             await query.answer("انتهت جلسة التعبئة. ابدأ من جديد.", show_alert=True)
             return
         requested_amount = amount
-        credit_amount = amount if mode == "full" else int(round(amount * 0.82))
+        credit_amount = amount if mode == "full" else int(round(amount * 0.85))
         paid_amount = int(round(amount * 1.18)) if mode == "full" else amount
         context.user_data["deposit_requested_amount"] = requested_amount
         context.user_data["deposit_amount"] = credit_amount
@@ -6378,6 +6395,38 @@ async def text_handler(update, context):
     # Work groups only receive shop orders and shipping receipts. Do not show
     # customer keyboards or answer normal staff conversation with the shop fallback.
     if chat and chat.type in ("group", "supergroup"):
+        if update.effective_user and message and context.user_data.get("awaiting_order_completion_text"):
+            completion_order_id = int(context.user_data.get("awaiting_order_completion_text"))
+            expected_chat = context.user_data.get("order_completion_chat_id")
+            if expected_chat and message.chat_id != int(expected_chat):
+                await message.reply_text("أرسل نص الإتمام في نفس قروب الطلب.")
+                return
+            completion_text = (message.text or "").strip()
+            if completion_text.lower() == "/cancel":
+                context.user_data.pop("awaiting_order_completion_text", None)
+                context.user_data.pop("order_completion_chat_id", None)
+                await message.reply_text("تم إلغاء كتابة رسالة الإتمام.")
+                return
+            if len(completion_text) < 2:
+                await message.reply_text("اكتب رسالة واضحة من حرفين على الأقل.")
+                return
+            with db() as conn:
+                row = conn.execute("SELECT claimed_by,status FROM orders WHERE id=?", (completion_order_id,)).fetchone()
+                if not row or row["status"] in ("completed", "rejected"):
+                    context.user_data.pop("awaiting_order_completion_text", None)
+                    context.user_data.pop("order_completion_chat_id", None)
+                    await message.reply_text("الطلب غير متاح أو تمت معالجته.")
+                    return
+                if int(row["claimed_by"] or 0) != update.effective_user.id:
+                    await message.reply_text("إتمام الطلب برسالة متاح لمستلم الطلب فقط.")
+                    return
+                conn.execute("UPDATE orders SET completion_message=? WHERE id=?", (completion_text, completion_order_id))
+            context.user_data.pop("awaiting_order_completion_text", None)
+            context.user_data.pop("order_completion_chat_id", None)
+            await message.reply_text(
+                f"✅ تم حفظ رسالة الطلب #{completion_order_id}. اضغط لتأكيد الإتمام وإرسالها للزبون:",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الإتمام وإرسال النص", callback_data=f"status:{completion_order_id}:completed")], [InlineKeyboardButton("❌ إلغاء", callback_data=f"order_finish_back:{completion_order_id}")]])
+            )
         return
     if not update.effective_user or not message:
         return
