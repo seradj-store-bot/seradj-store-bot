@@ -219,6 +219,7 @@ ADMIN_PANEL_MENU = [
     ["👥 المشتركين والتجار", "🛍️ إدارة المتجر"],
     ["💎 الأسعار والرصيد", "📣 التسويق والتواصل"],
     ["⚙️ إعدادات البوت", "📊 التقارير والصيانة"],
+    ["💳 إدارة الفليكسي"],
     ["🔙 القائمة الرئيسية"],
 ]
 
@@ -739,6 +740,47 @@ def init_db():
             archived_at TEXT DEFAULT ''
         );
         """)
+        # Isolated Flexy monitoring subsystem; does not touch shop wallets/orders.
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS flexy_subscribers (
+            slot INTEGER PRIMARY KEY CHECK(slot BETWEEN 1 AND 10),
+            user_id INTEGER UNIQUE,
+            active INTEGER NOT NULL DEFAULT 1,
+            balance REAL NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS flexy_sms_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_chat_id INTEGER NOT NULL,
+            source_message_id INTEGER NOT NULL,
+            sender TEXT DEFAULT '',
+            gross_amount REAL NOT NULL,
+            message_text TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            credited_slot INTEGER DEFAULT NULL,
+            net_amount REAL DEFAULT 0,
+            UNIQUE(source_chat_id, source_message_id)
+        );
+        CREATE TABLE IF NOT EXISTS flexy_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slot INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            amount REAL NOT NULL,
+            balance_before REAL NOT NULL,
+            balance_after REAL NOT NULL,
+            note TEXT DEFAULT '',
+            admin_id INTEGER DEFAULT NULL,
+            sms_event_id INTEGER DEFAULT NULL,
+            created_at TEXT NOT NULL
+        );
+        """)
+        conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('flexy_deduction_percent','0')")
+        conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('flexy_channel_id','')")
+        conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('flexy_sms_source_chat_id','')")
+
         # Safe migrations for group order claiming; preserves existing orders.
         for column, definition in (("claimed_by", "INTEGER DEFAULT 0"), ("claimed_name", "TEXT DEFAULT ''")):
             try:
@@ -3318,6 +3360,67 @@ async def callback_handler(update, context):
     # Default for ordinary section/navigation callbacks; set True only when
     # a group/admin terminal order action is normalized to status:... below.
     group_order_terminal_action = False
+
+    # Flexy wallet administration and SMS credit allocation.
+    if data == "flexy_noop":
+        await query.answer("لا يوجد مشترك نشط.", show_alert=True); return
+    if data.startswith("flexy_") and not is_admin(user_id) and not data.startswith("flexy_credit:"):
+        await query.answer("هذا القسم خاص بالإدارة.", show_alert=True); return
+    if data == "flexy_set_percent":
+        context.user_data["flexy_admin_step"] = "percent"
+        await query.message.reply_text("أرسل نسبة الاقتطاع من 0 إلى 100. مثال: 15\nللإلغاء أرسل /cancel.")
+        return
+    if data == "flexy_set_channel_help":
+        context.user_data["flexy_admin_step"] = "channel"
+        await query.message.reply_text("لتعيين القناة: أرسل هنا رسالة مُعاد توجيهها من القناة الخاصة. لازم يكون البوت مشرفًا فيها مع صلاحية نشر الرسائل.\nللإلغاء أرسل /cancel.")
+        return
+    if data == "flexy_subscribers":
+        with db() as conn:
+            rows = conn.execute("SELECT slot,user_id,active,balance FROM flexy_subscribers ORDER BY slot").fetchall()
+        lines = [f"{r['slot']} — {'🟢 نشط' if r['active'] else '🔴 متوقف'} — ID: {r['user_id'] or 'غير معيّن'} — الرصيد: {r['balance']:g} DA" for r in rows]
+        buttons = [[InlineKeyboardButton(f"تعيين/تغيير المشترك {i}", callback_data=f"flexy_assign:{i}"), InlineKeyboardButton("تفعيل/إيقاف", callback_data=f"flexy_toggle:{i}")] for i in range(1,11)]
+        buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="flexy_back")])
+        await query.message.reply_text("👥 مشتركو الفليكسي\n\n" + ("\n".join(lines) if lines else "لا يوجد مشتركين بعد."), reply_markup=InlineKeyboardMarkup(buttons)); return
+    if data.startswith("flexy_assign:"):
+        slot=int(data.split(":",1)[1]); context.user_data["flexy_assign_slot"]=slot
+        await query.message.reply_text(f"أرسل Telegram ID للمشترك رقم {slot}. يمكنه إيجاد ID عبر /myid. أرسل 0 لإلغاء التعيين."); return
+    if data.startswith("flexy_toggle:"):
+        slot=int(data.split(":",1)[1])
+        with db() as conn:
+            row=conn.execute("SELECT active FROM flexy_subscribers WHERE slot=?",(slot,)).fetchone()
+            if row: conn.execute("UPDATE flexy_subscribers SET active=?,updated_at=? WHERE slot=?",(0 if row['active'] else 1,now_text(),slot))
+            else: conn.execute("INSERT INTO flexy_subscribers(slot,active,updated_at) VALUES(?,0,?)",(slot,now_text()))
+        await query.answer("تم تحديث حالة المشترك."); await query.message.reply_text("تم تحديث المشترك. افتح إدارة الفليكسي لعرض الحالة الجديدة."); return
+    if data == "flexy_balances":
+        with db() as conn:
+            rows=conn.execute("SELECT slot,user_id,active,balance FROM flexy_subscribers ORDER BY slot").fetchall()
+            tx=conn.execute("SELECT slot,kind,amount,balance_after,note,created_at FROM flexy_transactions ORDER BY id DESC LIMIT 20").fetchall()
+        lines=[f"{r['slot']} | ID {r['user_id'] or '-'} | {'نشط' if r['active'] else 'متوقف'} | {r['balance']:g} DA" for r in rows]
+        lines += ["", "آخر 20 عملية:"] + [f"{r['created_at']} | مشترك {r['slot']} | {r['kind']} {r['amount']:g} | الرصيد {r['balance_after']:g}" for r in tx]
+        await query.message.reply_text("\n".join(lines) if lines else "لا توجد بيانات."); return
+    if data == "flexy_back":
+        await flexy_admin_panel(query.message); return
+    if data.startswith("flexy_credit:"):
+        try: _, event_id, slot_text=data.split(":",2); event_id=int(event_id); slot=int(slot_text)
+        except Exception: await query.answer("طلب غير صالح.",show_alert=True); return
+        with db() as conn:
+            event=conn.execute("SELECT * FROM flexy_sms_events WHERE id=?",(event_id,)).fetchone()
+            sub=conn.execute("SELECT * FROM flexy_subscribers WHERE slot=? AND active=1 AND user_id IS NOT NULL",(slot,)).fetchone()
+            if not event or event['status']!='pending' or not sub:
+                await query.answer("تمت معالجة التعبئة أو المشترك غير نشط.",show_alert=True); return
+            if not is_admin(user_id) and int(sub["user_id"]) != int(user_id):
+                await query.answer("هذا الزر مخصص للمشترك صاحب هذا الرقم.", show_alert=True); return
+            pct=Decimal(get_setting("flexy_deduction_percent","0"))
+            net=(Decimal(str(event['gross_amount']))*(Decimal('100')-pct)/Decimal('100')).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)
+            before=Decimal(str(sub['balance'])); after=before+net
+            conn.execute("UPDATE flexy_subscribers SET balance=?,updated_at=? WHERE slot=?",(float(after),now_text(),slot))
+            conn.execute("INSERT INTO flexy_transactions(slot,user_id,kind,amount,balance_before,balance_after,note,sms_event_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(slot,sub['user_id'],'تعبئة SMS',float(net),float(before),float(after),f"المبلغ الأصلي {event['gross_amount']:g} DA | اقتطاع {pct}%",event_id,now_text()))
+            conn.execute("UPDATE flexy_sms_events SET status='credited',credited_slot=?,net_amount=? WHERE id=? AND status='pending'",(slot,float(net),event_id))
+        await query.answer("تمت إضافة الرصيد.")
+        try: await context.bot.send_message(chat_id=int(sub['user_id']),text=f"✅ تمت إضافة تعبئة فليكسي إلى محفظتك\nالمبلغ الأصلي: {event['gross_amount']:g} DA\nنسبة الاقتطاع: {pct}%\nالمضاف: {net:g} DA\nرصيدك الجديد: {after:g} DA")
+        except Exception: logger.exception("Flexy subscriber notification failed")
+        await query.edit_message_text(f"✅ تمت معالجة التعبئة\nالمبلغ: {event['gross_amount']:g} DA\nالمشترك: {slot}\nالمضاف: {net:g} DA")
+        return
 
     if data == "check_subscription":
         if not await is_subscribed(context.bot, user_id):
@@ -6389,12 +6492,125 @@ async def callback_handler(update, context):
 # معالجة رسائل الإدارة والزبائن
 # =========================
 
+def flexy_parse_sms(text):
+    """Accept only Djezzy 700 recharge notices; return amount or None."""
+    raw = (text or "").strip()
+    if not raw or "Vous venez de recharger" not in raw:
+        return None
+    # SMS Bot format contains a header with the original sender number.
+    header = raw.splitlines()[0]
+    if not re.search(r"(?:^|\s)700(?:\s|$)", header):
+        return None
+    match = re.search(r"Vous venez de recharger\s+([0-9][0-9\s.,]*)\s*DA\b", raw, re.IGNORECASE)
+    if not match:
+        return None
+    amount_text = match.group(1).replace(" ", "").replace(",", ".")
+    try:
+        amount = Decimal(amount_text)
+        return amount if amount > 0 else None
+    except InvalidOperation:
+        return None
+
+
+async def flexy_admin_panel(message):
+    percent = get_setting("flexy_deduction_percent", "0")
+    channel = get_setting("flexy_channel_id", "")
+    with db() as conn:
+        rows = conn.execute("SELECT slot,user_id,active,balance FROM flexy_subscribers ORDER BY slot").fetchall()
+    active_count = sum(1 for r in rows if r["active"])
+    body = ("💳 إدارة الفليكسي\n\n"
+            f"📉 نسبة الاقتطاع الحالية: {percent}%\n"
+            f"📢 قناة التعبئات: {channel or 'غير معيّنة'}\n"
+            f"👥 المشتركين المعرّفين: {len(rows)} | النشطين: {active_count}\n\n"
+            "اختر العملية:")
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📉 تعديل نسبة الاقتطاع", callback_data="flexy_set_percent")],
+        [InlineKeyboardButton("📢 تعيين قناة التعبئات", callback_data="flexy_set_channel_help")],
+        [InlineKeyboardButton("👥 إدارة المشتركين 1-10", callback_data="flexy_subscribers")],
+        [InlineKeyboardButton("💰 الأرصدة والسجل", callback_data="flexy_balances")],
+        [InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")],
+    ])
+    await message.reply_text(body, reply_markup=keyboard)
+
+
+async def flexy_receive_sms(update, context):
+    """Record a qualifying SMS and publish subscriber-specific credit buttons."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if not msg or not chat or chat.type not in ("group", "supergroup"):
+        return False
+    amount = flexy_parse_sms(msg.text or msg.caption or "")
+    if amount is None:
+        return False
+    configured_source = get_setting("flexy_sms_source_chat_id", "").strip()
+    # First qualifying source can be explicitly bound by admin; otherwise require a bound source.
+    if not configured_source or str(chat.id) != configured_source:
+        return False
+    channel_id = get_setting("flexy_channel_id", "").strip()
+    if not channel_id:
+        logger.warning("Flexy SMS received but no Flexy channel is configured")
+        return True
+    created = datetime.now(STORE_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with db() as conn:
+            cur = conn.execute("""INSERT OR IGNORE INTO flexy_sms_events
+                (source_chat_id,source_message_id,sender,gross_amount,message_text,created_at)
+                VALUES(?,?,?,?,?,?)""", (chat.id, msg.message_id, "700", float(amount), msg.text or msg.caption or "", created))
+            if cur.rowcount == 0:
+                return True
+            event_id = cur.lastrowid
+            subscribers = conn.execute("SELECT slot FROM flexy_subscribers WHERE active=1 AND user_id IS NOT NULL ORDER BY slot").fetchall()
+        buttons = [[InlineKeyboardButton(f"المشترك {r['slot']}", callback_data=f"flexy_credit:{event_id}:{r['slot']}")] for r in subscribers]
+        if not buttons:
+            buttons = [[InlineKeyboardButton("لا يوجد مشترك نشط", callback_data="flexy_noop")]]
+        await context.bot.send_message(chat_id=int(channel_id),
+            text=(f"📥 تعبئة فليكسي جديدة\n\n💰 المبلغ: {amount} DA\n🕒 التاريخ والوقت: {created}\n\nاختر المشترك لإضافة الرصيد إليه:"),
+            reply_markup=InlineKeyboardMarkup(buttons))
+    except Exception:
+        logger.exception("Flexy SMS processing failed")
+    return True
+
+
+async def set_flexy_source_command(update, context):
+    if not is_admin(update.effective_user.id):
+        return
+    chat = update.effective_chat
+    if not chat or chat.type not in ("group", "supergroup"):
+        await update.effective_message.reply_text("استعمل /setflexysource داخل مجموعة SMS التي تستقبل رسائل جيزي.")
+        return
+    set_setting("flexy_sms_source_chat_id", str(chat.id))
+    await update.effective_message.reply_text("✅ تم ربط هذه المجموعة كمصدر رسائل SMS لنظام الفليكسي.")
+
+
+async def flexy_command(update, context):
+    user = update.effective_user
+    if not user:
+        return
+    if is_admin(user.id):
+        await flexy_admin_panel(update.effective_message)
+        return
+    with db() as conn:
+        row=conn.execute("SELECT slot,balance,active FROM flexy_subscribers WHERE user_id=?",(user.id,)).fetchone()
+        history=conn.execute("SELECT kind,amount,balance_after,created_at FROM flexy_transactions WHERE user_id=? ORDER BY id DESC LIMIT 10",(user.id,)).fetchall()
+    if not row or not row["active"]:
+        await update.effective_message.reply_text("لا يوجد حساب فليكسي نشط مرتبط بحسابك. تواصل مع الإدارة.")
+        return
+    body=f"💳 محفظة الفليكسي — المشترك {row['slot']}\\nرصيدك الحالي: {row['balance']:g} DA\\n\\nآخر العمليات:\\n"
+    body += "\\n".join(f"{r['created_at']} | {r['kind']} {r['amount']:g} DA | الرصيد {r['balance_after']:g}" for r in history) or "لا توجد عمليات بعد."
+    await update.effective_message.reply_text(body)
+
+
 async def text_handler(update, context):
     message = update.effective_message
     chat = update.effective_chat
     # Work groups only receive shop orders and shipping receipts. Do not show
     # customer keyboards or answer normal staff conversation with the shop fallback.
     if chat and chat.type in ("group", "supergroup"):
+        # Flexy SMS listener is isolated from shop order workflows.
+        try:
+            await flexy_receive_sms(update, context)
+        except Exception:
+            logger.exception("Flexy SMS listener failed")
         if update.effective_user and message and context.user_data.get("awaiting_order_completion_text"):
             completion_order_id = int(context.user_data.get("awaiting_order_completion_text"))
             expected_chat = context.user_data.get("order_completion_chat_id")
@@ -6432,6 +6648,45 @@ async def text_handler(update, context):
         return
     user_id = update.effective_user.id
     text = (message.text or "").strip()
+    # Flexy admin setup steps.
+    if is_admin(user_id) and context.user_data.get("flexy_admin_step") == "percent":
+        try:
+            pct=Decimal(text)
+            if pct < 0 or pct > 100: raise ValueError
+            set_setting("flexy_deduction_percent", str(pct.normalize()))
+            context.user_data.pop("flexy_admin_step",None)
+            await message.reply_text(f"✅ تم حفظ نسبة الاقتطاع: {pct.normalize()}%")
+        except Exception:
+            await message.reply_text("❌ أرسل رقمًا من 0 إلى 100، مثال 15. أو /cancel للإلغاء.")
+        return
+    if is_admin(user_id) and context.user_data.get("flexy_assign_slot") is not None:
+        slot=int(context.user_data.pop("flexy_assign_slot"))
+        try:
+            target=int(text)
+            if target < 0: raise ValueError
+            with db() as conn:
+                if target == 0:
+                    conn.execute("INSERT INTO flexy_subscribers(slot,user_id,active,updated_at) VALUES(?,NULL,0,?) ON CONFLICT(slot) DO UPDATE SET user_id=NULL,active=0,updated_at=excluded.updated_at",(slot,now_text()))
+                else:
+                    conn.execute("INSERT INTO flexy_subscribers(slot,user_id,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(slot) DO UPDATE SET user_id=excluded.user_id,active=1,updated_at=excluded.updated_at",(slot,target,now_text(),now_text()))
+            await message.reply_text("✅ تم حفظ تعيين المشترك." if target else "تم إلغاء تعيين المشترك.")
+        except Exception:
+            await message.reply_text("❌ Telegram ID غير صالح أو مستعمل في خانة أخرى. أعد فتح إدارة الفليكسي وحاول مجددًا.")
+        return
+    if is_admin(user_id) and context.user_data.get("flexy_admin_step") == "channel":
+        origin=getattr(message,"forward_origin",None)
+        chat_obj=getattr(origin,"chat",None) if origin else getattr(message,"forward_from_chat",None)
+        if chat_obj and getattr(chat_obj,"type",None)=="channel":
+            try:
+                await context.bot.get_chat_member(chat_obj.id, context.bot.id)
+                set_setting("flexy_channel_id",str(chat_obj.id))
+                context.user_data.pop("flexy_admin_step",None)
+                await message.reply_text(f"✅ تم تعيين قناة الفليكسي: {chat_obj.title}\nتأكد أن البوت مشرف فيها ويملك صلاحية نشر الرسائل.")
+            except Exception:
+                await message.reply_text("❌ لم أتمكن من التحقق من القناة. أضف البوت مشرفًا فيها ثم أعد توجيه رسالة منها.")
+        else:
+            await message.reply_text("أرسل رسالة مُعاد توجيهها من القناة نفسها، وليس رابطًا فقط.")
+        return
     if context.user_data.pop("feedback_waiting", False):
         if len(text) > 1500:
             context.user_data["feedback_waiting"] = True
@@ -8068,6 +8323,10 @@ async def text_handler(update, context):
             await show_admin_panel(update, context)
             return
 
+        if text == "💳 إدارة الفليكسي":
+            await flexy_admin_panel(message)
+            return
+
         if text in ADMIN_SUBMENUS:
             await message.reply_text(
                 f"{text}\n\nاختار العملية المطلوبة:",
@@ -8506,6 +8765,8 @@ def main():
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CommandHandler("ordergames", order_games_command))
     app.add_handler(CommandHandler("setordergroup", set_order_group_command))
+    app.add_handler(CommandHandler("flexy", flexy_command))
+    app.add_handler(CommandHandler("setflexysource", set_flexy_source_command))
 
     # أزرار Inline
     app.add_handler(CallbackQueryHandler(callback_handler))
