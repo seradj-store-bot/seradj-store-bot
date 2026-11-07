@@ -6562,6 +6562,9 @@ async def flexy_receive_sms(update, context):
     """Process SMS notices posted in the configured source channel/group."""
     msg = update.effective_message
     chat = update.effective_chat
+    logger.info("Flexy: update received update_id=%s channel_post=%s edited_channel_post=%s chat_id=%s",
+                getattr(update, "update_id", None), bool(getattr(update, "channel_post", None)),
+                bool(getattr(update, "edited_channel_post", None)), getattr(chat, "id", None))
     if not msg or not chat or chat.type not in ("group", "supergroup", "channel"):
         return False
 
@@ -8838,7 +8841,10 @@ def main():
     app.add_handler(CommandHandler("flexy", flexy_command))
     app.add_handler(CommandHandler("setflexysource", set_flexy_source_command))
     # Channel posts are separate Telegram updates; ordinary text handlers do not receive them.
-    app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, flexy_receive_sms))
+    app.add_handler(MessageHandler(
+        filters.UpdateType.CHANNEL_POST | filters.UpdateType.EDITED_CHANNEL_POST,
+        flexy_receive_sms,
+    ))
 
     # أزرار Inline
     app.add_handler(CallbackQueryHandler(callback_handler))
@@ -8865,7 +8871,10 @@ def main():
     logger.info("SERADJ STORE bot is starting...")
 
     # تشغيل البوت
-    app.run_polling()
+    # Explicitly request channel_post updates from Telegram; relying on the
+    # implicit getUpdates defaults can leave channel posts unobserved after
+    # another deployment changed allowed_updates.
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
