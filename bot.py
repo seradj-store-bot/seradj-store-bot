@@ -6534,10 +6534,10 @@ async def flexy_admin_panel(message):
 
 
 async def flexy_receive_sms(update, context):
-    """Record a qualifying SMS and publish subscriber-specific credit buttons."""
+    """Record a qualifying SMS from the configured group or channel."""
     msg = update.effective_message
     chat = update.effective_chat
-    if not msg or not chat or chat.type not in ("group", "supergroup"):
+    if not msg or not chat or chat.type not in ("group", "supergroup", "channel"):
         return False
     amount = flexy_parse_sms(msg.text or msg.caption or "")
     if amount is None:
@@ -6572,14 +6572,19 @@ async def flexy_receive_sms(update, context):
 
 
 async def set_flexy_source_command(update, context):
-    if not is_admin(update.effective_user.id):
+    user = update.effective_user
+    if not user or not is_admin(user.id):
         return
     chat = update.effective_chat
-    if not chat or chat.type not in ("group", "supergroup"):
-        await update.effective_message.reply_text("استعمل /setflexysource داخل مجموعة SMS التي تستقبل رسائل جيزي.")
+    if chat and chat.type in ("group", "supergroup"):
+        set_setting("flexy_sms_source_chat_id", str(chat.id))
+        await update.effective_message.reply_text("✅ تم ربط هذه المجموعة كمصدر رسائل SMS لنظام الفليكسي.")
         return
-    set_setting("flexy_sms_source_chat_id", str(chat.id))
-    await update.effective_message.reply_text("✅ تم ربط هذه المجموعة كمصدر رسائل SMS لنظام الفليكسي.")
+    if chat and chat.type == "private":
+        context.user_data["flexy_admin_step"] = "source"
+        await update.effective_message.reply_text("حوّل (Forward) رسالة SMS منشورة من قناة SMS إلى هنا، وسأحفظ معرّف القناة كمصدر للتعبئات. لا ترسل رسالة عادية.")
+        return
+    await update.effective_message.reply_text("استعمل الأمر في الخاص مع البوت ثم حوّل إليه رسالة من قناة SMS، أو استعمله داخل مجموعة SMS.")
 
 
 async def flexy_command(update, context):
@@ -6649,6 +6654,16 @@ async def text_handler(update, context):
     user_id = update.effective_user.id
     text = (message.text or "").strip()
     # Flexy admin setup steps.
+    if is_admin(user_id) and context.user_data.get("flexy_admin_step") == "source":
+        origin = getattr(message, "forward_origin", None)
+        source_chat = getattr(origin, "chat", None) if origin else getattr(message, "forward_from_chat", None)
+        if source_chat and getattr(source_chat, "type", None) == "channel":
+            set_setting("flexy_sms_source_chat_id", str(source_chat.id))
+            context.user_data.pop("flexy_admin_step", None)
+            await message.reply_text(f"✅ تم ربط قناة SMS كمصدر للتعبئات: {getattr(source_chat, 'title', 'قناة خاصة')}\nتأكد أن بوت SERADJ STORE مشرف في قناة المصدر.")
+        else:
+            await message.reply_text("❌ لم أتعرف على القناة. حوّل رسالة مباشرة من قناة SMS (Forward)، وليس نسخًا ولصقًا. /cancel للإلغاء.")
+        return
     if is_admin(user_id) and context.user_data.get("flexy_admin_step") == "percent":
         try:
             pct=Decimal(text)
@@ -8767,6 +8782,8 @@ def main():
     app.add_handler(CommandHandler("setordergroup", set_order_group_command))
     app.add_handler(CommandHandler("flexy", flexy_command))
     app.add_handler(CommandHandler("setflexysource", set_flexy_source_command))
+    # Channel posts are separate Telegram updates; ordinary text handlers do not receive them.
+    app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, flexy_receive_sms))
 
     # أزرار Inline
     app.add_handler(CallbackQueryHandler(callback_handler))
