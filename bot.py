@@ -777,6 +777,29 @@ def init_db():
             created_at TEXT NOT NULL
         );
         """)
+        # Migrate Flexy SMS event tables created by earlier bot versions.
+        # CREATE TABLE IF NOT EXISTS does not add columns to an existing SQLite table.
+        flexy_event_columns = {row[1] for row in conn.execute("PRAGMA table_info(flexy_sms_events)").fetchall()}
+        flexy_event_migrations = {
+            "source_chat_id": "INTEGER NOT NULL DEFAULT 0",
+            "source_message_id": "INTEGER NOT NULL DEFAULT 0",
+            "sender": "TEXT DEFAULT ''",
+            "gross_amount": "REAL NOT NULL DEFAULT 0",
+            "message_text": "TEXT DEFAULT ''",
+            "created_at": "TEXT NOT NULL DEFAULT ''",
+            "status": "TEXT NOT NULL DEFAULT 'pending'",
+            "credited_slot": "INTEGER DEFAULT NULL",
+            "net_amount": "REAL DEFAULT 0",
+        }
+        for column, definition in flexy_event_migrations.items():
+            if column not in flexy_event_columns:
+                conn.execute(f"ALTER TABLE flexy_sms_events ADD COLUMN {column} {definition}")
+        # Partial unique index avoids collisions between legacy rows whose newly-added
+        # source IDs default to zero, while deduplicating all newly received channel posts.
+        conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_flexy_sms_source_message
+            ON flexy_sms_events(source_chat_id, source_message_id)
+            WHERE source_chat_id != 0 AND source_message_id != 0""")
+
         conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('flexy_deduction_percent','0')")
         conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('flexy_channel_id','')")
         conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('flexy_sms_source_chat_id','')")
