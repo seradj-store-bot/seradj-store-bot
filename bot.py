@@ -6497,9 +6497,11 @@ def flexy_parse_sms(text):
     raw = (text or "").strip()
     if not raw or "Vous venez de recharger" not in raw:
         return None
-    # SMS Bot format contains a header with the original sender number.
-    header = raw.splitlines()[0]
-    if not re.search(r"(?:^|\s)700(?:\s|$)", header):
+    # SMS Telebot may format the sender header differently; require 700
+    # as a standalone number somewhere before the recharge body.
+    body_pos = raw.lower().find("vous venez de recharger")
+    header = raw[:body_pos]
+    if not re.search(r"(?<!\d)700(?!\d)", header):
         return None
     match = re.search(r"Vous venez de recharger\s+([0-9][0-9\s.,]*)\s*DA\b", raw, re.IGNORECASE)
     if not match:
@@ -6534,29 +6536,52 @@ async def flexy_admin_panel(message):
 
 
 async def flexy_receive_sms(update, context):
-    """Record a qualifying SMS from the configured group or channel."""
+    """Process SMS notices posted in the configured source channel/group."""
     msg = update.effective_message
     chat = update.effective_chat
     if not msg or not chat or chat.type not in ("group", "supergroup", "channel"):
         return False
-    amount = flexy_parse_sms(msg.text or msg.caption or "")
-    if amount is None:
-        return False
+
+    raw_text = msg.text or msg.caption or ""
     configured_source = get_setting("flexy_sms_source_chat_id", "").strip()
-    # First qualifying source can be explicitly bound by admin; otherwise require a bound source.
-    if not configured_source or str(chat.id) != configured_source:
+    if not configured_source:
+        logger.warning("Flexy: source chat is not configured; received chat_id=%s", chat.id)
         return False
+    if str(chat.id) != configured_source:
+        logger.info("Flexy: ignored post from unconfigured chat_id=%s (configured=%s)", chat.id, configured_source)
+        return False
+
+    amount = flexy_parse_sms(raw_text)
+    if amount is None:
+        logger.info("Flexy: source post did not match recharge format. chat_id=%s message_id=%s text=%r", chat.id, msg.message_id, raw_text[:500])
+        try:
+            if ADMIN_ID:
+                await context.bot.send_message(chat_id=ADMIN_ID,
+                    text=("⚠️ وصلت منشور من قناة SMS المرتبطة، لكن لم أتعرف عليه كتعبئة 700.\n"
+                          f"معرّف القناة: {chat.id}\nرقم المنشور: {msg.message_id}\n"
+                          f"النص المستلم: {(raw_text or '[بدون نص')[:700]}"))
+        except Exception:
+            logger.exception("Flexy: failed to send parse diagnostic to admin")
+        return False
+
     channel_id = get_setting("flexy_channel_id", "").strip()
     if not channel_id:
-        logger.warning("Flexy SMS received but no Flexy channel is configured")
+        logger.error("Flexy: SMS matched but output channel is not configured")
+        if ADMIN_ID:
+            try:
+                await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ تم التعرف على تعبئة {amount} DA لكن قناة الفليكسي غير معيّنة.")
+            except Exception:
+                logger.exception("Flexy: failed to notify admin about missing output channel")
         return True
+
     created = datetime.now(STORE_TZ).strftime("%Y-%m-%d %H:%M:%S")
     try:
         with db() as conn:
             cur = conn.execute("""INSERT OR IGNORE INTO flexy_sms_events
                 (source_chat_id,source_message_id,sender,gross_amount,message_text,created_at)
-                VALUES(?,?,?,?,?,?)""", (chat.id, msg.message_id, "700", float(amount), msg.text or msg.caption or "", created))
+                VALUES(?,?,?,?,?,?)""", (chat.id, msg.message_id, "700", float(amount), raw_text, created))
             if cur.rowcount == 0:
+                logger.info("Flexy: duplicate SMS ignored chat_id=%s message_id=%s", chat.id, msg.message_id)
                 return True
             event_id = cur.lastrowid
             subscribers = conn.execute("SELECT slot FROM flexy_subscribers WHERE active=1 AND user_id IS NOT NULL ORDER BY slot").fetchall()
@@ -6566,8 +6591,15 @@ async def flexy_receive_sms(update, context):
         await context.bot.send_message(chat_id=int(channel_id),
             text=(f"📥 تعبئة فليكسي جديدة\n\n💰 المبلغ: {amount} DA\n🕒 التاريخ والوقت: {created}\n\nاختر المشترك لإضافة الرصيد إليه:"),
             reply_markup=InlineKeyboardMarkup(buttons))
-    except Exception:
-        logger.exception("Flexy SMS processing failed")
+        logger.info("Flexy: published event_id=%s amount=%s to channel_id=%s", event_id, amount, channel_id)
+    except Exception as exc:
+        logger.exception("Flexy SMS processing/publishing failed")
+        try:
+            if ADMIN_ID:
+                await context.bot.send_message(chat_id=ADMIN_ID,
+                    text=f"❌ تم التعرف على تعبئة {amount} DA لكن فشل نشرها في قناة الفليكسي. الخطأ: {str(exc)[:700]}")
+        except Exception:
+            logger.exception("Flexy: failed to notify admin about publishing error")
     return True
 
 
