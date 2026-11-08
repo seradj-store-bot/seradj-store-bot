@@ -3496,9 +3496,15 @@ async def callback_handler(update, context):
             conn.execute("INSERT INTO flexy_transactions(slot,user_id,kind,amount,balance_before,balance_after,note,sms_event_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(slot,sub['user_id'],'تعبئة SMS',float(net),float(before),float(after),f"المبلغ الأصلي {event['gross_amount']:g} DA | اقتطاع {pct}%",event_id,now_text()))
             conn.execute("UPDATE flexy_sms_events SET status='credited',credited_slot=?,net_amount=? WHERE id=? AND status='pending'",(slot,float(net),event_id))
         await query.answer("تمت إضافة الرصيد.")
-        try: await context.bot.send_message(chat_id=int(sub['user_id']),text=f"✅ تمت إضافة تعبئة فليكسي إلى محفظتك\nالمبلغ الأصلي: {event['gross_amount']:g} DA\nنسبة الاقتطاع: {pct}%\nالمضاف: {net:g} DA\nرصيدك الجديد: {after:g} DA")
-        except Exception: logger.exception("Flexy subscriber notification failed")
-        await query.edit_message_text(f"✅ تمت معالجة التعبئة\nالمبلغ: {event['gross_amount']:g} DA\nالمشترك: {slot}\nالمضاف: {net:g} DA")
+        # Do not send a private bot notification to the subscriber.
+        # Publish the credited amount and resulting balance in the Flexy output channel post.
+        await query.edit_message_text(
+            f"✅ تمت إضافة التعبئة إلى محفظة المشترك {slot}\n\n"
+            f"💰 المبلغ الأصلي: {event['gross_amount']:g} DA\n"
+            f"📉 نسبة الاقتطاع: {pct}%\n"
+            f"➕ المضاف للمحفظة: {net:g} DA\n"
+            f"💳 الرصيد الجديد: {after:g} DA"
+        )
         return
 
     if data == "check_subscription":
@@ -6647,24 +6653,11 @@ async def flexy_receive_sms(update, context):
     if amount is None:
         logger.info("Flexy: source post did not match recharge format. chat_id=%s message_id=%s text=%r", chat.id, msg.message_id, raw_text[:500])
         await send_system_log(context.bot, f"⚠️ منشور SMS لم يطابق صيغة التعبئة.\nالقناة: {chat.id}\nرقم المنشور: {msg.message_id}\nالنص: {raw_text[:500]}", "WARNING")
-        try:
-            if ADMIN_ID:
-                await context.bot.send_message(chat_id=ADMIN_ID,
-                    text=("⚠️ وصلت منشور من قناة SMS المرتبطة، لكن لم أتعرف عليه كتعبئة 700.\n"
-                          f"معرّف القناة: {chat.id}\nرقم المنشور: {msg.message_id}\n"
-                          f"النص المستلم: {(raw_text or '[بدون نص')[:700]}"))
-        except Exception:
-            logger.exception("Flexy: failed to send parse diagnostic to admin")
         return False
 
     channel_id = get_setting("flexy_channel_id", "").strip()
     if not channel_id:
         logger.error("Flexy: SMS matched but output channel is not configured")
-        if ADMIN_ID:
-            try:
-                await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ تم التعرف على تعبئة {amount} DA لكن قناة الفليكسي غير معيّنة.")
-            except Exception:
-                logger.exception("Flexy: failed to notify admin about missing output channel")
         return True
 
     created = datetime.now(STORE_TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -6708,12 +6701,6 @@ async def flexy_receive_sms(update, context):
     except Exception as exc:
         logger.exception("Flexy SMS processing/publishing failed")
         await send_system_log(context.bot, f"❌ فشل معالجة/نشر تعبئة Flexy.\nرقم المنشور: {msg.message_id}\nالخطأ: {str(exc)[:900]}", "ERROR")
-        try:
-            if ADMIN_ID:
-                await context.bot.send_message(chat_id=ADMIN_ID,
-                    text=f"❌ تم التعرف على تعبئة {amount} DA لكن فشل نشرها في قناة الفليكسي. الخطأ: {str(exc)[:700]}")
-        except Exception:
-            logger.exception("Flexy: failed to notify admin about publishing error")
     return True
 
 
