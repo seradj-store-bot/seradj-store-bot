@@ -813,8 +813,45 @@ def init_db():
         for column, definition in flexy_event_migrations.items():
             if column not in flexy_event_columns:
                 conn.execute(f"ALTER TABLE flexy_sms_events ADD COLUMN {column} {definition}")
+
+        # Repair legacy schemas that accidentally made message_id unique on its own.
+        # Telegram message IDs are only unique within a chat, so the correct key is
+        # (source_chat_id, source_message_id). Preserve all existing event data.
+        unique_indexes = conn.execute("PRAGMA index_list('flexy_sms_events')").fetchall()
+        bad_unique_constraint = False
+        for idx in unique_indexes:
+            # PRAGMA index_list: seq, name, unique, origin, partial
+            if not idx[2] or (len(idx) > 3 and idx[3] == 'pk'):
+                continue
+            index_name = idx[1]
+            index_columns = [r[2] for r in conn.execute(f"PRAGMA index_info('{index_name}')").fetchall()]
+            if index_columns != ['source_chat_id', 'source_message_id']:
+                bad_unique_constraint = True
+                break
+        if bad_unique_constraint:
+            conn.execute("""CREATE TABLE flexy_sms_events_repaired (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_chat_id INTEGER NOT NULL DEFAULT 0,
+                source_message_id INTEGER NOT NULL DEFAULT 0,
+                sender TEXT DEFAULT '',
+                gross_amount REAL NOT NULL DEFAULT 0,
+                message_text TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                credited_slot INTEGER DEFAULT NULL,
+                net_amount REAL DEFAULT 0
+            )""")
+            conn.execute("""INSERT OR IGNORE INTO flexy_sms_events_repaired
+                (id,source_chat_id,source_message_id,sender,gross_amount,message_text,created_at,status,credited_slot,net_amount)
+                SELECT id,COALESCE(source_chat_id,0),COALESCE(source_message_id,0),COALESCE(sender,''),
+                       COALESCE(gross_amount,0),COALESCE(message_text,''),COALESCE(created_at,''),
+                       COALESCE(status,'pending'),credited_slot,COALESCE(net_amount,0)
+                FROM flexy_sms_events ORDER BY id""")
+            conn.execute("DROP TABLE flexy_sms_events")
+            conn.execute("ALTER TABLE flexy_sms_events_repaired RENAME TO flexy_sms_events")
+
         # Partial unique index avoids collisions between legacy rows whose newly-added
-        # source IDs default to zero, while deduplicating all newly received channel posts.
+        # source IDs default to zero, while deduplicating only the same post in the same chat.
         conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_flexy_sms_source_message
             ON flexy_sms_events(source_chat_id, source_message_id)
             WHERE source_chat_id != 0 AND source_message_id != 0""")
@@ -6633,14 +6670,32 @@ async def flexy_receive_sms(update, context):
     created = datetime.now(STORE_TZ).strftime("%Y-%m-%d %H:%M:%S")
     try:
         with db() as conn:
-            cur = conn.execute("""INSERT OR IGNORE INTO flexy_sms_events
-                (source_chat_id,source_message_id,sender,gross_amount,message_text,created_at)
-                VALUES(?,?,?,?,?,?)""", (chat.id, msg.message_id, "700", float(amount), raw_text, created))
-            if cur.rowcount == 0:
-                logger.info("Flexy: duplicate SMS ignored chat_id=%s message_id=%s", chat.id, msg.message_id)
-                await send_system_log(context.bot, f"🔁 تم تجاهل رسالة Flexy مكررة.\nالقناة: {chat.id}\nرقم المنشور: {msg.message_id}", "WARNING")
+            existing_event = conn.execute(
+                "SELECT id,status,gross_amount FROM flexy_sms_events WHERE source_chat_id=? AND source_message_id=?",
+                (chat.id, msg.message_id),
+            ).fetchone()
+            if existing_event and existing_event["status"] != "pending":
+                logger.info("Flexy: confirmed duplicate ignored chat_id=%s message_id=%s event_id=%s status=%s",
+                            chat.id, msg.message_id, existing_event["id"], existing_event["status"])
+                await send_system_log(context.bot,
+                    f"🔁 تم تجاهل منشور سبق إتمام معالجته.\nالقناة: {chat.id}\nرقم المنشور: {msg.message_id}\nالعملية: {existing_event['id']}\nالحالة: {existing_event['status']}",
+                    "WARNING")
                 return True
-            event_id = cur.lastrowid
+            if existing_event and existing_event["status"] == "pending":
+                # A previous run saved the event but may have failed before publishing it.
+                # Retry publishing the SAME event; never create a second wallet-credit event.
+                event_id = existing_event["id"]
+                amount = Decimal(str(existing_event["gross_amount"]))
+                logger.warning("Flexy: retrying publication of pending event_id=%s chat_id=%s message_id=%s",
+                               event_id, chat.id, msg.message_id)
+                await send_system_log(context.bot,
+                    f"♻️ إعادة نشر تعبئة معلّقة لم تصل للقناة سابقًا أو لم يُؤكّد نشرها.\nالعملية: {event_id}\nرقم المنشور: {msg.message_id}\nالمبلغ: {amount:g} DA",
+                    "WARNING")
+            else:
+                cur = conn.execute("""INSERT INTO flexy_sms_events
+                    (source_chat_id,source_message_id,sender,gross_amount,message_text,created_at)
+                    VALUES(?,?,?,?,?,?)""", (chat.id, msg.message_id, "700", float(amount), raw_text, created))
+                event_id = cur.lastrowid
             subscribers = conn.execute("SELECT slot FROM flexy_subscribers WHERE active=1 AND user_id IS NOT NULL ORDER BY slot").fetchall()
         buttons = [[InlineKeyboardButton(f"المشترك {r['slot']}", callback_data=f"flexy_credit:{event_id}:{r['slot']}")] for r in subscribers]
         if not buttons:
