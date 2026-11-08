@@ -47,6 +47,24 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+async def send_system_log(bot, message, level="INFO"):
+    """Send a concise operational log to the admin-configured private log channel."""
+    channel_id = get_setting("system_log_channel_id", "").strip()
+    if not channel_id:
+        return False
+    try:
+        await bot.send_message(chat_id=int(channel_id), text=f"{level} | SERADJ STORE\n{message}")
+        return True
+    except Exception:
+        logger.exception("Could not send message to system log channel")
+        return False
+
+async def global_error_handler(update, context):
+    err = context.error
+    logger.error("Unhandled exception while processing update", exc_info=(type(err), err, err.__traceback__))
+    summary = f"🔴 خطأ غير معالج\nالنوع: {type(err).__name__}\nالتفاصيل: {str(err)[:1200]}"
+    await send_system_log(context.bot, summary, "ERROR")
+
 # Runtime timers for 15-minute checkout sessions.
 CART_TIMEOUT_TASKS = {}
 
@@ -190,6 +208,7 @@ async def post_init(application):
     application.create_task(scheduled_broadcast_loop(application), name="scheduled-broadcast-loop")
     application.create_task(store_schedule_loop(application), name="store-schedule-loop")
     application.create_task(marketing_reminder_loop(application), name="marketing-reminder-loop")
+    await send_system_log(application.bot, "🟢 تم تشغيل البوت بنجاح.", "START")
 
 CANCEL_WORDS = {
     "إلغاء", "الغاء", "❌ إلغاء", "/cancel"
@@ -6590,6 +6609,7 @@ async def flexy_receive_sms(update, context):
     amount = flexy_parse_sms(raw_text)
     if amount is None:
         logger.info("Flexy: source post did not match recharge format. chat_id=%s message_id=%s text=%r", chat.id, msg.message_id, raw_text[:500])
+        await send_system_log(context.bot, f"⚠️ منشور SMS لم يطابق صيغة التعبئة.\nالقناة: {chat.id}\nرقم المنشور: {msg.message_id}\nالنص: {raw_text[:500]}", "WARNING")
         try:
             if ADMIN_ID:
                 await context.bot.send_message(chat_id=ADMIN_ID,
@@ -6618,6 +6638,7 @@ async def flexy_receive_sms(update, context):
                 VALUES(?,?,?,?,?,?)""", (chat.id, msg.message_id, "700", float(amount), raw_text, created))
             if cur.rowcount == 0:
                 logger.info("Flexy: duplicate SMS ignored chat_id=%s message_id=%s", chat.id, msg.message_id)
+                await send_system_log(context.bot, f"🔁 تم تجاهل رسالة Flexy مكررة.\nالقناة: {chat.id}\nرقم المنشور: {msg.message_id}", "WARNING")
                 return True
             event_id = cur.lastrowid
             subscribers = conn.execute("SELECT slot FROM flexy_subscribers WHERE active=1 AND user_id IS NOT NULL ORDER BY slot").fetchall()
@@ -6628,8 +6649,10 @@ async def flexy_receive_sms(update, context):
             text=(f"📥 تعبئة فليكسي جديدة\n\n💰 المبلغ: {amount} DA\n🕒 التاريخ والوقت: {created}\n\nاختر المشترك لإضافة الرصيد إليه:"),
             reply_markup=InlineKeyboardMarkup(buttons))
         logger.info("Flexy: published event_id=%s amount=%s to channel_id=%s", event_id, amount, channel_id)
+        await send_system_log(context.bot, f"📥 تم التعرف على تعبئة Flexy ونشرها.\nالمبلغ: {amount} DA\nرقم المنشور: {msg.message_id}\nمعرّف العملية: {event_id}", "SUCCESS")
     except Exception as exc:
         logger.exception("Flexy SMS processing/publishing failed")
+        await send_system_log(context.bot, f"❌ فشل معالجة/نشر تعبئة Flexy.\nرقم المنشور: {msg.message_id}\nالخطأ: {str(exc)[:900]}", "ERROR")
         try:
             if ADMIN_ID:
                 await context.bot.send_message(chat_id=ADMIN_ID,
@@ -6653,6 +6676,18 @@ async def set_flexy_source_command(update, context):
         await update.effective_message.reply_text("حوّل (Forward) رسالة SMS منشورة من قناة SMS إلى هنا، وسأحفظ معرّف القناة كمصدر للتعبئات. لا ترسل رسالة عادية.")
         return
     await update.effective_message.reply_text("استعمل الأمر في الخاص مع البوت ثم حوّل إليه رسالة من قناة SMS، أو استعمله داخل مجموعة SMS.")
+
+
+async def set_log_channel_command(update, context):
+    user = update.effective_user
+    if not user or not is_admin(user.id):
+        return
+    context.user_data["system_log_channel_setup"] = True
+    await update.effective_message.reply_text(
+        "حوّل (Forward) أي منشور من قناة السجلات الخاصة إلى هنا.\n"
+        "سأحفظ معرّف القناة وأرسل رسالة اختبار. تأكد أن البوت مشرف في القناة وله صلاحية النشر.\n"
+        "للإلغاء أرسل /cancel."
+    )
 
 
 async def flexy_command(update, context):
@@ -6721,6 +6756,23 @@ async def text_handler(update, context):
         return
     user_id = update.effective_user.id
     text = (message.text or "").strip()
+    # Private system-log channel setup: admin forwards a post from the target channel.
+    if is_admin(user_id) and context.user_data.get("system_log_channel_setup"):
+        origin = getattr(message, "forward_origin", None)
+        log_chat = getattr(origin, "chat", None) if origin else getattr(message, "forward_from_chat", None)
+        if log_chat and getattr(log_chat, "type", None) == "channel":
+            try:
+                await context.bot.get_chat_member(log_chat.id, context.bot.id)
+                set_setting("system_log_channel_id", str(log_chat.id))
+                context.user_data.pop("system_log_channel_setup", None)
+                await message.reply_text(f"✅ تم ربط قناة السجلات: {getattr(log_chat, 'title', 'قناة خاصة')}\nسأرسل إليها إشعارات التشغيل والأخطاء المهمة.")
+                await send_system_log(context.bot, "🧪 رسالة اختبار: قناة السجلات تعمل بنجاح.", "TEST")
+            except Exception as exc:
+                await message.reply_text("❌ لم أتمكن من التحقق من القناة. تأكد أن البوت مشرف ويملك صلاحية نشر الرسائل، ثم أعد توجيه منشور منها.\n" + str(exc)[:300])
+        else:
+            await message.reply_text("❌ حوّل منشورًا مباشرة من قناة السجلات، وليس رابطًا أو نصًا منسوخًا. /cancel للإلغاء.")
+        return
+
     # Flexy admin setup steps.
     if is_admin(user_id) and context.user_data.get("flexy_admin_step") == "source":
         origin = getattr(message, "forward_origin", None)
@@ -8850,6 +8902,7 @@ def main():
     app.add_handler(CommandHandler("setordergroup", set_order_group_command))
     app.add_handler(CommandHandler("flexy", flexy_command))
     app.add_handler(CommandHandler("setflexysource", set_flexy_source_command))
+    app.add_handler(CommandHandler("setlogchannel", set_log_channel_command))
     # Channel posts are separate Telegram updates; ordinary text handlers do not receive them.
     app.add_handler(MessageHandler(
         filters.UpdateType.CHANNEL_POST | filters.UpdateType.EDITED_CHANNEL_POST,
@@ -8877,6 +8930,8 @@ def main():
             text_handler,
         )
     )
+
+    app.add_error_handler(global_error_handler)
 
     logger.info("SERADJ STORE bot is starting...")
 
