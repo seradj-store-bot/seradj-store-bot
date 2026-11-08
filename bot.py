@@ -6516,20 +6516,30 @@ async def callback_handler(update, context):
 # =========================
 
 def flexy_parse_sms(text):
-    """Accept only Djezzy 700 recharge notices; return amount or None."""
+    """Accept supported Djezzy 700 recharge notices; return amount or None."""
     raw = (text or "").strip()
-    if not raw or "Vous venez de recharger" not in raw:
+    if not raw:
         return None
-    # SMS Telebot may format the sender header differently; require 700
-    # as a standalone number somewhere before the recharge body.
-    body_pos = raw.lower().find("vous venez de recharger")
-    header = raw[:body_pos]
-    if not re.search(r"(?<!\d)700(?!\d)", header):
-        return None
-    match = re.search(r"Vous venez de recharger\s+([0-9][0-9\s.,]*)\s*DA\b", raw, re.IGNORECASE)
+
+    # SMS Bot may forward either of these Djezzy confirmation formats.
+    body_pattern = re.compile(
+        r"(?:Vous\s+venez\s+de\s+recharger|Vous\s+avez\s+Re[cç]u)"
+        r"\s*:?\s*([0-9][0-9\s.,]*)\s*DA\b",
+        re.IGNORECASE,
+    )
+    match = body_pattern.search(raw)
     if not match:
         return None
-    amount_text = match.group(1).replace(" ", "").replace(",", ".")
+
+    # Accept the Djezzy sender code 700 or the configured sender phone number
+    # in the forwarded header, before the SMS body.
+    header = raw[:match.start()]
+    sender_code_found = bool(re.search(r"(?<!\d)700(?!\d)", header))
+    sender_phone_found = "+213656609796" in re.sub(r"[\s()-]", "", header)
+    if not (sender_code_found or sender_phone_found):
+        return None
+
+    amount_text = re.sub(r"\s+", "", match.group(1)).replace(",", ".")
     try:
         amount = Decimal(amount_text)
         return amount if amount > 0 else None
