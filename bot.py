@@ -3457,12 +3457,28 @@ async def callback_handler(update, context):
         with db() as conn:
             rows = conn.execute("SELECT slot,user_id,active,balance FROM flexy_subscribers ORDER BY slot").fetchall()
         lines = [f"{r['slot']} — {'🟢 نشط' if r['active'] else '🔴 متوقف'} — ID: {r['user_id'] or 'غير معيّن'} — الرصيد: {r['balance']:g} DA" for r in rows]
-        buttons = [[InlineKeyboardButton(f"تعيين/تغيير المشترك {i}", callback_data=f"flexy_assign:{i}"), InlineKeyboardButton("تفعيل/إيقاف", callback_data=f"flexy_toggle:{i}")] for i in range(1,11)]
+        buttons = [[InlineKeyboardButton(f"تعيين/تغيير {i}", callback_data=f"flexy_assign:{i}"), InlineKeyboardButton("✏️ الرصيد", callback_data=f"flexy_setbal:{i}"), InlineKeyboardButton("تفعيل/إيقاف", callback_data=f"flexy_toggle:{i}")] for i in range(1,11)]
         buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="flexy_back")])
         await query.message.reply_text("👥 مشتركو الفليكسي\n\n" + ("\n".join(lines) if lines else "لا يوجد مشتركين بعد."), reply_markup=InlineKeyboardMarkup(buttons)); return
     if data.startswith("flexy_assign:"):
         slot=int(data.split(":",1)[1]); context.user_data["flexy_assign_slot"]=slot
         await query.message.reply_text(f"أرسل Telegram ID للمشترك رقم {slot}. يمكنه إيجاد ID عبر /myid. أرسل 0 لإلغاء التعيين."); return
+    if data.startswith("flexy_setbal:"):
+        try:
+            slot = int(data.split(":", 1)[1])
+            if not 1 <= slot <= 10:
+                raise ValueError
+        except Exception:
+            await query.answer("رقم المشترك غير صالح.", show_alert=True); return
+        context.user_data["flexy_set_balance_slot"] = slot
+        await query.message.reply_text(
+            f"أرسل الرصيد الجديد للمشترك رقم {slot} بالدينار.\n"
+            "مثال: 15000 أو 15000.50\n"
+            "سيتم استبدال الرصيد الحالي بهذا المبلغ، مع تسجيل التعديل في السجل.\n"
+            "للإلغاء أرسل /cancel."
+        )
+        await query.answer()
+        return
     if data.startswith("flexy_toggle:"):
         slot=int(data.split(":",1)[1])
         with db() as conn:
@@ -6835,6 +6851,50 @@ async def text_handler(update, context):
             await message.reply_text(f"✅ تم حفظ نسبة الاقتطاع: {pct.normalize()}%")
         except Exception:
             await message.reply_text("❌ أرسل رقمًا من 0 إلى 100، مثال 15. أو /cancel للإلغاء.")
+        return
+    if is_admin(user_id) and context.user_data.get("flexy_set_balance_slot") is not None:
+        slot = int(context.user_data.get("flexy_set_balance_slot"))
+        try:
+            new_balance = Decimal(text.replace(",", "."))
+            if not new_balance.is_finite() or new_balance < 0:
+                raise ValueError
+            with db() as conn:
+                sub = conn.execute("SELECT user_id,balance FROM flexy_subscribers WHERE slot=?", (slot,)).fetchone()
+                if not sub:
+                    await message.reply_text("❌ هذا المشترك غير موجود. عيّن المشترك أولًا ثم أعد المحاولة.")
+                    context.user_data.pop("flexy_set_balance_slot", None)
+                    return
+                before = Decimal(str(sub["balance"] or 0))
+                after = new_balance.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                conn.execute(
+                    "UPDATE flexy_subscribers SET balance=?,updated_at=? WHERE slot=?",
+                    (float(after), now_text(), slot),
+                )
+                conn.execute(
+                    "INSERT INTO flexy_transactions(slot,user_id,kind,amount,balance_before,balance_after,note,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (slot, int(sub["user_id"] or 0), "تعيين رصيد", float(after), float(before), float(after),
+                     f"تعيين يدوي من الإدارة إلى {after:g} DA", user_id, now_text()),
+                )
+            context.user_data.pop("flexy_set_balance_slot", None)
+            await message.reply_text(
+                f"✅ تم تعيين رصيد المشترك {slot}.\n\n"
+                f"الرصيد السابق: {before:g} DA\n"
+                f"الرصيد الجديد: {after:g} DA"
+            )
+            await send_system_log(
+                context.bot,
+                f"✏️ تعديل يدوي لرصيد Flexy\nالمشترك: {slot}\n"
+                f"Telegram ID: {sub['user_id'] or '-'}\n"
+                f"الرصيد السابق: {before:g} DA\nالرصيد الجديد: {after:g} DA\n"
+                f"بواسطة الإدارة: {user_id}",
+                "SUCCESS",
+            )
+        except (InvalidOperation, ValueError):
+            await message.reply_text("❌ أرسل مبلغًا صحيحًا يساوي صفرًا أو أكثر. مثال: 15000 أو 15000.50.\nللإلغاء أرسل /cancel.")
+        except Exception as exc:
+            logger.exception("Flexy manual balance set failed")
+            await message.reply_text("❌ حدث خطأ أثناء تعديل الرصيد. لم يتم تأكيد العملية.")
+            await send_system_log(context.bot, f"❌ فشل تعيين رصيد Flexy للمشترك {slot}: {str(exc)[:500]}", "ERROR")
         return
     if is_admin(user_id) and context.user_data.get("flexy_assign_slot") is not None:
         slot=int(context.user_data.pop("flexy_assign_slot"))
