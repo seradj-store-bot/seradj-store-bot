@@ -6676,7 +6676,20 @@ async def flexy_receive_sms(update, context):
         logger.error("Flexy: SMS matched but output channel is not configured")
         return True
 
-    created = datetime.now(STORE_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    # Prefer the original SMS timestamp in the forwarded header (for example,
+    # "💬 700 🕒 10:48 - djezzy ...") instead of Telegram's delayed arrival time.
+    received_at = datetime.now(STORE_TZ)
+    sms_time_match = re.search(r"🕒\s*(\d{1,2}):(\d{2})", raw_text)
+    if sms_time_match:
+        sms_hour, sms_minute = map(int, sms_time_match.groups())
+        if 0 <= sms_hour <= 23 and 0 <= sms_minute <= 59:
+            event_at = received_at.replace(hour=sms_hour, minute=sms_minute, second=0, microsecond=0)
+        else:
+            event_at = received_at
+    else:
+        # Older SMS forward formats may not include the original time.
+        event_at = received_at
+    created = event_at.strftime("%Y-%m-%d %H:%M:%S")
     try:
         with db() as conn:
             existing_event = conn.execute(
