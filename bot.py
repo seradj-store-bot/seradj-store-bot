@@ -1178,10 +1178,21 @@ def trader_wallet_currency(user_id):
 
 
 def trader_offer_price(offer, user_id):
-    """One trader price in the currency selected by admin for this trader."""
+    """Return the trader price in the trader's assigned currency.
+
+    USD is derived automatically from the trader's DA price and the admin's
+    current market exchange rate; the DA source price remains unchanged.
+    """
+    da_price = Decimal(str(offer["price_baridi_trader"] or 0))
     if trader_wallet_currency(user_id) == "USD":
-        return float(offer["price_usd_trader"] or 0)
-    return int(offer["price_baridi_trader"] or 0)
+        try:
+            rate = Decimal(get_setting("usd_exchange_rate", "254"))
+            if not rate.is_finite() or rate <= 0:
+                rate = Decimal("254")
+        except (InvalidOperation, ValueError):
+            rate = Decimal("254")
+        return float((da_price / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    return int(da_price)
 
 
 def status_label(status):
@@ -4365,6 +4376,9 @@ async def callback_handler(update, context):
             await query.answer("اختيار غير صالح.", show_alert=True)
             return
         offer_id, column = int(parts[1]), parts[2]
+        if column == "price_usd_trader":
+            await query.answer("سعر USD يُحسب تلقائيًا من سعر التاجر بالدينار وسعر الصرف.", show_alert=True)
+            return
         with db() as conn:
             offer = conn.execute(f"SELECT name, {column} AS current_price FROM offers WHERE id=?", (offer_id,)).fetchone()
         if not offer:
@@ -5602,7 +5616,7 @@ async def callback_handler(update, context):
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else '🚫'} BaridiMob / CCP — {'إيقاف' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:baridi")],
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
             [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
-            [InlineKeyboardButton("🏪 التاجر — DA", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — USD", callback_data=f"offer_price_one:{offer_id}:price_usd_trader")],
+            [InlineKeyboardButton("🏪 التاجر — DA (المصدر)", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
             [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         if custom_methods:
@@ -5649,7 +5663,7 @@ async def callback_handler(update, context):
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else '🚫'} BaridiMob / CCP — {'إيقاف' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:baridi")],
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
             [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
-            [InlineKeyboardButton("🏪 التاجر — DA", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — USD", callback_data=f"offer_price_one:{offer_id}:price_usd_trader")],
+            [InlineKeyboardButton("🏪 التاجر — DA (المصدر)", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
             [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         for cm in custom_methods:
@@ -5687,7 +5701,7 @@ async def callback_handler(update, context):
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else '🚫'} BaridiMob / CCP — {'إيقاف' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:baridi")],
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
             [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
-            [InlineKeyboardButton("🏪 التاجر — DA", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader"), InlineKeyboardButton("🏪 التاجر — USD", callback_data=f"offer_price_one:{offer_id}:price_usd_trader")],
+            [InlineKeyboardButton("🏪 التاجر — DA (المصدر)", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
             [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         for cm in custom_methods:
@@ -7508,8 +7522,18 @@ async def text_handler(update, context):
                 await message.reply_text("❌ السعر غير صحيح. أرسل رقمًا أكبر من صفر، مثال: 254. أو /cancel للإلغاء.")
                 return
             set_setting("usd_exchange_rate", format(rate.normalize(), "f"))
+            with db() as conn:
+                conn.execute(
+                    "UPDATE offers SET price_usd_trader = ROUND(COALESCE(price_baridi_trader, 0) / ?, 2)",
+                    (float(rate),),
+                )
             context.user_data.pop("admin_step", None)
-            await message.reply_text(f"✅ تم حفظ سعر الدولار: 1 USD = {rate} DA. ستتحدث أسعار طرق الدفع بالدولار تلقائيًا.", reply_markup=admin_keyboard())
+            await message.reply_text(
+                f"✅ تم حفظ سعر الدولار: 1 USD = {rate} DA.\n"
+                "تم تحديث أسعار USD لجميع عروض التجار تلقائيًا اعتمادًا على سعر التاجر بالدينار.\n"
+                "أي تعديل لاحق لسعر التاجر بالدينار سيظهر بالدولار تلقائيًا أيضًا.",
+                reply_markup=admin_keyboard(),
+            )
             return
 
         if step == "custom_payment_edit_instructions":
