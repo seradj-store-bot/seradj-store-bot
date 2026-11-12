@@ -4372,13 +4372,10 @@ async def callback_handler(update, context):
 
     if data.startswith("offer_price_one:"):
         parts = data.split(":")
-        if len(parts) != 3 or parts[2] not in ("price_baridi", "price_flexy", "price_baridi_trader", "price_flexy_trader", "price_usd_trader"):
+        if len(parts) != 3 or parts[2] not in ("price_baridi", "price_baridi_trader"):
             await query.answer("اختيار غير صالح.", show_alert=True)
             return
         offer_id, column = int(parts[1]), parts[2]
-        if column == "price_usd_trader":
-            await query.answer("سعر USD يُحسب تلقائيًا من سعر التاجر بالدينار وسعر الصرف.", show_alert=True)
-            return
         with db() as conn:
             offer = conn.execute(f"SELECT name, {column} AS current_price FROM offers WHERE id=?", (offer_id,)).fetchone()
         if not offer:
@@ -4387,14 +4384,14 @@ async def callback_handler(update, context):
         context.user_data["admin_step"] = "edit_single_offer_price"
         context.user_data["pending_offer_id"] = offer_id
         context.user_data["pending_offer_price_column"] = column
-        labels = {"price_baridi":"سعر الزبون عبر BaridiMob/CCP", "price_flexy":"سعر الزبون عبر Flexy", "price_baridi_trader":"سعر التاجر عبر BaridiMob/CCP", "price_flexy_trader":"سعر التاجر عبر Flexy", "price_usd_trader":"سعر التاجر بالدولار"}
-        await query.message.reply_text(f"✏️ {offer['name']}\n{labels[column]} الحالي: {offer['current_price']} DA\nأرسل السعر الجديد فقط. بقية الأسعار لن تتغير.\nللإلغاء أرسل /cancel.")
+        labels = {"price_baridi":"سعر الزبون عبر BaridiMob/CCP", "price_baridi_trader":"سعر التاجر عبر BaridiMob/CCP"}
+        await query.message.reply_text(f"✏️ {offer['name']}\n{labels[column]} الحالي: {offer['current_price']} DA\nأرسل السعر الجديد فقط. سيُعاد حساب سعر Flexy المقابل تلقائيًا (+18%).\nللإلغاء أرسل /cancel.")
         return
     if data.startswith("offer_price_all:"):
         offer_id = int(data.split(":", 1)[1])
         context.user_data["admin_step"] = "edit_price_data"
         context.user_data["pending_offer_id"] = offer_id
-        await query.message.reply_text("أرسل الأسعار الأربعة بهذا الترتيب:\nسعر الزبون Baridi | سعر الزبون Flexy | سعر التاجر Baridi | سعر التاجر Flexy\nمثال: 750 | 900 | 650 | 800\nللإلغاء أرسل /cancel.")
+        await query.message.reply_text("أرسل السعرين بهذا الترتيب:\nسعر الزبون BaridiMob | سعر التاجر BaridiMob\nمثال: 750 | 650\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
         return
 
     if data == "orders_delete_all":
@@ -5192,7 +5189,7 @@ async def callback_handler(update, context):
         context.user_data["admin_step"] = "add_offer_data"
         context.user_data["pending_game_id"] = int(game_id)
         context.user_data["pending_recharge_method_id"] = int(method_id)
-        await query.message.reply_text("➕ أرسل بيانات العرض والأسعار لهذه الطريقة فقط:\nاسم العرض | سعر BaridiMob/CCP للزبون | سعر Flexy للزبون | سعر BaridiMob/CCP للتاجر | سعر Flexy للتاجر | نقاط المكافأة (اختياري)\n\nمثال: 100 Coins | 250 | 300 | 220 | 270 | 5\nيمكنك إرسال 3 خانات فقط أيضاً. أرسل /cancel للإلغاء.")
+        await query.message.reply_text("➕ أرسل بيانات العرض والأسعار لهذه الطريقة فقط:\nاسم العرض | سعر الزبون BaridiMob/CCP | سعر التاجر BaridiMob/CCP | نقاط المكافأة (اختياري)\n\nمثال: 100 Coins | 250 | 220 | 5\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
 
     # إدارة الألعاب
     elif data == "adm_games":
@@ -5615,9 +5612,9 @@ async def callback_handler(update, context):
         price_buttons = [
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else '🚫'} BaridiMob / CCP — {'إيقاف' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:baridi")],
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
-            [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
-            [InlineKeyboardButton("🏪 التاجر — DA (المصدر)", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
-            [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
+            [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi")],
+            [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
+            [InlineKeyboardButton("✏️ تعديل سعري الزبون والتاجر معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         if custom_methods:
             price_buttons.append([InlineKeyboardButton("— طرق الدفع المخصصة لهذا العرض —", callback_data=f"offer_payments_info:{offer_id}")])
@@ -5662,9 +5659,9 @@ async def callback_handler(update, context):
         price_buttons = [
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else '🚫'} BaridiMob / CCP — {'إيقاف' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:baridi")],
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
-            [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
-            [InlineKeyboardButton("🏪 التاجر — DA (المصدر)", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
-            [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
+            [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi")],
+            [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
+            [InlineKeyboardButton("✏️ تعديل سعري الزبون والتاجر معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         for cm in custom_methods:
             is_on = offer_method_states.get(int(cm["id"]), 1)
@@ -5700,9 +5697,9 @@ async def callback_handler(update, context):
         price_buttons = [
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else '🚫'} BaridiMob / CCP — {'إيقاف' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:baridi")],
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
-            [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi"), InlineKeyboardButton("👤 الزبون — Flexy", callback_data=f"offer_price_one:{offer_id}:price_flexy")],
-            [InlineKeyboardButton("🏪 التاجر — DA (المصدر)", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
-            [InlineKeyboardButton("✏️ تعديل الأسعار الأربعة معًا", callback_data=f"offer_price_all:{offer_id}")],
+            [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi")],
+            [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
+            [InlineKeyboardButton("✏️ تعديل سعري الزبون والتاجر معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         for cm in custom_methods:
             is_on = offer_method_states.get(int(cm["id"]), 1)
@@ -7855,39 +7852,26 @@ async def text_handler(update, context):
         if step == "add_offer_data":
             parts = [part.strip() for part in text.split("|")]
 
-            if len(parts) not in (3, 5, 6):
+            if len(parts) not in (3, 4):
                 await message.reply_text(
                     "❌ الصيغة غير صحيحة.\n\n"
-                    "استعمل:\n"
-                    "اسم العرض | سعر BaridiMob/CCP للزبون | سعر Flexy للزبون | سعر BaridiMob/CCP للتاجر | سعر Flexy للتاجر\n\n"
-                    "مثال:\n100 Coins | 250 | 300 | 220 | 270\n"
-                    "ويمكن إرسال 3 خانات فقط لجعل سعر التاجر مثل سعر الزبون، أو 6 خانات وإضافة نقاط المكافأة في النهاية."
+                    "استعمل: اسم العرض | سعر الزبون BaridiMob | سعر التاجر BaridiMob | نقاط المكافأة (اختياري)\n"
+                    "مثال: 100 Coins | 250 | 220 | 5"
                 )
                 return
 
             offer_name = parts[0]
-
             try:
                 price_baridi = int(parts[1])
-                price_flexy = int(parts[2])
-                price_baridi_trader = int(parts[3]) if len(parts) >= 5 else price_baridi
-                price_flexy_trader = int(parts[4]) if len(parts) >= 5 else price_flexy
-                reward_points = int(parts[5]) if len(parts) == 6 else 0
-
-                if (
-                    not offer_name
-                    or price_baridi < 0
-                    or price_flexy < 0
-                    or price_baridi_trader < 0
-                    or price_flexy_trader < 0
-                    or reward_points < 0
-                ):
+                price_baridi_trader = int(parts[2])
+                reward_points = int(parts[3]) if len(parts) == 4 else 0
+                if not offer_name or min(price_baridi, price_baridi_trader, reward_points) < 0:
                     raise ValueError
+                # Match the existing wallet Flexy full-credit mode: customer pays 18% extra.
+                price_flexy = int(round(price_baridi * 1.18))
+                price_flexy_trader = int(round(price_baridi_trader * 1.18))
             except ValueError:
-                await message.reply_text(
-                    "❌ تأكد من اسم العرض والأسعار. "
-                    "الأسعار لازم تكون أرقامًا موجبة أو صفرًا."
-                )
+                await message.reply_text("❌ تأكد من اسم العرض والأسعار. الأسعار لازم تكون أرقامًا موجبة أو صفرًا.")
                 return
 
             game_id = context.user_data.get("pending_game_id")
@@ -7932,8 +7916,8 @@ async def text_handler(update, context):
             await message.reply_text(
                 f"✅ تمت إضافة العرض: {offer_name}\n\n"
                 f"🏦 BaridiMob/CCP: {price_baridi} DA\n"
-                f"📱 Flexy: {price_flexy} DA\n"
-                f"🏪 أسعار التاجر — BaridiMob/CCP: {price_baridi_trader} DA | Flexy: {price_flexy_trader} DA\n🎁 نقاط المكافأة: {reward_points}",
+                f"📱 Flexy (محسوب +18%): {price_flexy} DA\n"
+                f"🏪 التاجر — BaridiMob/CCP: {price_baridi_trader} DA | Flexy (محسوب +18%): {price_flexy_trader} DA\n🎁 نقاط المكافأة: {reward_points}",
                 reply_markup=ReplyKeyboardMarkup(
                     ADMIN_PANEL_MENU,
                     resize_keyboard=True,
@@ -7960,7 +7944,7 @@ async def text_handler(update, context):
         # تعديل سعر واحد فقط لعرض مع الحفاظ على بقية الأسعار
         if step == "edit_single_offer_price":
             try:
-                new_price = float(text.replace(",", ".")) if context.user_data.get("pending_offer_price_column") == "price_usd_trader" else int(text)
+                new_price = int(text)
                 if new_price < 0:
                     raise ValueError
             except ValueError:
@@ -7968,12 +7952,13 @@ async def text_handler(update, context):
                 return
             offer_id = context.user_data.get("pending_offer_id")
             column = context.user_data.get("pending_offer_price_column")
-            if column not in ("price_baridi", "price_flexy", "price_baridi_trader", "price_flexy_trader", "price_usd_trader") or not offer_id:
+            if column not in ("price_baridi", "price_baridi_trader") or not offer_id:
                 context.user_data.pop("admin_step", None)
                 await message.reply_text("❌ انتهت جلسة تعديل السعر. افتح تعديل سعر العرض من جديد.")
                 return
+            flexy_column = "price_flexy" if column == "price_baridi" else "price_flexy_trader"
             with db() as conn:
-                result = conn.execute(f"UPDATE offers SET {column}=? WHERE id=?", (new_price, offer_id))
+                result = conn.execute(f"UPDATE offers SET {column}=?, {flexy_column}=? WHERE id=?", (new_price, int(round(new_price * 1.18)), offer_id))
                 offer_name_row = conn.execute("SELECT name FROM offers WHERE id=?", (offer_id,)).fetchone()
             context.user_data.pop("admin_step", None)
             context.user_data.pop("pending_offer_id", None)
@@ -7981,28 +7966,28 @@ async def text_handler(update, context):
             if not result.rowcount or not offer_name_row:
                 await message.reply_text("❌ العرض غير موجود.", reply_markup=admin_keyboard())
             else:
-                await message.reply_text(f"✅ تم تعديل السعر فقط إلى {new_price} {'USD' if column == 'price_usd_trader' else 'DA'} للعرض {offer_name_row['name']}. بقية الأسعار بقيت كما هي.", reply_markup=admin_keyboard())
+                await message.reply_text(f"✅ تم تعديل سعر BaridiMob إلى {new_price} DA للعرض {offer_name_row['name']}، وتم حساب سعر Flexy تلقائيًا (+18%).", reply_markup=admin_keyboard())
             return
 
         # تعديل أسعار عرض
         if step == "edit_price_data":
             parts = [part.strip() for part in text.split("|")]
 
-            if len(parts) not in (2, 4):
+            if len(parts) != 2:
                 await message.reply_text(
                     "❌ الصيغة غير صحيحة.\n\n"
-                    "ابعث سعرين للزبون أو 4 أسعار: الزبون Baridi | الزبون Flexy | التاجر Baridi | التاجر Flexy.\n"
-                    "مثال: 750 | 900 | 650 | 800"
+                    "ابعث سعرين فقط: سعر الزبون BaridiMob | سعر التاجر BaridiMob.\n"
+                    "مثال: 750 | 650\nسيُحسب Flexy تلقائيًا بإضافة 18%."
                 )
                 return
 
             try:
                 price_baridi = int(parts[0])
-                price_flexy = int(parts[1])
-                price_baridi_trader = int(parts[2]) if len(parts) == 4 else price_baridi
-                price_flexy_trader = int(parts[3]) if len(parts) == 4 else price_flexy
+                price_baridi_trader = int(parts[1])
+                price_flexy = int(round(price_baridi * 1.18))
+                price_flexy_trader = int(round(price_baridi_trader * 1.18))
 
-                if min(price_baridi, price_flexy, price_baridi_trader, price_flexy_trader) < 0:
+                if min(price_baridi, price_baridi_trader) < 0:
                     raise ValueError
             except ValueError:
                 await message.reply_text(
@@ -8035,8 +8020,8 @@ async def text_handler(update, context):
             await message.reply_text(
                 "✅ تم تعديل الأسعار بنجاح.\n\n"
                 f"🏦 BaridiMob/CCP: {price_baridi} DA\n"
-                f"📱 Flexy: {price_flexy} DA\n"
-                f"🏪 للتاجر — BaridiMob/CCP: {price_baridi_trader} DA | Flexy: {price_flexy_trader} DA",
+                f"📱 Flexy (محسوب +18%): {price_flexy} DA\n"
+                f"🏪 للتاجر — BaridiMob/CCP: {price_baridi_trader} DA | Flexy (محسوب +18%): {price_flexy_trader} DA",
                 reply_markup=ReplyKeyboardMarkup(
                     ADMIN_PANEL_MENU,
                     resize_keyboard=True,
