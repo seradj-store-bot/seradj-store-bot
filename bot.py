@@ -767,7 +767,9 @@ def init_db():
             active INTEGER NOT NULL DEFAULT 1,
             balance REAL NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT '',
-            updated_at TEXT DEFAULT ''
+            updated_at TEXT DEFAULT '',
+            display_name TEXT DEFAULT '',
+            display_emoji TEXT DEFAULT '👤'
         );
         CREATE TABLE IF NOT EXISTS flexy_sms_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -796,6 +798,13 @@ def init_db():
             created_at TEXT NOT NULL
         );
         """)
+        # Add optional display labels without changing existing subscriber IDs or balances.
+        flexy_sub_columns = {row[1] for row in conn.execute("PRAGMA table_info(flexy_subscribers)").fetchall()}
+        if "display_name" not in flexy_sub_columns:
+            conn.execute("ALTER TABLE flexy_subscribers ADD COLUMN display_name TEXT DEFAULT ''")
+        if "display_emoji" not in flexy_sub_columns:
+            conn.execute("ALTER TABLE flexy_subscribers ADD COLUMN display_emoji TEXT DEFAULT '👤'")
+
         # Migrate Flexy SMS event tables created by earlier bot versions.
         # CREATE TABLE IF NOT EXISTS does not add columns to an existing SQLite table.
         flexy_event_columns = {row[1] for row in conn.execute("PRAGMA table_info(flexy_sms_events)").fetchall()}
@@ -3468,9 +3477,22 @@ async def callback_handler(update, context):
         with db() as conn:
             rows = conn.execute("SELECT slot,user_id,active,balance FROM flexy_subscribers ORDER BY slot").fetchall()
         lines = [f"{r['slot']} — {'🟢 نشط' if r['active'] else '🔴 متوقف'} — ID: {r['user_id'] or 'غير معيّن'} — الرصيد: {r['balance']:g} DA" for r in rows]
-        buttons = [[InlineKeyboardButton(f"تعيين/تغيير {i}", callback_data=f"flexy_assign:{i}"), InlineKeyboardButton("✏️ الرصيد", callback_data=f"flexy_setbal:{i}"), InlineKeyboardButton("تفعيل/إيقاف", callback_data=f"flexy_toggle:{i}")] for i in range(1,11)]
+        buttons = [[InlineKeyboardButton(f"تعيين/تغيير {i}", callback_data=f"flexy_assign:{i}"), InlineKeyboardButton("✏️ الاسم", callback_data=f"flexy_label:{i}"), InlineKeyboardButton("✏️ الرصيد", callback_data=f"flexy_setbal:{i}"), InlineKeyboardButton("تفعيل/إيقاف", callback_data=f"flexy_toggle:{i}")] for i in range(1,11)]
         buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="flexy_back")])
         await query.message.reply_text("👥 مشتركو الفليكسي\n\n" + ("\n".join(lines) if lines else "لا يوجد مشتركين بعد."), reply_markup=InlineKeyboardMarkup(buttons)); return
+    if data.startswith("flexy_label:"):
+        try:
+            slot = int(data.split(":", 1)[1])
+            if not 1 <= slot <= 10:
+                raise ValueError
+        except Exception:
+            await query.answer("رقم المشترك غير صالح.", show_alert=True); return
+        context.user_data["flexy_label_slot"] = slot
+        await query.message.reply_text(
+            f"أرسل الإيموجي ثم الاسم للمشترك رقم {slot}.\nمثال: 👤 أحمد\nأو: 🟢 محمد\nللإلغاء أرسل /cancel."
+        )
+        await query.answer()
+        return
     if data.startswith("flexy_assign:"):
         slot=int(data.split(":",1)[1]); context.user_data["flexy_assign_slot"]=slot
         await query.message.reply_text(f"أرسل Telegram ID للمشترك رقم {slot}. يمكنه إيجاد ID عبر /myid. أرسل 0 لإلغاء التعيين."); return
@@ -6729,8 +6751,8 @@ async def flexy_receive_sms(update, context):
                     (source_chat_id,source_message_id,sender,gross_amount,message_text,created_at)
                     VALUES(?,?,?,?,?,?)""", (chat.id, msg.message_id, "700", float(amount), raw_text, created))
                 event_id = cur.lastrowid
-            subscribers = conn.execute("SELECT slot FROM flexy_subscribers WHERE active=1 AND user_id IS NOT NULL ORDER BY slot").fetchall()
-        buttons = [[InlineKeyboardButton(f"المشترك {r['slot']}", callback_data=f"flexy_credit:{event_id}:{r['slot']}")] for r in subscribers]
+            subscribers = conn.execute("SELECT slot,display_name,display_emoji FROM flexy_subscribers WHERE active=1 AND user_id IS NOT NULL ORDER BY slot").fetchall()
+        buttons = [[InlineKeyboardButton(f"{(r['display_emoji'] or '👤')} {(r['display_name'] or f'المشترك {r["slot"]}')}".strip(), callback_data=f"flexy_credit:{event_id}:{r['slot']}")] for r in subscribers]
         if not buttons:
             buttons = [[InlineKeyboardButton("لا يوجد مشترك نشط", callback_data="flexy_noop")]]
         await context.bot.send_message(chat_id=int(channel_id),
@@ -6853,6 +6875,28 @@ async def text_handler(update, context):
                 await message.reply_text("❌ لم أتمكن من التحقق من القناة. تأكد أن البوت مشرف ويملك صلاحية نشر الرسائل، ثم أعد توجيه منشور منها.\n" + str(exc)[:300])
         else:
             await message.reply_text("❌ حوّل منشورًا مباشرة من قناة السجلات، وليس رابطًا أو نصًا منسوخًا. /cancel للإلغاء.")
+        return
+
+    # Set a subscriber's public button label (emoji + display name).
+    if is_admin(user_id) and context.user_data.get("flexy_label_slot") is not None:
+        slot = int(context.user_data.get("flexy_label_slot"))
+        if text.lower() == "/cancel":
+            context.user_data.pop("flexy_label_slot", None)
+            await message.reply_text("تم إلغاء تعديل اسم المشترك.")
+            return
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or len(parts[0]) > 12 or len(parts[1].strip()) < 2:
+            await message.reply_text("❌ أرسل إيموجي ثم الاسم. مثال: 👤 أحمد")
+            return
+        emoji, display_name = parts[0].strip(), parts[1].strip()
+        if len(display_name) > 30:
+            await message.reply_text("❌ الاسم طويل جدًا. الحد الأقصى 30 حرفًا.")
+            return
+        with db() as conn:
+            conn.execute("INSERT INTO flexy_subscribers(slot,active,display_name,display_emoji,updated_at) VALUES(?,0,?,?,?) ON CONFLICT(slot) DO UPDATE SET display_name=excluded.display_name,display_emoji=excluded.display_emoji,updated_at=excluded.updated_at",
+                         (slot, display_name, emoji, now_text()))
+        context.user_data.pop("flexy_label_slot", None)
+        await message.reply_text(f"✅ تم حفظ اسم الزر: {emoji} {display_name}")
         return
 
     # Flexy admin setup steps.
