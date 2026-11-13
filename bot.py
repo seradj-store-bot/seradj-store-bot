@@ -6752,7 +6752,13 @@ async def flexy_receive_sms(update, context):
                     VALUES(?,?,?,?,?,?)""", (chat.id, msg.message_id, "700", float(amount), raw_text, created))
                 event_id = cur.lastrowid
             subscribers = conn.execute("SELECT slot,display_name,display_emoji FROM flexy_subscribers WHERE active=1 AND user_id IS NOT NULL ORDER BY slot").fetchall()
-        buttons = [[InlineKeyboardButton(f"{(r['display_emoji'] or '👤')} {(r['display_name'] or f'المشترك {r["slot"]}')}".strip(), callback_data=f"flexy_credit:{event_id}:{r['slot']}")] for r in subscribers]
+        buttons = []
+        for r in subscribers:
+            slot = r["slot"]
+            display_name = r["display_name"] or f"المشترك {slot}"
+            display_emoji = r["display_emoji"] or "👤"
+            button_text = f"{display_emoji} {display_name}".strip()
+            buttons.append([InlineKeyboardButton(button_text, callback_data=f"flexy_credit:{event_id}:{slot}")])
         if not buttons:
             buttons = [[InlineKeyboardButton("لا يوجد مشترك نشط", callback_data="flexy_noop")]]
         await context.bot.send_message(chat_id=int(channel_id),
