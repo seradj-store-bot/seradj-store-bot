@@ -3489,7 +3489,7 @@ async def callback_handler(update, context):
             await query.answer("رقم المشترك غير صالح.", show_alert=True); return
         context.user_data["flexy_label_slot"] = slot
         await query.message.reply_text(
-            f"أرسل الإيموجي ثم الاسم للمشترك رقم {slot}.\nمثال: 👤 أحمد\nأو: 🟢 محمد\nللإلغاء أرسل /cancel."
+            f"أرسل اسم المشترك رقم {slot} فقط، دون إيموجي.\nمثال: أحمد محمد\nللإلغاء أرسل /cancel."
         )
         await query.answer()
         return
@@ -6751,14 +6751,12 @@ async def flexy_receive_sms(update, context):
                     (source_chat_id,source_message_id,sender,gross_amount,message_text,created_at)
                     VALUES(?,?,?,?,?,?)""", (chat.id, msg.message_id, "700", float(amount), raw_text, created))
                 event_id = cur.lastrowid
-            subscribers = conn.execute("SELECT slot,display_name,display_emoji FROM flexy_subscribers WHERE active=1 AND user_id IS NOT NULL ORDER BY slot").fetchall()
+            subscribers = conn.execute("SELECT slot,display_name FROM flexy_subscribers WHERE active=1 AND user_id IS NOT NULL ORDER BY slot").fetchall()
         buttons = []
         for r in subscribers:
             slot = r["slot"]
-            display_name = r["display_name"] or f"المشترك {slot}"
-            display_emoji = r["display_emoji"] or "👤"
-            button_text = f"{display_emoji} {display_name}".strip()
-            buttons.append([InlineKeyboardButton(button_text, callback_data=f"flexy_credit:{event_id}:{slot}")])
+            display_name = (r["display_name"] or "").strip() or f"المشترك {slot}"
+            buttons.append([InlineKeyboardButton(display_name, callback_data=f"flexy_credit:{event_id}:{slot}")])
         if not buttons:
             buttons = [[InlineKeyboardButton("لا يوجد مشترك نشط", callback_data="flexy_noop")]]
         await context.bot.send_message(chat_id=int(channel_id),
@@ -6883,26 +6881,25 @@ async def text_handler(update, context):
             await message.reply_text("❌ حوّل منشورًا مباشرة من قناة السجلات، وليس رابطًا أو نصًا منسوخًا. /cancel للإلغاء.")
         return
 
-    # Set a subscriber's public button label (emoji + display name).
+    # Set a subscriber's public button label (name only; no emoji).
     if is_admin(user_id) and context.user_data.get("flexy_label_slot") is not None:
         slot = int(context.user_data.get("flexy_label_slot"))
         if text.lower() == "/cancel":
             context.user_data.pop("flexy_label_slot", None)
             await message.reply_text("تم إلغاء تعديل اسم المشترك.")
             return
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2 or len(parts[0]) > 12 or len(parts[1].strip()) < 2:
-            await message.reply_text("❌ أرسل إيموجي ثم الاسم. مثال: 👤 أحمد")
+        display_name = text.strip()
+        if len(display_name) < 2:
+            await message.reply_text("❌ أرسل اسمًا من حرفين على الأقل.")
             return
-        emoji, display_name = parts[0].strip(), parts[1].strip()
         if len(display_name) > 30:
             await message.reply_text("❌ الاسم طويل جدًا. الحد الأقصى 30 حرفًا.")
             return
         with db() as conn:
-            conn.execute("INSERT INTO flexy_subscribers(slot,active,display_name,display_emoji,updated_at) VALUES(?,0,?,?,?) ON CONFLICT(slot) DO UPDATE SET display_name=excluded.display_name,display_emoji=excluded.display_emoji,updated_at=excluded.updated_at",
-                         (slot, display_name, emoji, now_text()))
+            conn.execute("INSERT INTO flexy_subscribers(slot,active,display_name,updated_at) VALUES(?,0,?,?) ON CONFLICT(slot) DO UPDATE SET display_name=excluded.display_name,updated_at=excluded.updated_at",
+                         (slot, display_name, now_text()))
         context.user_data.pop("flexy_label_slot", None)
-        await message.reply_text(f"✅ تم حفظ اسم الزر: {emoji} {display_name}")
+        await message.reply_text(f"✅ تم حفظ اسم الزر: {display_name}")
         return
 
     # Flexy admin setup steps.
