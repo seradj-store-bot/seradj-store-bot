@@ -6632,6 +6632,11 @@ def flexy_parse_sms(text):
     if not raw:
         return None
 
+    # Ignore Djezzy offer-activation notices; they are not Flexy recharges.
+    # Example: "Vous avez recu : 1500 DA pour activation de votre Offre."
+    if re.search(r"pour\s+activation\s+de\s+votre\s+offre", raw, re.IGNORECASE):
+        return None
+
     # SMS Bot may forward either of these Djezzy confirmation formats.
     body_pattern = re.compile(
         r"(?:Vous\s+venez\s+de\s+recharger|Vous\s+avez\s+Re[cç]u)"
