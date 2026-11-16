@@ -2101,6 +2101,10 @@ async def select_payment(
         price = wallet_offer_price(offer, query.from_user.id, currency)
         method_name = "محفظة DA"
         details = "سيتم الخصم من محفظة الدينار."
+    elif method == "balance_usd":
+        # USD wallet price and currency were calculated in the first branch above.
+        method_name = "محفظة USD"
+        details = "سيتم الخصم من محفظة الدولار."
     elif method == "baridi":
         price = offer_price(offer, "baridi", query.from_user.id)
         method_name = "BaridiMob / CCP"
