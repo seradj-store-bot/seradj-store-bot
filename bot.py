@@ -261,6 +261,7 @@ ADMIN_SUBMENUS = {
     ],
     "👥 المشتركين والتجار": [
         ["👥 التحكم في الأفراد", "👥 إدارة التجار"],
+        ["💰 ترتيب محافظ المشتركين"],
         ["🔄 تحويل زبون / تاجر"],
         ["🔙 لوحة الإدارة"],
     ],
@@ -1280,6 +1281,46 @@ async def admin_show_people(message, banned=False, page=0):
     title = "🚫 قائمة المحظورين" if banned else "👥 المشتركين النشطون"
     await message.reply_text(f"{title} — العدد: {total}\nالصفحة {page+1} من {max(1,(int(total)+per_page-1)//per_page)}\nاضغط على الشخص لإدارة حسابه.",
                              reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def admin_wallet_ranking(query, currency="DA", page=0):
+    """Show every registered account ranked by one wallet currency."""
+    currency = "USD" if str(currency).upper() == "USD" else "DA"
+    page = max(0, int(page or 0))
+    per_page = 15
+    balance_col = "balance_usd" if currency == "USD" else "balance"
+    with db() as conn:
+        total = int(conn.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+        rows = conn.execute(
+            f"SELECT user_id, username, full_name, account_type, is_banned, balance, balance_usd "
+            f"FROM users ORDER BY COALESCE({balance_col},0) DESC, user_id ASC LIMIT ? OFFSET ?",
+            (per_page, page * per_page),
+        ).fetchall()
+    pages = max(1, (total + per_page - 1) // per_page)
+    title = "💵 ترتيب محافظ الدولار USD" if currency == "USD" else "💰 ترتيب محافظ الدينار DA"
+    lines = [f"{title}", f"عدد الحسابات: {total}", "━━━━━━━━━━━━━━━━━━"]
+    if not rows:
+        lines.append("لا توجد حسابات مسجلة.")
+    for index, row in enumerate(rows, start=page * per_page + 1):
+        name = row["full_name"] or ("@" + row["username"] if row["username"] else str(row["user_id"]))
+        kind = "تاجر" if row["account_type"] == "trader" else "زبون"
+        status = " | محظور" if int(row["is_banned"] or 0) else ""
+        amount = float(row["balance_usd"] or 0) if currency == "USD" else int(row["balance"] or 0)
+        unit = "USD" if currency == "USD" else "DA"
+        lines.append(f"{index}. {name} — {amount:,.2f} {unit}\n   {kind}{status} | ID: {row['user_id']}")
+    buttons = [[
+        InlineKeyboardButton("💰 ترتيب DA", callback_data="wallet_rank:DA:0"),
+        InlineKeyboardButton("💵 ترتيب USD", callback_data="wallet_rank:USD:0"),
+    ]]
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"wallet_rank:{currency}:{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="wallet_rank:noop:0"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"wallet_rank:{currency}:{page+1}"))
+    buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
+    await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def admin_person_card(query, target_id):
@@ -4409,6 +4450,15 @@ async def callback_handler(update, context):
             except sqlite3.OperationalError:
                 pass
         await query.edit_message_text(f"✅ تم حذف جميع الطلبات ({count} طلب). الحسابات والأرصدة والألعاب والعروض لم تتغير.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]]))
+        return
+
+    if data.startswith("wallet_rank:"):
+        if not is_admin(user_id):
+            await query.answer("غير مسموح", show_alert=True)
+            return
+        parts = data.split(":")
+        if len(parts) == 3 and parts[1] != "noop":
+            await admin_wallet_ranking(query, parts[1], int(parts[2]))
         return
 
     if data == "people_active":
@@ -8940,6 +8990,19 @@ async def text_handler(update, context):
 
         if text == "👥 التحكم في الأفراد":
             await admin_show_people(message, banned=False)
+            return
+
+        if text == "💰 ترتيب محافظ المشتركين":
+            if not is_admin(user_id):
+                await message.reply_text("⛔ هذا الخيار خاص بالإدارة.")
+                return
+            await message.reply_text(
+                "اختر العملة لعرض جميع المحافظ مرتبة من الأكبر إلى الأصغر:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💰 محافظ الدينار DA", callback_data="wallet_rank:DA:0")],
+                    [InlineKeyboardButton("💵 محافظ الدولار USD", callback_data="wallet_rank:USD:0")],
+                ]),
+            )
             return
 
         if text == "🗑️ حذف جميع الطلبات":
