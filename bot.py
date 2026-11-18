@@ -38,7 +38,7 @@ WHATSAPP_NUMBER = os.getenv("WHATSAPP_NUMBER", "213671629818")
 REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip()
 REQUIRED_CHANNEL_LINK = os.getenv("REQUIRED_CHANNEL_LINK", "").strip()
 STORE_NAME = "SERADJ STORE"
-STORE_BENEFITS_TEXT = '✨ مزايا متجرنا ✨\n\n🎮 شحن ألعابك بسهولة\nشحن بالـID، بالحساب ، مع خيارات متعددة للألعاب والعروض.\n\n⚡ سرعة وسهولة\nخطوات بسيطة لطلب الشحن ومتابعة طلباتك من داخل المتجر.\n\n🔐 خدمة آمنة ومنظمة\nطلباتك، محفظتك ونقاطك مرتبطة بحسابك داخل المتجر.\n\n⭐ نظام النقاط\nمع عملياتك داخل المتجر تقدر تجمع نقاط، وبعد بلوغ الحد المطلوب تقدر تحولها وتستفيد منها.\n🔥 كلما تستعمل المتجر أكثر، عندك فرصة تجمع نقاط أكثر!\n\n👥 نظام الإحالة\nشارك رابطك مع أصدقائك، وكلما استخدموا المتجر وحققوا شروط الإحالة، تحصل على نقاط ومكافآت.\n💡 يعني تقدر تجمع نقاط حتى وأنت مرتاح، وأصدقاؤك هم اللي يستعملوا المتجر!\n\n👑 نظام VIP — مع ازدياد نشاطك وشحناتك، تقترب من مزايا VIP وخصوماته. 🚀\n\n💰 المحفظة\nاشحن محفظتك واستعمل رصيدك في طلباتك بسهولة، مع إمكانية الاستفادة من عروض وبونص الإيداع عند توفرها.\n\n🎁 مكافآت وعروض\nتابع المتجر باستمرار لأن العروض والمكافآت الجديدة تكون متاحة من وقت لآخر.\n\n🚀 الخلاصة: تشحن لعبتك، تجمع نقاط، تستفيد من VIP، وتشارك رابطك مع أصحابك لتزيد فرصك في المكافآت.\n\n❤️ استعمل المتجر… وكل عملية ممكن تكون بداية لمكافأة جديدة!'
+STORE_BENEFITS_TEXT = '✨ مزايا متجرنا ✨\n\n🎮 شحن ألعابك بسهولة\nشحن بالـID، بالحساب ، مع خيارات متعددة للألعاب والعروض.\n\n⚡ سرعة وسهولة\nخطوات بسيطة لطلب الشحن ومتابعة طلباتك من داخل المتجر.\n\n🔐 خدمة آمنة ومنظمة\nطلباتك، محفظتك ونقاطك مرتبطة بحسابك داخل المتجر.\n\n⭐ نظام النقاط\nكل 1 DA تنفقه في طلب مكتمل = نقطة DA، وكل 1 USD = نقطة USD. تقدر تحول كل 100 نقطة إلى 1 من العملة نفسها في محفظتك.\n🔥 كلما تستعمل المتجر أكثر، عندك فرصة تجمع نقاط أكثر!\n\n👥 نظام الإحالة\nشارك رابطك مع أصدقائك، وكلما استخدموا المتجر وحققوا شروط الإحالة، تحصل على مكافآت في المحفظة ونقاط إضافية.\n💡 يعني تقدر تجمع نقاط حتى وأنت مرتاح، وأصدقاؤك هم اللي يستعملوا المتجر!\n\n👑 نظام VIP — مع ازدياد نشاطك وشحناتك، تقترب من مزايا VIP وخصوماته. 🚀\n\n💰 المحفظة\nاشحن محفظتك واستعمل رصيدك في طلباتك بسهولة، مع إمكانية الاستفادة من عروض وبونص الإيداع عند توفرها.\n\n🎁 مكافآت وعروض\nتابع المتجر باستمرار لأن العروض والمكافآت الجديدة تكون متاحة من وقت لآخر.\n\n🚀 الخلاصة: تشحن لعبتك، تجمع نقاط، تستفيد من VIP، وتشارك رابطك مع أصحابك لتزيد فرصك في المكافآت.\n\n❤️ استعمل المتجر… وكل عملية ممكن تكون بداية لمكافأة جديدة!'
 TERMS_PRIVACY_TEXT = '📜 الشروط والأحكام وسياسة الخصوصية — SERADJ STORE \n\n1. الاستخدام\nباستخدامك للبوت، فإنك توافق على الالتزام بالشروط والأحكام وسياسة الخصوصية الخاصة بالمتجر.\n\n2. معلومات المستخدم\nقد يتم حفظ معرف Telegram، اسم المستخدم، الاسم الظاهر، معلومات الطلبات، معلومات الشحن التي ترسلها، ومعلومات المحفظة والنقاط والمعاملات المرتبطة بها.\n\n3. استخدام المعلومات\nتُستخدم هذه المعلومات لتقديم خدمات المتجر، معالجة الطلبات والدفع والشحن، تقديم الدعم الفني وتحسين الخدمة.\n\n4. عمليات الدفع\nأنت مسؤول عن التأكد من صحة بيانات الدفع والبيانات التي تقدمها قبل إرسال الطلب. لا ترسل كلمات المرور أو المعلومات الحساسة إلا عند الضرورة الفعلية للخدمة.\n\n5. الطلبات\nتأكد من صحة بيانات اللعبة والحساب قبل تأكيد الطلب، وقد تبدأ المعالجة بعد إرسال الطلب.\n\n6. المحفظة والنقاط\nأرصدة المحفظة والنقاط مرتبطة بحساب Telegram، ويمنع استغلال النظام أو إجراء عمليات وهمية أو متكررة للحصول على رصيد أو نقاط بشكل غير مشروع.\n\n7. الإحالات والمكافآت\nيمنع استخدام الحسابات الوهمية أو أي وسيلة للتحايل على نظام الإحالات والمكافآت. رابط الإحالة يُحتسب للمستخدم الجديد عند أول تشغيل فقط، ولا يمكن تغيير المحيل بعد ذلك.\n\n8. الدعم الفني\nيُستخدم الدعم للاستفسارات والمشاكل المتعلقة بالخدمة، ويمنع استخدامه للإزعاج أو إرسال طلبات متكررة أو غير متعلقة بالخدمة.\n\n9. إيقاف الخدمة\nيحتفظ المتجر بحق رفض أو إيقاف أي طلب يخالف الشروط أو يشتبه في وجود تلاعب أو إساءة استخدام.\n\n10. الخصوصية\nنحترم خصوصيتك ولا نستخدم المعلومات التي يتم جمعها إلا للأغراض المرتبطة بتقديم خدمات المتجر وإدارة الطلبات والدعم.\n\n11. الموافقة\nباستخدامك للبوت وإتمام أي عملية، فإنك تؤكد أنك قرأت هذه الشروط وسياسة الخصوصية ووافقت عليها.'
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -267,7 +267,7 @@ ADMIN_SUBMENUS = {
     ],
     "🛍️ إدارة المتجر": [
         ["➕ إضافة", "🎮 إدارة الألعاب"],
-        ["✨ إدارة إيموجيات Premium", "🎁 إدارة متجر النقاط"],
+        ["✨ إدارة إيموجيات Premium"],
         ["🔙 لوحة الإدارة"],
     ],
     "💎 الأسعار والرصيد": [
@@ -348,7 +348,7 @@ async def dispatch_order_to_group(context, order_id, user, draft, player_id, pay
     caption = (f"🆕 طلب جديد #{order_id}\n\n👤 الزبون: {user.full_name}\n🆔 Telegram ID: {user.id}\n"
                f"🎮 الخدمة: {draft.get('game_name','غير محددة')}\n📦 العرض: {draft.get('offer_name','غير محدد')}\n"
                f"📋 معلومات الشحن: {player_id or 'لا تتطلب'}\n📱 الجهاز: {draft.get('platform') or 'غير محدد'}\n"
-               f"💰 السعر: {price} {draft.get('currency', 'DA')}\n" + (f"🎟️ قسيمة تخفيض: -{int(draft.get('coupon_discount', 0))} DA\n" if int(draft.get('coupon_discount', 0)) else "") + f"🎁 النقاط المستخدمة: {points_used}\n💳 الدفع: {payment_method}\n📌 الحالة: قيد الانتظار")
+               f"💰 السعر: {price} {draft.get('currency', 'DA')}\n" + f"🎁 النقاط المستخدمة: {points_used}\n💳 الدفع: {payment_method}\n📌 الحالة: قيد الانتظار")
     try:
         if photo:
             await context.bot.send_photo(chat_id=int(group_id), photo=photo.file_id, caption=caption, reply_markup=keyboard)
@@ -462,7 +462,7 @@ def main_keyboard(user_id):
     else:
         keyboard = [row[:] for row in MAIN_MENU]
     if not points_enabled(user_id):
-        keyboard = [row for row in keyboard if not any("نقاطي" in item or "الإحالة" in item for item in row)]
+        keyboard = [row for row in keyboard if not any("نقاطي" in item or "الإحالة" in item or "قسائم" in item for item in row)]
     # Traders should not see the account-upgrade button.
     if is_trader(user_id):
         keyboard = [[item for item in row if "ترقية الحساب" not in item] for row in keyboard]
@@ -563,6 +563,8 @@ def init_db():
             balance_usd REAL DEFAULT 0,
             trader_wallet_currency TEXT DEFAULT 'DA',
             points INTEGER DEFAULT 0,
+            points_da INTEGER DEFAULT 0,
+            points_usd REAL DEFAULT 0,
             credit_limit INTEGER DEFAULT 0,
             credit_debt INTEGER DEFAULT 0,
             credit_term_days INTEGER DEFAULT 0,
@@ -680,17 +682,6 @@ def init_db():
             referrer_user_id INTEGER NOT NULL,
             points_awarded INTEGER DEFAULT 0,
             created_at TEXT DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS user_coupons (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            discount_amount INTEGER NOT NULL,
-            points_cost INTEGER NOT NULL,
-            min_order INTEGER NOT NULL,
-            purchased_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'available',
-            used_order_id INTEGER DEFAULT NULL
         );
         CREATE TABLE IF NOT EXISTS referral_milestones (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -886,6 +877,8 @@ def init_db():
                 "is_banned": "INTEGER DEFAULT 0",
                 "balance": "INTEGER DEFAULT 0",
                 "points": "INTEGER DEFAULT 0",
+                "points_da": "INTEGER DEFAULT 0",
+                "points_usd": "REAL DEFAULT 0",
                 "credit_limit": "INTEGER DEFAULT 0",
                 "credit_debt": "INTEGER DEFAULT 0",
                 "credit_term_days": "INTEGER DEFAULT 0",
@@ -947,8 +940,6 @@ def init_db():
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('flexy_details', 'تواصل مع الإدارة لمعرفة معلومات Flexy.')")
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('points_value', '1')")
         order_cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()}
-        if "coupon_id" not in order_cols: conn.execute("ALTER TABLE orders ADD COLUMN coupon_id INTEGER DEFAULT NULL")
-        if "coupon_discount" not in order_cols: conn.execute("ALTER TABLE orders ADD COLUMN coupon_discount INTEGER DEFAULT 0")
         # Trader accounts do not participate in the points system.
         # Repair older databases where applications were saved with the default category='game'.
         # Include common apps/services, using normalized lowercase names and preserving game titles.
@@ -1140,12 +1131,8 @@ def is_trader(user_id):
 
 
 def points_enabled(user_id):
-    """Points are available to customers, never to approved traders."""
-    if is_admin(user_id):
-        return True
-    with db() as conn:
-        row = conn.execute("SELECT account_type FROM users WHERE user_id = ?", (user_id,)).fetchone()
-    return not (row and row["account_type"] == "trader")
+    """Loyalty points are available to all buyers, including approved traders."""
+    return True
 
 
 def deposit_limits(account_type, method):
@@ -1358,7 +1345,7 @@ async def admin_person_card(query, target_id):
         f"الرصيد: {int(row['balance'] or 0)} DA\n"
         f"💵 رصيد الدولار: {float(row['balance_usd'] or 0):.2f} USD\n"
         + (f"💳 الدين الحالي: {int(row['credit_debt'] or 0)} DA\n" if row['account_type'] == 'trader' else "")
-        + f"🎁 نقاط المكافآت: {int(row['points'] or 0)} نقطة\n"
+        + f"🎁 نقاط DA: {int(row['points_da'] or 0)} | نقاط USD: {float(row['points_usd'] or 0):.3f}\n"
         f"عدد الطلبات: {orders}\n"
         f"تاريخ التسجيل: {row['created_at'] or 'غير معروف'}",
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -1479,18 +1466,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             referrer_id = int(payload[4:])
         except ValueError:
             referrer_id = 0
-        if referrer_id and referrer_id != user.id:
+        if is_new_user and referrer_id and referrer_id != user.id:
             with db() as conn:
                 existing_ref = conn.execute("SELECT referred_user_id FROM referrals WHERE referred_user_id=?", (user.id,)).fetchone()
                 referrer_exists = conn.execute("SELECT user_id FROM users WHERE user_id=?", (referrer_id,)).fetchone()
                 referrer_type = conn.execute("SELECT account_type FROM users WHERE user_id=?", (referrer_id,)).fetchone() if referrer_exists else None
                 if not existing_ref and referrer_exists:
-                    award = bool(referrer_type and referrer_type["account_type"] != "trader")
-                    conn.execute("INSERT INTO referrals (referred_user_id, referrer_user_id, points_awarded, created_at) VALUES (?, ?, ?, ?)", (user.id, referrer_id, 50 if award else 0, now_text()))
+                    award = bool(referrer_type)
+                    conn.execute("INSERT INTO referrals (referred_user_id, referrer_user_id, points_awarded, created_at) VALUES (?, ?, ?, ?)", (user.id, referrer_id, 1 if award else 0, now_text()))
                     if award:
-                        conn.execute("UPDATE users SET points=COALESCE(points,0)+50 WHERE user_id=?", (referrer_id,))
+                        ref_wallet = conn.execute("SELECT balance, balance_usd FROM users WHERE user_id=?", (referrer_id,)).fetchone()
+                        before_da = float(ref_wallet["balance"] or 0)
+                        before_usd = float(ref_wallet["balance_usd"] or 0)
+                        conn.execute("UPDATE users SET balance=COALESCE(balance,0)+5, balance_usd=COALESCE(balance_usd,0)+0.019 WHERE user_id=?", (referrer_id,))
+                        conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,created_at) VALUES(?,?,?,?,?,?,?,?)", (referrer_id,"DA","مكافأة تسجيل إحالة",5,before_da,before_da+5,"تسجيل مشترك جديد عبر رابط الإحالة",now_text()))
+                        conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,created_at) VALUES(?,?,?,?,?,?,?,?)", (referrer_id,"USD","مكافأة تسجيل إحالة",0.019,before_usd,before_usd+0.019,"تسجيل مشترك جديد عبر رابط الإحالة",now_text()))
                     try:
-                        await context.bot.send_message(referrer_id, "🎉 انضم مشترك جديد عبر رابط إحالتك! تمت إضافة 50 نقطة إلى حسابك." if award else "تم تسجيل الإحالة، لكن مكافآت النقاط متاحة للزبائن فقط.")
+                        await context.bot.send_message(referrer_id, "🎉 انضم مشترك جديد عبر رابط إحالتك! تمت إضافة 5 DA إلى محفظة الدينار و0.019 USD إلى محفظة الدولار." if award else "تم تسجيل الإحالة بنجاح.")
                     except Exception:
                         logger.info("Could not notify referrer %s", referrer_id)
 
@@ -1680,7 +1672,7 @@ async def show_account(message, user_id):
         f"💰 محفظة الدينار: {int(user['balance'] or 0)} DA\n"
         f"💵 محفظة الدولار: {float(user['balance_usd'] or 0):.2f} USD\n"
         f"🔄 لتحويل الدولار إلى الدينار، تواصل مع الإدارة مباشرة (لا يوجد تحويل آلي داخل البوت).\n"
-        f"🎁 نقاط المكافآت: {int(user['points'] or 0) if points_enabled(user_id) else 0} نقطة\n"
+        f"🎁 نقاط DA: {int(user['points_da'] or 0) if points_enabled(user_id) else 0} | نقاط USD: {float(user['points_usd'] or 0):.3f}\n"
         f"📅 التسجيل: {user['created_at']}",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⭐ نقاطي", callback_data="account_points"), InlineKeyboardButton("📦 طلباتي", callback_data="account_orders")],
@@ -1812,36 +1804,6 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
         await query.edit_message_text("❌ هذا العرض غير متوفر على iPhone.")
         return
 
-    # Ask customers whether to use a coupon immediately after selecting an offer (not in the cart).
-    coupon_key = f"{game_id}:{offer_id}:{platform or ''}:{price_mode}"
-    # Show the coupon prompt only to customers who actually own at least one
-    # currently valid, unused coupon. Traders and customers without coupons
-    # proceed directly to the offer details.
-    customer_has_coupon = False
-    if context is not None and points_enabled(user_id) and price_mode != "usd":
-        try:
-            customer_has_coupon = bool(_valid_coupons(user_id))
-        except Exception:
-            logger.exception("Could not check coupons for user %s", user_id)
-    if context is not None and customer_has_coupon and not is_trader(user_id):
-        pending = context.user_data.get("pending_offer_coupon") or {}
-        selected_coupon = context.user_data.get("offer_coupon") or {}
-        selected_matches = selected_coupon.get("key") == coupon_key
-        if context.user_data.get("offer_coupon_prompt_key") != coupon_key and not selected_matches:
-            context.user_data["pending_offer_coupon"] = {"game_id": game_id, "offer_id": offer_id, "platform": platform, "price_mode": price_mode, "key": coupon_key}
-            prompt_rows = [
-                [InlineKeyboardButton("🎟️ نعم، أريد استعمال قسيمة", callback_data="offer_coupon_yes")],
-                [InlineKeyboardButton("⏭️ لا، متابعة بلا قسيمة", callback_data="offer_coupon_no")],
-                [InlineKeyboardButton("🛒 إضافة إلى السلة دون قسيمة", callback_data=f"cart_add:{game_id}:{offer_id}:{platform or 'none'}:{price_mode}")],
-            ]
-            await query.edit_message_text(
-                "🛍️ تم اختيار العرض\n\n"
-                f"🎮 اللعبة: {game['name']}\n📦 العرض: {offer['name']}\n"
-                f"💰 السعر: {offer_price(offer, 'flexy' if price_mode == 'flexy' else 'baridi', user_id)} دج\n\n"
-                "🎟️ هل تريد استعمال قسيمة تخفيض؟ يمكنك أيضًا المتابعة دون قسيمة بالسعر الكامل.",
-                reply_markup=InlineKeyboardMarkup(prompt_rows))
-            return
-
     buttons = []
     da_price = wallet_offer_price(offer, user_id, "DA")
     usd_price = wallet_offer_price(offer, user_id, "USD")
@@ -1852,16 +1814,9 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
         [InlineKeyboardButton("🛒 عرض السلة", callback_data="cart_view")],
         [InlineKeyboardButton("🔙 رجوع للعروض", callback_data=f"recharge_select:{game_id}:{int(offer['recharge_method_id'])}:{platform or 'none'}")],
     ])
-    selected_coupon = context.user_data.get("offer_coupon") if context is not None else None
-    if not selected_coupon or selected_coupon.get("key") != coupon_key:
-        selected_coupon = None
-    coupon_cut = int(selected_coupon.get("discount", 0)) if selected_coupon else 0
-    wallet_price = max(0, int(offer_price(offer, "baridi", user_id)) - coupon_cut)
+    wallet_price = int(offer_price(offer, "baridi", user_id))
     buttons[0] = [InlineKeyboardButton(f"💰 الدفع من محفظة الدينار — {wallet_price} DA", callback_data=f"pay:{game_id}:{offer_id}:balance")]
     buttons[1] = [InlineKeyboardButton(f"💵 الدفع من محفظة الدولار — {usd_price:.2f} USD", callback_data=f"pay:{game_id}:{offer_id}:balance_usd")]
-    if selected_coupon:
-        buttons.append([InlineKeyboardButton(f"🎟️ القسيمة المختارة: -{int(selected_coupon['discount'])} دج", callback_data="offer_coupon_yes")])
-        buttons.append([InlineKeyboardButton("❌ إلغاء القسيمة", callback_data="offer_coupon_remove")])
     buttons.append([InlineKeyboardButton("🔙 رجوع للعروض", callback_data=f"recharge_select:{game_id}:{int(offer['recharge_method_id'])}:{platform or 'none'}")])
     if context is not None:
         context.user_data["use_points_for_order"] = False
@@ -1871,7 +1826,6 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
         f"📦 العرض: {offer['name']}\n"
         f"📱 الجهاز: {'Android' if platform == 'android' else 'iPhone (iOS)' if platform == 'ios' else 'غير مطلوب'}\n\n"
         f"💰 السعر: {wallet_price} DA / {usd_price:.2f} USD\n"
-        + (f"🎟️ القسيمة المختارة: -{int(selected_coupon['discount'])} دج\n" if selected_coupon else "")
         + "💳 اختر المحفظة المناسبة عند الدفع.",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
@@ -1996,51 +1950,6 @@ async def _cart_view(query, context):
     await query.edit_message_text(_cart_text(cart, query.from_user.id), reply_markup=InlineKeyboardMarkup(rows))
 
 
-COUPON_TYPES = {
-    100: {"points": 250, "minimum": 2000, "days": 10},
-    200: {"points": 500, "minimum": 3900, "days": 10},
-    500: {"points": 1250, "minimum": 20000, "days": 30},
-    1000: {"points": 2500, "minimum": 39000, "days": 30},
-}
-
-def _valid_coupons(user_id, min_total=None):
-    with db() as conn:
-        rows = conn.execute("SELECT * FROM user_coupons WHERE user_id=? AND status='available' AND expires_at>? ORDER BY discount_amount", (user_id, now_text())).fetchall()
-    result=[]
-    # Repair legacy coupon rows created by an older buggy version that may
-    # have stored the points cost (250) as the discount instead of 100 DA.
-    expected_by_points = {250: 100, 500: 200, 1250: 500, 2500: 1000}
-    for r in rows:
-        item = dict(r)
-        points_cost = int(item.get('points_cost') or 0)
-        expected_discount = expected_by_points.get(points_cost)
-        if expected_discount is not None and int(item.get('discount_amount') or 0) != expected_discount:
-            item['discount_amount'] = expected_discount
-            with db() as conn:
-                conn.execute("UPDATE user_coupons SET discount_amount=? WHERE id=? AND user_id=? AND status='available'", (expected_discount, int(item['id']), int(user_id)))
-        if min_total is None or (int(min_total) > int(item['min_order'])):
-            result.append(item)
-    return result
-
-async def show_coupon_shop(message, user_id):
-    if not points_enabled(user_id):
-        await message.reply_text("قسائم التخفيض والنقاط متاحة للزبائن فقط.", reply_markup=main_keyboard(user_id)); return
-    with db() as conn:
-        u=conn.execute("SELECT points FROM users WHERE user_id=?",(user_id,)).fetchone()
-    points=int(u['points'] or 0) if u else 0
-    rows=[[InlineKeyboardButton(f"🎟️ تخفيض {amount} دج — {cfg['points']} نقطة | طلب فوق {cfg['minimum']} دج", callback_data=f"coupon_buy:{amount}")] for amount,cfg in COUPON_TYPES.items()]
-    rows.append([InlineKeyboardButton("📋 قسائمي", callback_data="coupon_mine")])
-    await message.reply_text(f"🎟️ متجر قسائم التخفيض\n\nرصيدك: {points} نقطة\nكل 250 نقطة = 100 دج تخفيض.\nالقسائم صالحة لطلب واحد، وتبدأ المدة من لحظة الشراء.\n\n100 و200 دج: 10 أيام\n500 و1000 دج: 30 يومًا\n\nاستعمال القسيمة يمنع كسب نقاط مكافأة عن الطلب.", reply_markup=InlineKeyboardMarkup(rows))
-
-async def show_my_coupons(query, user_id):
-    rows=_valid_coupons(user_id)
-    if not rows:
-        await query.edit_message_text("ما عندك حتى قسيمة صالحة حاليًا.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 متجر القسائم", callback_data="coupon_shop")]])); return
-    lines=["🎟️ قسائمك المتاحة:"]
-    for r in rows:
-        lines.append(f"• {int(r['discount_amount'])} دج تخفيض | الحد الأدنى أكثر من {int(r['min_order'])} دج | تنتهي: {r['expires_at']}")
-    await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 متجر القسائم", callback_data="coupon_shop")]]))
-
 async def _cart_checkout(query, context):
     cart = context.user_data.get("cart")
     if not cart or not cart.get("items"):
@@ -2063,9 +1972,6 @@ async def _cart_start_payment(query, context, payment_type):
         await query.answer("طريقة الدفع غير متاحة.", show_alert=True); return
     wallet_ccy = "USD" if payment_type in ("balance_usd", "trader_wallet_usd") else "DA"
     base_total = _cart_total(cart, payment_type, query.from_user.id)
-    coupon_id = None
-    coupon_discount = 0
-    context.user_data.pop("cart_coupon", None)
     total = base_total
     if payment_type in ("balance", "balance_usd", "trader_wallet", "trader_wallet_usd"):
         column = "balance_usd" if wallet_ccy == "USD" else "balance"
@@ -2081,7 +1987,7 @@ async def _cart_start_payment(query, context, payment_type):
         _, offer, _ = _cart_method_info(cart["game_id"], item["offer_id"])
         if offer:
             names.append(f"{offer['name']} × {item['quantity']}")
-    context.user_data["order_draft"] = {"cart_mode": True, "cart_items": [dict(x) for x in cart["items"]], "game_id": cart["game_id"], "offer_id": cart["items"][0]["offer_id"], "game_name": game["name"] if game else "", "offer_name": " + ".join(names), "method": method_name, "price": total, "base_price": base_total, "coupon_id": coupon_id, "coupon_discount": coupon_discount, "points_used": 0, "payment_type": payment_type, "currency": wallet_ccy, "wallet_currency": wallet_ccy, "platform": cart.get("platform", ""), "login_mode": cart.get("method_type") == "login"}
+    context.user_data["order_draft"] = {"cart_mode": True, "cart_items": [dict(x) for x in cart["items"]], "game_id": cart["game_id"], "offer_id": cart["items"][0]["offer_id"], "game_name": game["name"] if game else "", "offer_name": " + ".join(names), "method": method_name, "price": total, "base_price": base_total, "points_used": 0, "payment_type": payment_type, "currency": wallet_ccy, "wallet_currency": wallet_ccy, "platform": cart.get("platform", ""), "login_mode": cart.get("method_type") == "login"}
     await _begin_cart_timer(context, query.from_user.id)
     if cart.get("method_type") == "login":
         context.user_data["awaiting_login_email"] = True
@@ -2095,7 +2001,7 @@ async def _cart_start_payment(query, context, payment_type):
     else:
         context.user_data["awaiting_player_id"] = True
         prompt = "🆔 أرسل Player ID الخاص بنفس اللاعب."
-    await query.edit_message_text(_cart_text(cart, query.from_user.id, payment_type) + (f"\n🎟️ القسيمة: -{coupon_discount} دج\n💰 المبلغ النهائي: {total} دج" if coupon_discount else "") + f"\n\n💳 طريقة الدفع: {method_name}\n⏳ لديك 15 دقيقة لإتمام الطلب.\n\n{prompt}\nللإلغاء أرسل /cancel")
+    await query.edit_message_text(_cart_text(cart, query.from_user.id, payment_type) + f"\n\n💳 طريقة الدفع: {method_name}\n⏳ لديك 15 دقيقة لإتمام الطلب.\n\n{prompt}\nللإلغاء أرسل /cancel")
 
 
 # ====== اختيار طريقة الدفع ======
@@ -2218,23 +2124,6 @@ async def select_payment(
         )
         return
 
-    # Apply a separately selected coupon only to DA-denominated single-offer orders.
-    coupon_id = None
-    coupon_discount = 0
-    coupon_state = context.user_data.get("offer_coupon") or {}
-    expected_coupon_key = f"{game_id}:{offer_id}:{context.user_data.get('selected_platform') or ''}:{context.user_data.get('selected_price_mode', 'choose')}"
-    # The callback's explicit price mode is retained from the selected offer view.
-    selected_coupon = coupon_state if coupon_state.get("key") == expected_coupon_key else {}
-    base_price = int(price) if str(currency).upper() != "USD" else price
-    if selected_coupon and str(currency).upper() not in ("USD",):
-        valid_coupon = next((c for c in _valid_coupons(query.from_user.id) if int(c["id"]) == int(selected_coupon.get("id", 0))), None)
-        if valid_coupon and int(base_price) > int(valid_coupon["min_order"]):
-            coupon_id = int(valid_coupon["id"])
-            coupon_discount = min(int(valid_coupon["discount_amount"]), int(base_price))
-            price = max(0, int(base_price) - coupon_discount)
-        else:
-            context.user_data.pop("offer_coupon", None)
-            await query.answer("القسيمة لم تعد صالحة أو لا تحقق الحد الأدنى لهذا السعر؛ سيُستخدم السعر الكامل.", show_alert=True)
     if method in ("balance", "balance_usd", "trader_wallet"):
         wallet_col = "balance_usd" if currency == "USD" else "balance"
         with db() as conn:
@@ -2245,6 +2134,7 @@ async def select_payment(
             return
 
     # Loyalty points are not cash and must never be auto-deducted from a normal order.
+    base_price = price
     points_used = 0
     context.user_data["use_points_for_order"] = False
 
@@ -2261,8 +2151,6 @@ async def select_payment(
         "currency": currency if method.startswith("custom_") or method in ("balance", "balance_usd", "trader_wallet") else "DA",
         "wallet_currency": currency if method in ("balance", "balance_usd", "trader_wallet") else "DA",
         "platform": context.user_data.get("selected_platform", ""),
-        "coupon_id": coupon_id,
-        "coupon_discount": coupon_discount,
     }
     await _begin_cart_timer(context, query.from_user.id)
 
@@ -2296,7 +2184,6 @@ async def select_payment(
         f"🔀 طريقة الشحن: {selected_method['title'] if selected_method else 'الطريقة الافتراضية'}\n"
         f"💳 الدفع: {method_name}\n"
         f"💰 السعر: {price} {currency if method.startswith('custom_') or method in ('balance', 'balance_usd', 'trader_wallet') else 'DA'}\n"
-        + (f"🎟️ خصم القسيمة: -{coupon_discount} DA\n" if coupon_discount else "")
         + f"\n💳 معلومات الدفع:\n{details}\n\n"
         f"{prompt}\n\nللإلغاء أرسل /cancel"
     )
@@ -2326,20 +2213,10 @@ async def create_wallet_order(message, context, player_id, user=None):
             return
         conn.execute(f"UPDATE users SET {wallet_col} = {wallet_col} - ?, points = points - ? WHERE user_id = ?", (price, points_used, user.id))
         cursor = conn.execute(
-            "INSERT INTO orders (user_id, game_id, offer_id, player_id, payment_method, price, currency, status, created_at, points_used, platform, wallet_charged, coupon_id, coupon_discount) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, 1, ?, ?)",
-            (user.id, draft["game_id"], draft["offer_id"], player_id, draft.get("method", "رصيد المحفظة"), price, wallet_ccy, now_text(), points_used, draft.get("platform", ""), draft.get("coupon_id"), int(draft.get("coupon_discount", 0))),
+            "INSERT INTO orders (user_id, game_id, offer_id, player_id, payment_method, price, currency, status, created_at, points_used, platform, wallet_charged) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, 1)",
+            (user.id, draft["game_id"], draft["offer_id"], player_id, draft.get("method", "رصيد المحفظة"), price, wallet_ccy, now_text(), points_used, draft.get("platform", "")),
         )
         order_id = cursor.lastrowid
-        if draft.get("coupon_id"):
-            updated=conn.execute("UPDATE user_coupons SET status='used',used_order_id=? WHERE id=? AND user_id=? AND status='available' AND expires_at>?",(order_id,int(draft['coupon_id']),user.id,now_text()))
-            if updated.rowcount != 1:
-                conn.execute(f"UPDATE users SET {wallet_col}={wallet_col}+? WHERE user_id=?",(price,user.id))
-                conn.execute("DELETE FROM orders WHERE id=?",(order_id,))
-                await message.reply_text("❌ القسيمة لم تعد صالحة أو سبق استعمالها. لم يتم تثبيت الطلب؛ أعد المحاولة.",reply_markup=main_keyboard(user.id)); return
-            context.user_data.pop('cart_coupon',None)
-            context.user_data.pop('offer_coupon',None)
-            context.user_data.pop('pending_offer_coupon',None)
-            context.user_data.pop('offer_coupon_prompt_key',None)
         if draft.get("cart_mode"):
             for item in draft.get("cart_items", []):
                 _, cart_offer, _ = _cart_method_info(draft["game_id"], item["offer_id"])
@@ -2711,9 +2588,9 @@ async def photo_handler(update, context):
             """
             INSERT INTO orders (
                 user_id, game_id, offer_id, player_id,
-                payment_method, price, currency, status, created_at, points_used, platform, coupon_id, coupon_discount
+                payment_method, price, currency, status, created_at, points_used, platform
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user.id,
@@ -2727,20 +2604,9 @@ async def photo_handler(update, context):
                 now_text(),
                 int(draft.get("points_used", 0)),
                 draft.get("platform", ""),
-                draft.get("coupon_id"),
-                int(draft.get("coupon_discount", 0)),
             ),
         )
         order_id = cursor.lastrowid
-        if draft.get("coupon_id"):
-            updated=conn.execute("UPDATE user_coupons SET status='used',used_order_id=? WHERE id=? AND user_id=? AND status='available' AND expires_at>?",(order_id,int(draft['coupon_id']),user.id,now_text()))
-            if updated.rowcount != 1:
-                conn.execute("DELETE FROM orders WHERE id=?",(order_id,))
-                await message.reply_text("❌ القسيمة لم تعد صالحة أو سبق استعمالها. أعد الطلب دونها.",reply_markup=main_keyboard(user.id)); return
-            context.user_data.pop('cart_coupon',None)
-            context.user_data.pop('offer_coupon',None)
-            context.user_data.pop('pending_offer_coupon',None)
-            context.user_data.pop('offer_coupon_prompt_key',None)
         if draft.get("cart_mode"):
             for item in draft.get("cart_items", []):
                 _, cart_offer, _ = _cart_method_info(draft["game_id"], item["offer_id"])
@@ -2863,54 +2729,23 @@ async def show_my_orders(update, context):
 
 async def show_points_shop(message, user_id):
     if not points_enabled(user_id):
-        await message.reply_text("🎁 نظام النقاط مخصص للزبائن فقط، وغير متاح لحسابات التجار.", reply_markup=main_keyboard(user_id))
-        return
+        await message.reply_text("⭐ نظام النقاط متاح لجميع المشترين.", reply_markup=main_keyboard(user_id)); return
     with db() as conn:
-        user_row = conn.execute("SELECT points FROM users WHERE user_id=?", (user_id,)).fetchone()
-        offers = conn.execute("SELECT * FROM point_offers WHERE active=1 ORDER BY id").fetchall()
-    points = int(user_row["points"] or 0) if user_row else 0
-    buttons = [[InlineKeyboardButton(f"🎁 {o['title']} — {o['points_cost']} نقطة" + (f" (المتبقي {o['stock']})" if int(o['stock'] or -1) >= 0 else ""), callback_data=f"points_buy:{o['id']}")] for o in offers if int(o['stock'] if o['stock'] is not None else -1) != 0]
-    buttons.insert(0, [InlineKeyboardButton("🎟️ شراء قسائم التخفيض بالنقاط", callback_data="coupon_shop")])
-    buttons.append([InlineKeyboardButton("📋 قسائمي", callback_data="coupon_mine")])
-    buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back_main")])
-    text = f"🎁 متجر النقاط\nرصيدك: {points} نقطة\n\nالنقاط ليس لها قيمة نقدية مباشرة؛ تستعمل لشراء عروض النقاط أو قسائم التخفيض فقط.\n\n" + ("\n".join(f"• {o['title']}: {o['description']}" for o in offers) if offers else "لا توجد عروض نقاط أخرى حالياً. يمكنك شراء قسائم التخفيض من الزر أعلاه.")
-    await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-
-
-def contact_admin_keyboard():
-    rows = []
-    wa = get_setting("whatsapp_number", WHATSAPP_NUMBER).strip().replace("+", "").replace(" ", "")
-    tg = get_setting("telegram_url", os.getenv("TELEGRAM_URL", "")).strip()
-    fb = get_setting("facebook_url", os.getenv("FACEBOOK_URL", "")).strip()
-    if wa:
-        rows.append([InlineKeyboardButton("💬 WhatsApp", url=f"https://wa.me/{wa}")])
-    if tg.startswith(("https://t.me/", "https://telegram.me/")):
-        rows.append([InlineKeyboardButton("✈️ Telegram", url=tg)])
-    if fb.startswith("https://"):
-        rows.append([InlineKeyboardButton("📘 Facebook", url=fb)])
-    if not rows:
-        rows.append([InlineKeyboardButton("⚠️ حسابات التواصل غير مضبوطة", callback_data="contact_unset")])
-    return InlineKeyboardMarkup(rows)
-
-
-# =========================
-# زر التواصل عبر واتساب
-# =========================
-
-def wa_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "💬 التواصل عبر WhatsApp",
-                url=f"https://wa.me/{get_setting('whatsapp_number', WHATSAPP_NUMBER).replace('+', '').replace(' ', '')}",
-            )
-        ]
-    ])
-
-
-# =========================
-# لوحة تحكم الإدارة
-# =========================
+        row = conn.execute("SELECT points_da, points_usd FROM users WHERE user_id=?", (user_id,)).fetchone()
+    da = int(row["points_da"] or 0) if row else 0
+    usd = float(row["points_usd"] or 0) if row else 0.0
+    buttons = [
+        [InlineKeyboardButton("🔄 تحويل نقاط DA إلى محفظة الدينار", callback_data="points_convert:DA")],
+        [InlineKeyboardButton("🔄 تحويل نقاط USD إلى محفظة الدولار", callback_data="points_convert:USD")],
+    ]
+    await message.reply_text(
+        "⭐ نقاطك في SERADJ STORE\n\n"
+        f"🇩🇿 نقاط الدينار: {da:,} نقطة DA\n"
+        f"💵 نقاط الدولار: {usd:.3f} نقطة USD\n\n"
+        "💱 كل 100 نقطة DA = 1 DA في المحفظة.\n"
+        "💱 كل 100 نقطة USD = 1 USD في المحفظة.\n"
+        "يمكنك تحويل مضاعفات 100 نقطة، والباقي يبقى محفوظًا.",
+        reply_markup=InlineKeyboardMarkup(buttons))
 
 async def show_admin_panel(update, context):
     user_id = update.effective_user.id
@@ -3066,7 +2901,6 @@ async def admin_offer_manage(query, offer_id):
         [InlineKeyboardButton("⏸️ إيقاف العرض" if offer['active'] else "🟢 تفعيل العرض", callback_data=f"offer_toggle:{offer_id}")],
         [InlineKeyboardButton("✏️ تغيير الاسم", callback_data=f"offer_rename:{offer_id}"), InlineKeyboardButton("💰 تعديل الأسعار", callback_data=f"edit_offer:{offer_id}")],
         [InlineKeyboardButton(f"🤖 Android: {'متاح' if offer['android_active'] else 'موقوف'}", callback_data=f"offer_platform:{offer_id}:android"), InlineKeyboardButton(f"🍎 iPhone: {'متاح' if offer['ios_active'] else 'موقوف'}", callback_data=f"offer_platform:{offer_id}:ios")],
-        [InlineKeyboardButton(f"🎁 نقاط المكافأة: {offer['reward_points']}", callback_data=f"edit_reward:{offer_id}")],
         [InlineKeyboardButton("⬆️ تقديم العرض", callback_data=f"offer_move:{offer_id}:up"), InlineKeyboardButton("⬇️ تأخير العرض", callback_data=f"offer_move:{offer_id}:down")],
         [InlineKeyboardButton("🗑️ حذف العرض", callback_data=f"offer_delete:{offer_id}")],
         [InlineKeyboardButton("🔙 قائمة العروض", callback_data=f"offers_game:{offer['game_id']}")],
@@ -3636,144 +3470,6 @@ async def callback_handler(update, context):
             if item["quantity"] <= 0: cart["items"].remove(item)
         if not cart["items"]: context.user_data.pop("cart", None); await query.edit_message_text("🛒 السلة فارغة."); return
         await _cart_view(query, context); return
-    if data == "coupon_shop":
-        await query.answer()
-        await show_coupon_shop(query.message, user_id); return
-    if data == "coupon_mine":
-        await query.answer()
-        await show_my_coupons(query, user_id); return
-    if data.startswith("coupon_buy:"):
-        if not points_enabled(user_id):
-            await query.answer("القسائم متاحة للزبائن فقط.", show_alert=True); return
-        try:
-            amount = int(data.split(":", 1)[1])
-        except (ValueError, IndexError):
-            await query.answer("القسيمة المختارة غير صحيحة. افتح متجر القسائم من جديد.", show_alert=True); return
-        cfg = COUPON_TYPES.get(amount)
-        if not cfg:
-            await query.answer("القسيمة المختارة غير متاحة.", show_alert=True); return
-        try:
-            purchased = datetime.now()
-            expires = purchased + timedelta(days=int(cfg["days"]))
-            purchased_text = purchased.strftime('%Y-%m-%d %H:%M:%S')
-            expires_text = expires.strftime('%Y-%m-%d %H:%M:%S')
-            # Ensure the coupon table exists even if the hosting process did not run migrations.
-            with db() as conn:
-                conn.execute("""CREATE TABLE IF NOT EXISTS user_coupons (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    discount_amount INTEGER NOT NULL,
-                    points_cost INTEGER NOT NULL,
-                    min_order INTEGER NOT NULL,
-                    purchased_at TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'available',
-                    used_order_id INTEGER DEFAULT NULL
-                )""")
-                # Atomic points deduction prevents simultaneous taps from spending the same points twice.
-                conn.execute("BEGIN IMMEDIATE")
-                u = conn.execute("SELECT points FROM users WHERE user_id=?", (user_id,)).fetchone()
-                if not u:
-                    conn.rollback()
-                    await query.answer("ما لقيناش حسابك في قاعدة البيانات. ابعث /start ثم عاود.", show_alert=True); return
-                balance = int(u['points'] or 0)
-                if balance < int(cfg['points']):
-                    conn.rollback()
-                    await query.answer(f"رصيدك غير كافٍ. تحتاج {cfg['points']} نقطة، وعندك {balance} نقطة.", show_alert=True); return
-                cur = conn.execute("UPDATE users SET points=points-? WHERE user_id=? AND COALESCE(points,0)>=?", (int(cfg['points']), user_id, int(cfg['points'])))
-                if cur.rowcount != 1:
-                    conn.rollback()
-                    await query.answer("تغيّر رصيد نقاطك. افتح متجر القسائم وتحقق من رصيدك ثم حاول مجددًا.", show_alert=True); return
-                conn.execute("INSERT INTO user_coupons(user_id,discount_amount,points_cost,min_order,purchased_at,expires_at,status) VALUES(?,?,?,?,?,?,'available')", (user_id, amount, int(cfg['points']), int(cfg['minimum']), purchased_text, expires_text))
-                conn.commit()
-        except Exception as exc:
-            logger.exception("Coupon purchase failed for user %s", user_id)
-            await query.answer("تعذر إتمام الشراء بسبب خطأ في قاعدة البيانات. لم نؤكد الشراء؛ راجع سجل أخطاء الاستضافة ثم حاول مرة أخرى.", show_alert=True); return
-        await query.answer("تم شراء القسيمة بنجاح ✅")
-        await query.edit_message_text(
-            f"✅ اشتريت قسيمة تخفيض {amount} دج.\nصلاحيتها {cfg['days']} يومًا من لحظة الشراء، وتنتهي {expires_text}.\nتُستخدم مرة واحدة لطلب قيمته أكثر من {cfg['minimum']} دج، ولا تُمنح نقاط مكافأة على الطلب الذي تُستخدم فيه.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 قسائمي", callback_data="coupon_mine")], [InlineKeyboardButton("🎟️ متجر القسائم", callback_data="coupon_shop")]])
-        )
-        return
-    if data in ("offer_coupon_yes", "offer_coupon_no", "offer_coupon_remove"):
-        pending = context.user_data.get("pending_offer_coupon") or {}
-        if not pending:
-            await query.answer("انتهت جلسة اختيار العرض. افتح العرض من جديد.", show_alert=True); return
-        if not points_enabled(user_id):
-            context.user_data.pop("offer_coupon", None)
-            context.user_data["offer_coupon_prompt_key"] = pending.get("key", "")
-            await open_offer(query, pending["game_id"], pending["offer_id"], pending.get("platform"), context, pending.get("price_mode", "choose")); return
-        if data == "offer_coupon_yes":
-            offer = next((x for x in get_offers(int(pending["game_id"])) if int(x["id"]) == int(pending["offer_id"])), None)
-            if not offer:
-                await query.edit_message_text("العرض لم يعد متاحًا."); return
-            price_mode = pending.get("price_mode", "choose")
-            price = int(offer_price(offer, "flexy" if price_mode == "flexy" else "baridi", user_id))
-            valid = [c for c in _valid_coupons(user_id) if price > int(c["min_order"])]
-            if not valid:
-                rows = [[InlineKeyboardButton("⏭️ متابعة بلا قسيمة", callback_data="offer_coupon_no")], [InlineKeyboardButton("🔙 رجوع", callback_data="offer_coupon_no")]]
-                await query.edit_message_text("ما عندك حتى قسيمة صالحة لهذا العرض، أو قيمة العرض لا تحقق الحد الأدنى للقسيمة.", reply_markup=InlineKeyboardMarkup(rows)); return
-            rows = [[InlineKeyboardButton(f"تخفيض {int(c['discount_amount'])} دج — ينتهي {c['expires_at']}", callback_data=f"offer_coupon_set:{int(c['id'])}")] for c in valid]
-            rows.append([InlineKeyboardButton("⏭️ متابعة بلا قسيمة", callback_data="offer_coupon_no")])
-            await query.edit_message_text("🎟️ اختر القسيمة التي تريد استعمالها لهذا العرض:", reply_markup=InlineKeyboardMarkup(rows)); return
-        if data == "offer_coupon_remove":
-            context.user_data.pop("offer_coupon", None)
-            context.user_data["offer_coupon_prompt_key"] = pending.get("key", "")
-        else:
-            context.user_data.pop("offer_coupon", None)
-            context.user_data["offer_coupon_prompt_key"] = pending.get("key", "")
-        await open_offer(query, pending["game_id"], pending["offer_id"], pending.get("platform"), context, pending.get("price_mode", "choose")); return
-    if data.startswith("offer_coupon_set:"):
-        pending = context.user_data.get("pending_offer_coupon") or {}
-        if not pending or not points_enabled(user_id):
-            await query.answer("القسائم متاحة للزبائن فقط. افتح العرض من جديد.", show_alert=True); return
-        try: cid = int(data.split(":", 1)[1])
-        except ValueError: return
-        coupons = _valid_coupons(user_id)
-        coupon = next((c for c in coupons if int(c["id"]) == cid), None)
-        offer = next((x for x in get_offers(int(pending["game_id"])) if int(x["id"]) == int(pending["offer_id"])), None)
-        if not coupon or not offer:
-            await query.answer("القسيمة منتهية أو مستعملة أو العرض غير متاح.", show_alert=True); return
-        price_mode = pending.get("price_mode", "choose")
-        base = int(offer_price(offer, "flexy" if price_mode == "flexy" else "baridi", user_id))
-        if base <= int(coupon["min_order"]):
-            await query.answer(f"هذه القسيمة تتطلب طلبًا أكبر من {int(coupon['min_order'])} دج.", show_alert=True); return
-        context.user_data["offer_coupon"] = {"id": cid, "discount": int(coupon["discount_amount"]), "minimum": int(coupon["min_order"]), "key": pending.get("key", "")}
-        context.user_data["offer_coupon_prompt_key"] = pending.get("key", "")
-        await query.answer("تم اختيار القسيمة.")
-        await open_offer(query, pending["game_id"], pending["offer_id"], pending.get("platform"), context, pending.get("price_mode", "choose")); return
-
-    if data == "cart_coupon_list":
-        if not points_enabled(user_id):
-            context.user_data.pop('cart_coupon', None)
-            await query.answer("القسائم متاحة للزبائن فقط.", show_alert=True); return
-        cart=context.user_data.get('cart')
-        if not cart or not cart.get('items'):
-            await query.answer("السلة فارغة.",show_alert=True); return
-        total=max(_cart_total(cart,'baridi',user_id),_cart_total(cart,'flexy',user_id))
-        coupons=_valid_coupons(user_id)
-        rows=[]
-        for c in coupons:
-            if total>int(c['min_order']): rows.append([InlineKeyboardButton(f"استخدم {int(c['discount_amount'])} دج (ينتهي {c['expires_at']})",callback_data=f"cart_coupon_set:{int(c['id'])}")])
-        rows.append([InlineKeyboardButton("🔙 رجوع للدفع",callback_data="cart_checkout")])
-        await query.answer()
-        await query.edit_message_text("🎟️ اختر قسيمة صالحة لهذا الطلب. سيتم التحقق مجددًا من السعر النهائي قبل اعتمادها.",reply_markup=InlineKeyboardMarkup(rows)); return
-    if data.startswith("cart_coupon_set:"):
-        if not points_enabled(user_id):
-            context.user_data.pop('cart_coupon', None)
-            await query.answer("القسائم متاحة للزبائن فقط.", show_alert=True); return
-        cid=int(data.split(':',1)[1]); rows=_valid_coupons(user_id)
-        c=next((r for r in rows if int(r['id'])==cid),None)
-        if not c:
-            await query.answer("القسيمة منتهية أو مستعملة.",show_alert=True); return
-        # One selected coupon per order: replace any previous selection, never stack.
-        context.user_data.pop('cart_coupon', None)
-        context.user_data['cart_coupon']={'id':cid,'discount':int(c['discount_amount']),'minimum':int(c['min_order'])}
-        await query.answer("تم اختيار القسيمة.")
-        await _cart_checkout(query,context); return
-    if data == "cart_coupon_remove":
-        await query.answer()
-        context.user_data.pop('cart_coupon',None); await _cart_checkout(query,context); return
     if data.startswith("cart_pay:"):
         await _cart_start_payment(query, context, data.split(":", 1)[1]); return
 
@@ -4184,56 +3880,37 @@ async def callback_handler(update, context):
         await query.answer("اطلب من الإدارة ضبط روابط التواصل.", show_alert=True)
         return
 
+    if data.startswith(("coupon_", "cart_coupon_", "offer_coupon_")):
+        await query.answer("❌ تم إلغاء نظام قسائم التخفيض.", show_alert=True)
+        return
+
+    if data.startswith("points_convert:"):
+        if not points_enabled(user_id):
+            await query.answer("النقاط متاحة لجميع المشترين.", show_alert=True); return
+        ccy = data.split(":", 1)[1].upper()
+        if ccy not in ("DA", "USD"):
+            await query.answer("نوع نقاط غير صالح.", show_alert=True); return
+        column = "points_da" if ccy == "DA" else "points_usd"
+        wallet = "balance" if ccy == "DA" else "balance_usd"
+        with db() as conn:
+            row = conn.execute(f"SELECT {column} AS pts FROM users WHERE user_id=?", (user_id,)).fetchone()
+            available = float(row["pts"] or 0) if row else 0.0
+            whole = int(available // 100)
+            if whole < 1:
+                await query.answer("تحتاج إلى 100 نقطة على الأقل للتحويل.", show_alert=True); return
+            redeem_points = whole * 100
+            credit = whole if ccy == "DA" else round(whole, 2)
+            conn.execute(f"UPDATE users SET {column}=COALESCE({column},0)-?, {wallet}=COALESCE({wallet},0)+? WHERE user_id=?", (redeem_points, credit, user_id))
+        await query.answer("تم تحويل النقاط إلى محفظتك بنجاح.", show_alert=True)
+        await query.message.reply_text(f"✅ تم تحويل {redeem_points} نقطة {ccy} إلى {credit:g} {ccy} في محفظتك.")
+        await show_points_shop(query.message, user_id)
+        return
+
     if data == "points_shop":
         await show_points_shop(query.message, user_id)
         return
-    if data.startswith("points_buy:"):
-        if not points_enabled(user_id):
-            await query.answer("متجر النقاط متاح للزبائن فقط.", show_alert=True)
-            return
-        try:
-            offer_id = int(data.split(":", 1)[1])
-        except ValueError:
-            return
-        with db() as conn:
-            offer = conn.execute("SELECT * FROM point_offers WHERE id=? AND active=1", (offer_id,)).fetchone()
-            user_row = conn.execute("SELECT points FROM users WHERE user_id=?", (user_id,)).fetchone()
-            if not offer or not user_row:
-                await query.answer("العرض غير متاح.", show_alert=True); return
-            cost = int(offer["points_cost"] or 0)
-            points = int(user_row["points"] or 0)
-            stock = int(offer["stock"] if offer["stock"] is not None else -1)
-            if points < cost:
-                await query.answer(f"نقاطك غير كافية. تحتاج {cost} نقطة.", show_alert=True); return
-            if stock == 0:
-                await query.answer("نفد المخزون.", show_alert=True); return
-            conn.execute("UPDATE users SET points=points-? WHERE user_id=?", (cost, user_id))
-            conn.execute("INSERT INTO point_redemptions (user_id,offer_id,points_cost,status,created_at) VALUES (?,?,?,'pending',?)", (user_id, offer_id, cost, now_text()))
-            if stock > 0:
-                conn.execute("UPDATE point_offers SET stock=stock-1 WHERE id=?", (offer_id,))
-            redemption_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        if ADMIN_ID:
-            try:
-                await context.bot.send_message(ADMIN_ID, f"🎁 طلب شراء بالنقاط #{redemption_id}\nالمشترك: {query.from_user.full_name}\nID: {user_id}\nالعرض: {offer['title']}\nالتكلفة: {cost} نقطة", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد التسليم", callback_data=f"point_redeem_done:{redemption_id}"), InlineKeyboardButton("❌ رفض وإرجاع النقاط", callback_data=f"point_redeem_reject:{redemption_id}")]]))
-            except Exception: logger.exception("Could not notify admin of point redemption")
-        await query.edit_message_text(f"✅ تم تسجيل طلبك #{redemption_id} للعرض «{offer['title']}» مقابل {cost} نقطة. الطلب قيد المراجعة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 متجر النقاط", callback_data="points_shop")]]))
-        return
-    if data.startswith("point_redeem_done:") or data.startswith("point_redeem_reject:"):
-        if not is_admin(user_id):
-            await query.answer("⛔ غير مسموح لك.", show_alert=True); return
-        redemption_id = int(data.split(":", 1)[1]); approve = data.startswith("point_redeem_done:")
-        with db() as conn:
-            red = conn.execute("SELECT * FROM point_redemptions WHERE id=? AND status='pending'", (redemption_id,)).fetchone()
-            if not red:
-                await query.answer("تمت معالجة الطلب مسبقًا.", show_alert=True); return
-            status = "completed" if approve else "rejected"
-            conn.execute("UPDATE point_redemptions SET status=? WHERE id=?", (status, redemption_id))
-            if not approve:
-                conn.execute("UPDATE users SET points=points+? WHERE user_id=?", (int(red['points_cost']), int(red['user_id'])))
-        try:
-            await context.bot.send_message(int(red['user_id']), f"{'✅ تم تأكيد تسليم' if approve else '❌ تم رفض'} طلب متجر النقاط #{redemption_id}." + ("" if approve else f" تمت إعادة {red['points_cost']} نقطة إلى حسابك."))
-        except Exception: pass
-        await query.edit_message_text(f"تمت معالجة طلب متجر النقاط #{redemption_id}.")
+    if data.startswith(("points_buy:", "point_redeem_done:", "point_redeem_reject:")):
+        await query.answer("❌ متجر استبدال النقاط القديم متوقف. يمكنك تحويل نقاطك إلى المحفظة من صفحة نقاطي.", show_alert=True)
         return
     if data.startswith("game_request_view:"):
         if not is_admin(user_id):
@@ -4389,7 +4066,6 @@ async def callback_handler(update, context):
         "trader_reject:",
         "game_platform:",
         "offer_platform:",
-        "edit_reward:",
         "deposit_approve:",
         "deposit_reject:",
         "chat_reply:",
@@ -5229,7 +4905,7 @@ async def callback_handler(update, context):
         context.user_data["admin_step"] = "add_offer_data"
         context.user_data["pending_game_id"] = int(game_id)
         context.user_data["pending_recharge_method_id"] = int(method_id)
-        await query.message.reply_text("➕ أرسل بيانات العرض والأسعار لهذه الطريقة فقط:\nاسم العرض | سعر الزبون BaridiMob/CCP | سعر التاجر BaridiMob/CCP | نقاط المكافأة (اختياري)\n\nمثال: 100 Coins | 250 | 220 | 5\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
+        await query.message.reply_text("➕ أرسل بيانات العرض والأسعار لهذه الطريقة فقط:\nاسم العرض | سعر الزبون BaridiMob/CCP | سعر التاجر BaridiMob/CCP\n\nمثال: 100 Coins | 250 | 220\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
 
     # إدارة الألعاب
     elif data == "adm_games":
@@ -5608,20 +5284,6 @@ async def callback_handler(update, context):
         buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_add_offer")])
         await query.edit_message_text("اختر طريقة الشحن التي سيخصّص لها هذا العرض وأسعاره:", reply_markup=InlineKeyboardMarkup(buttons))
 
-    elif data.startswith("edit_reward:"):
-        try:
-            offer_id = int(data.split(":", 1)[1])
-        except ValueError:
-            return
-        with db() as conn:
-            offer = conn.execute("SELECT name, reward_points FROM offers WHERE id = ?", (offer_id,)).fetchone()
-        if not offer:
-            await query.message.reply_text("❌ العرض غير موجود.")
-            return
-        context.user_data["admin_step"] = "edit_reward_points"
-        context.user_data["pending_offer_id"] = offer_id
-        await query.message.reply_text(f"🎁 العرض: {offer['name']}\nالنقاط الحالية: {offer['reward_points']}\nأرسل عدد النقاط التي يحصل عليها الزبون بعد اكتمال الشحن (0 لإيقاف المكافأة).")
-
     # اختيار عرض لتعديل أسعاره
     elif data.startswith("edit_offer:"):
         try:
@@ -5902,7 +5564,7 @@ async def callback_handler(update, context):
         with db() as conn:
             order = conn.execute(
                 """SELECT o.user_id, o.game_id, o.offer_id, o.player_id, o.payment_method,
-                          o.status, o.points_awarded, o.points_used, o.wallet_charged, o.coupon_id, o.coupon_discount,
+                          o.status, o.points_awarded, o.points_used, o.wallet_charged,
                           o.wallet_refunded, o.credit_charged, o.credit_refunded, o.price,
                           o.currency, o.shipping_receipt_file_id, o.completion_message,
                           g.name AS game_name, f.name AS offer_name
@@ -5922,36 +5584,15 @@ async def callback_handler(update, context):
             customer_id = order["user_id"]
             # Rewards are granted only once, on the first transition to completed.
             if new_status == "completed" and order["status"] != "completed" and not int(order["points_awarded"] or 0):
-                reward = conn.execute("SELECT reward_points FROM offers WHERE id = ?", (order["offer_id"],)).fetchone()
-                customer_type = conn.execute("SELECT account_type FROM users WHERE user_id=?", (customer_id,)).fetchone()
-                reward_points = int(reward["reward_points"] or 0) if reward and customer_type and customer_type["account_type"] != "trader" and not order["coupon_id"] else 0
-                if reward_points:
-                    reward_points_granted = reward_points
-                    conn.execute("UPDATE users SET points = points + ? WHERE user_id = ?", (reward_points, customer_id))
+                amount = max(0.0, float(order["price"] or 0))
+                reward_points_granted = amount
+                if str(order["currency"] or "DA").upper() == "USD":
+                    conn.execute("UPDATE users SET points_usd=COALESCE(points_usd,0)+? WHERE user_id=?", (amount, customer_id))
+                else:
+                    conn.execute("UPDATE users SET points_da=COALESCE(points_da,0)+? WHERE user_id=?", (int(amount), customer_id))
                 conn.execute("UPDATE orders SET points_awarded = 1 WHERE id = ?", (order_id,))
-            # Referral milestones use cumulative completed DA value for each referred customer.
-            if new_status == "completed" and order["status"] != "completed" and str(order["currency"] or "DA").upper() == "DA":
-                ref = conn.execute("SELECT referrer_user_id FROM referrals WHERE referred_user_id=?", (customer_id,)).fetchone()
-                if ref:
-                    cumulative = int(conn.execute("SELECT COALESCE(SUM(price),0) FROM orders WHERE user_id=? AND status='completed' AND currency='DA'", (customer_id,)).fetchone()[0] or 0) + int(order["price"] or 0)
-                    referrer_id=int(ref["referrer_user_id"])
-                    ref_type=conn.execute("SELECT account_type FROM users WHERE user_id=?",(referrer_id,)).fetchone()
-                    if ref_type and ref_type["account_type"] != "trader":
-                        milestones=[]
-                        if cumulative >= 10000: milestones.append((10000,120))
-                        if cumulative >= 20000:
-                            for threshold in range(20000, cumulative//10000*10000+1, 10000): milestones.append((threshold,50))
-                        for threshold, pts in milestones:
-                            cur=conn.execute("INSERT OR IGNORE INTO referral_milestones(referred_user_id,referrer_user_id,milestone_amount,points_awarded,created_at) VALUES(?,?,?,?,?)",(customer_id,referrer_id,threshold,pts,now_text()))
-                            if cur.rowcount:
-                                conn.execute("UPDATE users SET points=COALESCE(points,0)+? WHERE user_id=?",(pts,referrer_id))
-                                try:
-                                    context.application.create_task(context.bot.send_message(referrer_id, f"🎉 مكافأة إحالة! وصلت شحنات صديقك إلى {threshold:,} دج. تمت إضافة {pts} نقطة إلى رصيدك."))
-                                except Exception: pass
             # Refund wallet balance and redeemed points if an order is rejected.
             if new_status == "rejected" and order["status"] != "rejected":
-                if order["coupon_id"]:
-                    conn.execute("UPDATE user_coupons SET status='available', used_order_id=NULL WHERE id=? AND user_id=? AND status='used' AND expires_at>?", (int(order["coupon_id"]), int(customer_id), now_text()))
                 if int(order["wallet_charged"] or 0) and not int(order["wallet_refunded"] or 0):
                     refund_col = "balance_usd" if str(order["currency"] or "DA").upper() == "USD" else "balance"
                     conn.execute(f"UPDATE users SET {refund_col} = {refund_col} + ?, points = points + ? WHERE user_id = ?", (float(order["price"] or 0) if refund_col == "balance_usd" else int(order["price"] or 0), int(order["points_used"] or 0), customer_id))
@@ -6281,10 +5922,6 @@ async def callback_handler(update, context):
         price_mode = parts[4] if len(parts) == 5 and parts[4] in ("baridi", "flexy", "usd", "trader_da", "trader_usd", "wallet_da") else "choose"
         context.user_data["selected_platform"] = platform or ""
         context.user_data["selected_price_mode"] = price_mode
-        current_coupon = context.user_data.get("offer_coupon") or {}
-        if current_coupon and not current_coupon.get("key", "").startswith(f"{game_id}:{offer_id}:"):
-            context.user_data.pop("offer_coupon", None)
-        context.user_data.pop("offer_coupon_prompt_key", None) if not current_coupon else None
         await open_offer(query, game_id, offer_id, platform, context, price_mode)
 
     # اختيار طريقة دفع تسديد القرض
@@ -7856,20 +7493,6 @@ async def text_handler(update, context):
             await message.reply_text("✅ تمت إضافة طريقة الشحن. أضف عروضها من لوحة الإدارة ← إضافة عرض.", reply_markup=admin_keyboard())
             return
 
-        if step == "point_offer_add":
-            parts=[x.strip() for x in text.split("|")]
-            if len(parts) != 4:
-                await message.reply_text("الصيغة: الاسم | الوصف | تكلفة النقاط | المخزون (-1 غير محدود)"); return
-            try:
-                cost=int(parts[2]); stock=int(parts[3])
-                if cost < 1 or stock < -1: raise ValueError
-            except ValueError:
-                await message.reply_text("التكلفة يجب أن تكون موجبة والمخزون -1 أو صفر أو أكثر."); return
-            with db() as conn:
-                conn.execute("INSERT INTO point_offers (title,description,points_cost,stock,active,created_at) VALUES (?,?,?,?,1,?)",(parts[0],parts[1],cost,stock,now_text()))
-            context.user_data.pop("admin_step",None)
-            await message.reply_text("✅ تمت إضافة العرض إلى متجر النقاط.",reply_markup=admin_keyboard()); return
-
         # إضافة لعبة
         if step == "add_game":
             parts = [part.strip() for part in text.split("|")]
@@ -7925,8 +7548,8 @@ async def text_handler(update, context):
             if len(parts) not in (3, 4):
                 await message.reply_text(
                     "❌ الصيغة غير صحيحة.\n\n"
-                    "استعمل: اسم العرض | سعر الزبون BaridiMob | سعر التاجر BaridiMob | نقاط المكافأة (اختياري)\n"
-                    "مثال: 100 Coins | 250 | 220 | 5"
+                    "استعمل: اسم العرض | سعر الزبون BaridiMob | سعر التاجر BaridiMob\n"
+                    "مثال: 100 Coins | 250 | 220"
                 )
                 return
 
@@ -7934,8 +7557,8 @@ async def text_handler(update, context):
             try:
                 price_baridi = int(parts[1])
                 price_baridi_trader = int(parts[2])
-                reward_points = int(parts[3]) if len(parts) == 4 else 0
-                if not offer_name or min(price_baridi, price_baridi_trader, reward_points) < 0:
+                reward_points = 0  # Loyalty points are calculated from completed order value.
+                if not offer_name or min(price_baridi, price_baridi_trader) < 0:
                     raise ValueError
                 # Match the existing wallet Flexy full-credit mode: customer pays 18% extra.
                 price_flexy = int(round(price_baridi * 1.18))
@@ -7987,28 +7610,12 @@ async def text_handler(update, context):
                 f"✅ تمت إضافة العرض: {offer_name}\n\n"
                 f"🏦 BaridiMob/CCP: {price_baridi} DA\n"
                 f"📱 Flexy (محسوب +18%): {price_flexy} DA\n"
-                f"🏪 التاجر — BaridiMob/CCP: {price_baridi_trader} DA | Flexy (محسوب +18%): {price_flexy_trader} DA\n🎁 نقاط المكافأة: {reward_points}",
+                f"🏪 التاجر — BaridiMob/CCP: {price_baridi_trader} DA | Flexy (محسوب +18%): {price_flexy_trader} DA",
                 reply_markup=ReplyKeyboardMarkup(
                     ADMIN_PANEL_MENU,
                     resize_keyboard=True,
                 ),
             )
-            return
-
-        if step == "edit_reward_points":
-            try:
-                reward_points = int(text)
-                if reward_points < 0:
-                    raise ValueError
-            except ValueError:
-                await message.reply_text("❌ أرسل عددًا صحيحًا من النقاط (0 أو أكثر).")
-                return
-            offer_id = context.user_data.get("pending_offer_id")
-            with db() as conn:
-                conn.execute("UPDATE offers SET reward_points = ? WHERE id = ?", (reward_points, offer_id))
-            context.user_data.pop("admin_step", None)
-            context.user_data.pop("pending_offer_id", None)
-            await message.reply_text(f"✅ تم ضبط مكافأة العرض على {reward_points} نقطة.", reply_markup=admin_keyboard())
             return
 
         # تعديل سعر واحد فقط لعرض مع الحفاظ على بقية الأسعار
@@ -8546,7 +8153,7 @@ async def text_handler(update, context):
         await show_points_shop(message, user_id); return
     if text in ("🎯 الإحالة والنقاط", "🎯 الإحالة"):
         if not points_enabled(user_id):
-            await message.reply_text("🎯 نظام الإحالة بالنقاط مخصص للزبائن فقط، وغير متاح للتجار.", reply_markup=main_keyboard(user_id)); return
+            await message.reply_text("🎯 نظام الإحالة متاح لجميع المشترين.", reply_markup=main_keyboard(user_id)); return
         bot_username = get_setting("bot_username", "").strip()
         if not bot_username:
             try:
@@ -8554,12 +8161,11 @@ async def text_handler(update, context):
                 if bot_username: set_setting("bot_username", bot_username)
             except Exception: bot_username = ""
         user_row = get_user_row(user_id)
-        points = int(user_row["points"] or 0) if user_row else 0
+        points_da = int(user_row["points_da"] or 0) if user_row else 0
+        points_usd = float(user_row["points_usd"] or 0) if user_row else 0.0
         link = f"https://t.me/{bot_username}?start=ref_{user_id}" if bot_username else "تعذر إنشاء الرابط الآن؛ حاول لاحقاً."
-        await message.reply_text(f"🎯 نظام الإحالة والمكافآت\n\nرابط الإحالة الخاص بك:\n{link}\n\n🎁 تسجيل مشترك جديد عبر رابطك: 50 نقطة.\n🎯 عند وصول شحناته المكتملة إلى 10,000 دج: 120 نقطة إضافية.\n🔄 بعدها تحصل على 50 نقطة عن كل 10,000 دج إضافية.\n🚫 لا توجد مكافآت شحن قبل بلوغ 10,000 دج.\nرصيد نقاطك الحالي: {points} نقطة.\n\n🎟️ اشترِ قسائم التخفيض من زر «🎟️ قسائم التخفيض».")
+        await message.reply_text(f"🎯 نظام الإحالة والمكافآت\n\nرابط الإحالة الخاص بك:\n{link}\n\n🎁 عند تسجيل مشترك جديد عبر رابطك: 5 DA إلى محفظة الدينار و0.019 USD إلى محفظة الدولار.\n\n🇩🇿 نقاط DA: {points_da:,} | 💵 نقاط USD: {points_usd:.3f}")
         return
-    if text == "🎟️ قسائم التخفيض":
-        await show_coupon_shop(message, user_id); return
     if text == "✨ مزايا متجرنا":
         await message.reply_text(STORE_BENEFITS_TEXT, reply_markup=main_keyboard(user_id)); return
     if text == "🔐 السياسات والخصوصية":
@@ -8860,10 +8466,6 @@ async def text_handler(update, context):
             )
             return
 
-        if text == "🎁 إدارة متجر النقاط":
-            context.user_data["admin_step"] = "point_offer_add"
-            await message.reply_text("أرسل العرض بهذا الشكل:\nالاسم | الوصف | تكلفة النقاط | المخزون (-1 لمخزون غير محدود)\nمثال: اشتراك تجريبي | اشتراك رقمي | 200 | 10\nللإلغاء /cancel")
-            return
         if text == "📬 طلبات الألعاب":
             with db() as conn:
                 total = int(conn.execute("SELECT COUNT(*) FROM game_requests").fetchone()[0])
