@@ -21,6 +21,8 @@ from telegram import (
     ForceReply,
 )
 
+from telegram.request import HTTPXRequest
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -30,7 +32,7 @@ from telegram.ext import (
     filters,
 )
 
-TOKEN = os.getenv("BOT_TOKEN", "").strip()
+TOKEN = (os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DB_PATH = os.getenv("DB_PATH", "seradj_store.db")
 WHATSAPP_NUMBER = os.getenv("WHATSAPP_NUMBER", "213671629818")
@@ -8698,7 +8700,30 @@ def main():
     init_db()
 
     # إنشاء التطبيق
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    # Give Telegram API requests more time and keep retrying during temporary
+    # network outages (common on shared hosting).
+    telegram_request = HTTPXRequest(
+        connection_pool_size=20,
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+    )
+    telegram_updates_request = HTTPXRequest(
+        connection_pool_size=10,
+        connect_timeout=30.0,
+        read_timeout=40.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+    )
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .request(telegram_request)
+        .get_updates_request(telegram_updates_request)
+        .post_init(post_init)
+        .build()
+    )
 
     # الأوامر
     app.add_handler(CommandHandler("start", start))
@@ -8748,7 +8773,7 @@ def main():
     # Explicitly request channel_post updates from Telegram; relying on the
     # implicit getUpdates defaults can leave channel posts unobserved after
     # another deployment changed allowed_updates.
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
 
 
 if __name__ == "__main__":
