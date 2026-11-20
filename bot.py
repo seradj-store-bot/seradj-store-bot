@@ -369,6 +369,362 @@ async def dispatch_order_to_group(context, order_id, user, draft, player_id, pay
     except Exception:
         logger.exception("Failed dispatching order %s to group %s", order_id, group_id)
 
+def trader_group_for_chat(chat_id):
+    with db() as conn:
+        return conn.execute(
+            "SELECT tg.*, u.account_type, u.trader_wallet_currency, u.balance, u.balance_usd, u.full_name "
+            "FROM trader_work_groups tg LEFT JOIN users u ON u.user_id=tg.trader_id WHERE tg.group_id=?",
+            (int(chat_id),),
+        ).fetchone()
+
+
+def trader_group_offer_page(group_id, page=0, per_page=8):
+    offset = max(0, int(page)) * per_page
+    with db() as conn:
+        total = int(conn.execute("SELECT COUNT(*) FROM offers o JOIN games g ON g.id=o.game_id WHERE o.active=1 AND g.active=1").fetchone()[0])
+        rows = conn.execute(
+            "SELECT o.id,o.name,o.game_id,g.name AS game_name,COALESCE(tgo.active,0) AS selected "
+            "FROM offers o JOIN games g ON g.id=o.game_id "
+            "LEFT JOIN trader_group_offers tgo ON tgo.offer_id=o.id AND tgo.group_id=? "
+            "WHERE o.active=1 AND g.active=1 ORDER BY g.id,o.sort_order,o.id LIMIT ? OFFSET ?",
+            (int(group_id), per_page, offset),
+        ).fetchall()
+    return rows, total
+
+
+async def show_trader_group_offer_config(message, group_id, page=0, edit=False):
+    per_page = 8
+    rows, total = trader_group_offer_page(group_id, page, per_page)
+    if not rows:
+        text_out = "لا توجد عروض مفعّلة في المتجر لإضافتها إلى هذه المجموعة."
+        if edit:
+            await message.edit_text(text_out)
+        else:
+            await message.reply_text(text_out)
+        return
+    buttons = []
+    for row in rows:
+        icon = "✅" if int(row["selected"] or 0) else "➕"
+        label = f"{icon} {row['game_name']} — {row['name']}"
+        buttons.append([InlineKeyboardButton(label[:60], callback_data=f"tgcfg:{row['id']}:{page}")])
+    pages = max(1, (total + per_page - 1) // per_page)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"tgcfgpage:{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="tgcfgnop"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"tgcfgpage:{page+1}"))
+    buttons.append(nav)
+    text_out = (
+        "⚙️ العروض المتاحة في هذه المجموعة\n\n"
+        "اضغط على العرض لإضافته أو إزالته من قائمة العروض التي يستطيع التاجر نشرها.\n"
+        "✅ = متاح للتاجر | ➕ = غير مضاف"
+    )
+    if edit:
+        await message.edit_text(text_out, reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        await message.reply_text(text_out, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def set_trader_group_command(update, context):
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not is_admin(user.id):
+        await message.reply_text("⛔ هذا الأمر خاص بمالك المتجر.")
+        return
+    if not chat or chat.type not in ("group", "supergroup"):
+        await message.reply_text("استعمل الأمر داخل مجموعة التاجر: /settradergroup TELEGRAM_ID")
+        return
+    if not context.args or not context.args[0].lstrip("-").isdigit():
+        await message.reply_text("الاستعمال داخل مجموعة التاجر:\n/settradergroup TELEGRAM_ID\n\nيمكنك معرفة ID التاجر من بطاقة حسابه أو من أمر /myid.")
+        return
+    trader_id = int(context.args[0])
+    with db() as conn:
+        trader = conn.execute("SELECT user_id,full_name,account_type,trader_wallet_currency,balance,balance_usd FROM users WHERE user_id=?", (trader_id,)).fetchone()
+        if not trader or trader["account_type"] != "trader":
+            await message.reply_text("❌ هذا الحساب غير موجود أو ليس تاجراً معتمداً.")
+            return
+        existing = conn.execute("SELECT group_id FROM trader_work_groups WHERE trader_id=?", (trader_id,)).fetchone()
+        if existing and int(existing["group_id"]) != int(chat.id):
+            await message.reply_text(f"❌ هذا التاجر مربوط بمجموعة أخرى ({existing['group_id']}). افصل الربط القديم أولاً بالأمر /unsettradergroup داخل المجموعة القديمة.")
+            return
+        conn.execute(
+            "INSERT INTO trader_work_groups(group_id,trader_id,created_at) VALUES(?,?,?) "
+            "ON CONFLICT(group_id) DO UPDATE SET trader_id=excluded.trader_id",
+            (int(chat.id), trader_id, now_text()),
+        )
+    currency = "USD" if str(trader["trader_wallet_currency"] or "DA").upper() == "USD" else "DA"
+    balance = float(trader["balance_usd"] or 0) if currency == "USD" else float(trader["balance"] or 0)
+    await message.reply_text(
+        f"✅ تم ربط المجموعة بالتاجر {trader['full_name'] or trader_id}.\n"
+        f"🆔 Telegram ID: {trader_id}\n💰 المحفظة المرتبطة: {currency}\n"
+        f"💳 الرصيد الحالي: {balance:g} {currency}\n\n"
+        "التاجر يستطيع نشر العروض المحددة فقط عبر /publish."
+    )
+
+
+async def unset_trader_group_command(update, context):
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not is_admin(user.id):
+        await update.effective_message.reply_text("⛔ هذا الأمر خاص بمالك المتجر.")
+        return
+    if not chat or chat.type not in ("group", "supergroup"):
+        await update.effective_message.reply_text("استعمل الأمر داخل المجموعة المراد فصلها.")
+        return
+    with db() as conn:
+        conn.execute("DELETE FROM trader_work_groups WHERE group_id=?", (int(chat.id),))
+        conn.execute("DELETE FROM trader_group_offers WHERE group_id=?", (int(chat.id),))
+    await update.effective_message.reply_text("🔌 تم فصل المجموعة عن محفظة التاجر وحذف إعدادات عروضها. سجلات الطلبات السابقة تبقى محفوظة.")
+
+
+async def trader_group_offers_command(update, context):
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not is_admin(user.id):
+        await update.effective_message.reply_text("⛔ هذا الأمر خاص بمالك المتجر.")
+        return
+    if not chat or chat.type not in ("group", "supergroup"):
+        await update.effective_message.reply_text("استعمل الأمر داخل مجموعة التاجر.")
+        return
+    if not trader_group_for_chat(chat.id):
+        await update.effective_message.reply_text("❌ هذه المجموعة غير مربوطة بتاجر. اربطها أولاً بالأمر /settradergroup TELEGRAM_ID.")
+        return
+    await show_trader_group_offer_config(update.effective_message, chat.id, 0)
+
+
+async def trader_publish_command(update, context):
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or chat.type not in ("group", "supergroup"):
+        await message.reply_text("استعمل /publish داخل مجموعة التاجر.")
+        return
+    group = trader_group_for_chat(chat.id)
+    if not group:
+        await message.reply_text("❌ هذه المجموعة غير مربوطة بتاجر.")
+        return
+    if int(group["trader_id"]) != int(user.id):
+        await message.reply_text("⛔ نشر العروض متاح للتاجر المرتبط بهذه المجموعة فقط.")
+        return
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT o.id,o.name,o.game_id,g.name AS game_name FROM trader_group_offers tgo "
+            "JOIN offers o ON o.id=tgo.offer_id JOIN games g ON g.id=o.game_id "
+            "WHERE tgo.group_id=? AND tgo.active=1 AND o.active=1 AND g.active=1 ORDER BY g.id,o.sort_order,o.id",
+            (int(chat.id),),
+        ).fetchall()
+    if not rows:
+        await message.reply_text("لا توجد عروض متاحة للنشر في هذه المجموعة. اطلب من الإدارة ضبطها عبر /groupoffers.")
+        return
+    buttons = [[InlineKeyboardButton(f"{r['game_name']} — {r['name']}"[:60], callback_data=f"tgp:{r['id']}")] for r in rows]
+    await message.reply_text("📣 اختر العرض الذي تريد نشره في المجموعة:", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def handle_trader_group_callback(query, context, data):
+    """Handle trader-group offer publication, acceptance, cancellation and completion."""
+    user_id = int(query.from_user.id)
+    chat = query.message.chat if query.message else None
+    chat_id = int(chat.id) if chat else 0
+
+    if data == "tgcfgnop":
+        await query.answer()
+        return True
+    if data.startswith("tgcfgpage:"):
+        if not is_admin(user_id) or not chat or chat.type not in ("group", "supergroup"):
+            await query.answer("هذا الإجراء خاص بالإدارة وداخل مجموعة التاجر.", show_alert=True)
+            return True
+        try:
+            page = max(0, int(data.split(":", 1)[1]))
+        except ValueError:
+            await query.answer("صفحة غير صالحة.", show_alert=True); return True
+        await query.answer()
+        await show_trader_group_offer_config(query.message, chat_id, page, edit=True)
+        return True
+    if data.startswith("tgcfg:"):
+        if not is_admin(user_id) or not chat or chat.type not in ("group", "supergroup"):
+            await query.answer("هذا الإجراء خاص بالإدارة وداخل مجموعة التاجر.", show_alert=True)
+            return True
+        try:
+            _, offer_text, page_text = data.split(":", 2)
+            offer_id, page = int(offer_text), int(page_text)
+        except ValueError:
+            await query.answer("بيانات العرض غير صالحة.", show_alert=True); return True
+        with db() as conn:
+            selected = conn.execute("SELECT active FROM trader_group_offers WHERE group_id=? AND offer_id=?", (chat_id, offer_id)).fetchone()
+            if selected and int(selected["active"] or 0):
+                conn.execute("UPDATE trader_group_offers SET active=0 WHERE group_id=? AND offer_id=?", (chat_id, offer_id))
+            else:
+                conn.execute("INSERT INTO trader_group_offers(group_id,offer_id,active) VALUES(?,?,1) ON CONFLICT(group_id,offer_id) DO UPDATE SET active=1", (chat_id, offer_id))
+        await query.answer("تم تحديث العروض المتاحة.")
+        await show_trader_group_offer_config(query.message, chat_id, page, edit=True)
+        return True
+
+    if data.startswith("tgp:"):
+        if not chat or chat.type not in ("group", "supergroup"):
+            await query.answer("انشر العروض من داخل المجموعة.", show_alert=True); return True
+        group = trader_group_for_chat(chat_id)
+        if not group or int(group["trader_id"]) != user_id:
+            await query.answer("النشر متاح للتاجر المرتبط بهذه المجموعة فقط.", show_alert=True); return True
+        try:
+            offer_id = int(data.split(":", 1)[1])
+        except ValueError:
+            await query.answer("العرض غير صالح.", show_alert=True); return True
+        currency = "USD" if str(group["trader_wallet_currency"] or "DA").upper() == "USD" else "DA"
+        with db() as conn:
+            offer = conn.execute("SELECT o.*,g.name AS game_name FROM offers o JOIN games g ON g.id=o.game_id "
+                                 "JOIN trader_group_offers tgo ON tgo.offer_id=o.id AND tgo.group_id=? AND tgo.active=1 "
+                                 "WHERE o.id=? AND o.active=1 AND g.active=1", (chat_id, offer_id)).fetchone()
+        if not offer:
+            await query.answer("هذا العرض غير متاح في هذه المجموعة.", show_alert=True); return True
+        try:
+            price = Decimal(str(trader_offer_price(offer, int(group["trader_id"]))))
+        except Exception:
+            await query.answer("تعذر تحديد سعر التاجر لهذا العرض.", show_alert=True); return True
+        if not price.is_finite() or price <= 0:
+            await query.answer("سعر التاجر لهذا العرض غير مضبوط.", show_alert=True); return True
+        price = price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if currency == "USD" else price.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        with db() as conn:
+            cur = conn.execute(
+                "INSERT INTO trader_group_deals(group_id,trader_id,offer_id,game_name,offer_name,price,currency,status,published_by,created_at) "
+                "VALUES(?,?,?,?,?,?,?,'open',?,?)",
+                (chat_id, int(group["trader_id"]), offer_id, offer["game_name"], offer["name"], float(price), currency, user_id, now_text()),
+            )
+            deal_id = int(cur.lastrowid)
+        label = f"{price:g} {currency}"
+        deal_text = (f"📣 عرض شحن جديد #{deal_id}\n\n🎮 اللعبة: {offer['game_name']}\n"
+                     f"📦 العرض: {offer['name']}\n💰 السعر: {label}\n\n"
+                     "اضغط على قبول العرض إذا كنت مستعدًا لتنفيذه. سيتم الخصم مباشرة من محفظة التاجر.")
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🟢 قبول العرض", callback_data=f"tga:{deal_id}")]])
+        try:
+            posted = await context.bot.send_message(chat_id=chat_id, text=deal_text, reply_markup=keyboard)
+            with db() as conn:
+                conn.execute("UPDATE trader_group_deals SET posted_message_id=? WHERE id=?", (posted.message_id, deal_id))
+            await query.answer("تم نشر العرض في المجموعة.", show_alert=True)
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        except Exception:
+            with db() as conn:
+                conn.execute("UPDATE trader_group_deals SET status='cancelled',cancelled_by=?,cancelled_at=? WHERE id=? AND status='open'", (user_id, now_text(), deal_id))
+            await query.answer("تعذر نشر العرض. تأكد أن البوت يستطيع إرسال الرسائل في المجموعة.", show_alert=True)
+        return True
+
+    if data.startswith("tga:"):
+        if not chat or chat.type not in ("group", "supergroup"):
+            await query.answer("هذا الزر يعمل داخل مجموعة التاجر فقط.", show_alert=True); return True
+        try:
+            deal_id = int(data.split(":", 1)[1])
+        except ValueError:
+            await query.answer("رقم الطلب غير صالح.", show_alert=True); return True
+        try:
+            with db() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                deal = conn.execute("SELECT * FROM trader_group_deals WHERE id=? AND group_id=?", (deal_id, chat_id)).fetchone()
+                if not deal or deal["status"] != "open":
+                    await query.answer("هذا العرض تم قبوله أو إغلاقه مسبقًا.", show_alert=True); return True
+                if int(deal["trader_id"]) == user_id:
+                    await query.answer("التاجر لا يمكنه قبول عرضه بنفسه.", show_alert=True); return True
+                col = "balance_usd" if deal["currency"] == "USD" else "balance"
+                wallet = conn.execute(f"SELECT COALESCE({col},0) AS bal FROM users WHERE user_id=? AND account_type='trader'", (deal["trader_id"],)).fetchone()
+                if not wallet:
+                    await query.answer("محفظة التاجر غير موجودة.", show_alert=True); return True
+                before = Decimal(str(wallet["bal"] or 0))
+                amount = Decimal(str(deal["price"] or 0))
+                if before < amount:
+                    await query.answer(f"رصيد التاجر غير كافٍ. المتوفر: {before:g} {deal['currency']}", show_alert=True); return True
+                after = before - amount
+                changed = conn.execute(f"UPDATE users SET {col}=? WHERE user_id=? AND COALESCE({col},0)>=?", (float(after), deal["trader_id"], float(amount)))
+                if changed.rowcount != 1:
+                    await query.answer("تعذر الخصم بسبب تغير الرصيد. أعد المحاولة.", show_alert=True); return True
+                claimed = conn.execute("UPDATE trader_group_deals SET status='accepted',accepted_by=?,accepted_at=? WHERE id=? AND status='open'", (user_id, now_text(), deal_id))
+                if claimed.rowcount != 1:
+                    raise RuntimeError("Deal was claimed concurrently")
+                conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                             (deal["trader_id"], deal["currency"], "خصم طلب مجموعة", float(amount), float(before), float(after),
+                              f"طلب مجموعة #{deal_id} | المنفذ Telegram ID: {user_id} | {deal['game_name']} - {deal['offer_name']}", user_id, now_text()))
+        except Exception as exc:
+            logger.exception("Trader group deal acceptance failed")
+            await query.answer("حدث خطأ ولم يتم تأكيد قبول العرض أو خصمه. حاول مجددًا.", show_alert=True)
+            return True
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📦 استلام الطلب", callback_data=f"tgr:{deal_id}"), InlineKeyboardButton("🔴 إلغاء الطلب", callback_data=f"tgc:{deal_id}")]])
+        try:
+            await query.edit_message_reply_markup(reply_markup=keyboard)
+        except Exception:
+            pass
+        await query.answer("تم قبول العرض وخصمه من محفظة التاجر.", show_alert=True)
+        await query.message.reply_text(
+            f"🟢 تم قبول العرض #{deal_id}\n👤 المنفذ: {query.from_user.full_name}\n"
+            f"💸 المخصوم: {amount:g} {deal['currency']}\n💳 رصيد التاجر المتبقي: {after:g} {deal['currency']}"
+        )
+        return True
+
+    if data.startswith("tgc:"):
+        if not chat or chat.type not in ("group", "supergroup"):
+            await query.answer("هذا الزر يعمل داخل مجموعة التاجر فقط.", show_alert=True); return True
+        try:
+            deal_id = int(data.split(":", 1)[1])
+        except ValueError:
+            await query.answer("رقم الطلب غير صالح.", show_alert=True); return True
+        try:
+            with db() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                deal = conn.execute("SELECT * FROM trader_group_deals WHERE id=? AND group_id=?", (deal_id, chat_id)).fetchone()
+                if not deal or deal["status"] != "accepted":
+                    await query.answer("لا يمكن إلغاء هذا الطلب؛ ربما تمت معالجته مسبقًا.", show_alert=True); return True
+                if user_id != int(deal["accepted_by"] or 0) and not is_admin(user_id):
+                    await query.answer("إلغاء الطلب متاح لمن قبله أو لمالك المتجر فقط.", show_alert=True); return True
+                col = "balance_usd" if deal["currency"] == "USD" else "balance"
+                wallet = conn.execute(f"SELECT COALESCE({col},0) AS bal FROM users WHERE user_id=?", (deal["trader_id"],)).fetchone()
+                if not wallet:
+                    await query.answer("محفظة التاجر غير موجودة.", show_alert=True); return True
+                before = Decimal(str(wallet["bal"] or 0)); amount = Decimal(str(deal["price"] or 0)); after = before + amount
+                changed = conn.execute(f"UPDATE trader_group_deals SET status='cancelled',cancelled_by=?,cancelled_at=? WHERE id=? AND status='accepted'", (user_id, now_text(), deal_id))
+                if changed.rowcount != 1:
+                    raise RuntimeError("Deal cancellation race")
+                conn.execute(f"UPDATE users SET {col}=? WHERE user_id=?", (float(after), deal["trader_id"]))
+                conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                             (deal["trader_id"], deal["currency"], "استرجاع طلب مجموعة", float(amount), float(before), float(after),
+                              f"إلغاء الطلب #{deal_id} | ألغاه Telegram ID: {user_id}", user_id, now_text()))
+        except Exception:
+            logger.exception("Trader group deal cancellation failed")
+            await query.answer("حدث خطأ أثناء الإلغاء؛ لم يتم تأكيد العملية.", show_alert=True); return True
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await query.answer("تم إلغاء الطلب وإرجاع المبلغ إلى محفظة التاجر.", show_alert=True)
+        await query.message.reply_text(f"🔴 تم إلغاء الطلب #{deal_id}.\n↩️ المسترجع: {amount:g} {deal['currency']}\n💳 رصيد التاجر الجديد: {after:g} {deal['currency']}")
+        return True
+
+    if data.startswith("tgr:"):
+        if not chat or chat.type not in ("group", "supergroup"):
+            await query.answer("هذا الزر يعمل داخل مجموعة التاجر فقط.", show_alert=True); return True
+        try:
+            deal_id = int(data.split(":", 1)[1])
+        except ValueError:
+            await query.answer("رقم الطلب غير صالح.", show_alert=True); return True
+        with db() as conn:
+            deal = conn.execute("SELECT * FROM trader_group_deals WHERE id=? AND group_id=?", (deal_id, chat_id)).fetchone()
+            if not deal or deal["status"] != "accepted":
+                await query.answer("الطلب غير متاح للاستلام أو تمت معالجته.", show_alert=True); return True
+            if user_id != int(deal["accepted_by"] or 0) and not is_admin(user_id):
+                await query.answer("استلام الطلب متاح لمن قبله أو لمالك المتجر فقط.", show_alert=True); return True
+            changed = conn.execute("UPDATE trader_group_deals SET status='completed',completed_by=?,completed_at=? WHERE id=? AND status='accepted'", (user_id, now_text(), deal_id))
+            if changed.rowcount != 1:
+                await query.answer("تمت معالجة الطلب مسبقًا.", show_alert=True); return True
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await query.answer("تم تأكيد استلام الطلب وإغلاقه.", show_alert=True)
+        await query.message.reply_text(f"✅ تم استلام وإكمال الطلب #{deal_id}.\n👤 المنفذ: {query.from_user.full_name}\n📌 الحالة: مكتمل. لا يوجد استرجاع للمبلغ.")
+        return True
+    return False
+
+
 async def set_order_group_command(update, context):
     """In a group, admin runs /setordergroup GAME_ID to route that game's orders here."""
     if not is_admin(update.effective_user.id):
@@ -639,6 +995,37 @@ def init_db():
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS trader_work_groups (
+            group_id INTEGER PRIMARY KEY,
+            trader_id INTEGER NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS trader_group_offers (
+            group_id INTEGER NOT NULL,
+            offer_id INTEGER NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (group_id, offer_id)
+        );
+        CREATE TABLE IF NOT EXISTS trader_group_deals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL,
+            trader_id INTEGER NOT NULL,
+            offer_id INTEGER NOT NULL,
+            game_name TEXT NOT NULL DEFAULT '',
+            offer_name TEXT NOT NULL DEFAULT '',
+            price REAL NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'DA',
+            status TEXT NOT NULL DEFAULT 'open',
+            posted_message_id INTEGER DEFAULT NULL,
+            published_by INTEGER DEFAULT NULL,
+            accepted_by INTEGER DEFAULT NULL,
+            accepted_at TEXT DEFAULT '',
+            completed_by INTEGER DEFAULT NULL,
+            completed_at TEXT DEFAULT '',
+            cancelled_by INTEGER DEFAULT NULL,
+            cancelled_at TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS custom_payment_methods (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3316,6 +3703,12 @@ async def callback_handler(update, context):
     # Default for ordinary section/navigation callbacks; set True only when
     # a group/admin terminal order action is normalized to status:... below.
     group_order_terminal_action = False
+
+    # Independent trader-group workflow (uses the trader's existing SERADJ wallet).
+    if data.startswith(("tgcfg:", "tgcfgpage:", "tgp:", "tga:", "tgc:", "tgr:")) or data == "tgcfgnop":
+        handled = await handle_trader_group_callback(query, context, data)
+        if handled:
+            return
 
     # Flexy wallet administration and SMS credit allocation.
     if data == "flexy_noop":
@@ -8734,6 +9127,10 @@ def main():
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CommandHandler("ordergames", order_games_command))
     app.add_handler(CommandHandler("setordergroup", set_order_group_command))
+    app.add_handler(CommandHandler("settradergroup", set_trader_group_command))
+    app.add_handler(CommandHandler("unsettradergroup", unset_trader_group_command))
+    app.add_handler(CommandHandler("groupoffers", trader_group_offers_command))
+    app.add_handler(CommandHandler("publish", trader_publish_command))
     app.add_handler(CommandHandler("flexy", flexy_command))
     app.add_handler(CommandHandler("setflexysource", set_flexy_source_command))
     app.add_handler(CommandHandler("setlogchannel", set_log_channel_command))
