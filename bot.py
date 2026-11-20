@@ -725,6 +725,127 @@ async def handle_trader_group_callback(query, context, data):
     return False
 
 
+async def _send_trader_history_page(target, target_id, section="deals", page=0, edit=False):
+    page = max(0, int(page))
+    per_page = 8
+    with db() as conn:
+        trader = conn.execute(
+            "SELECT user_id,full_name,account_type,trader_wallet_currency,balance,balance_usd FROM users WHERE user_id=?",
+            (target_id,),
+        ).fetchone()
+        if not trader or trader["account_type"] != "trader":
+            text = "❌ لم يتم العثور على تاجر معتمد بهذا Telegram ID."
+            if edit:
+                await target.edit_message_text(text)
+            else:
+                await target.reply_text(text)
+            return
+        group = conn.execute("SELECT group_id FROM trader_work_groups WHERE trader_id=?", (target_id,)).fetchone()
+        if section == "wallet":
+            total = int(conn.execute("SELECT COUNT(*) FROM wallet_transactions WHERE user_id=?", (target_id,)).fetchone()[0])
+            rows = conn.execute(
+                "SELECT currency,kind,amount,balance_before,balance_after,note,admin_id,created_at "
+                "FROM wallet_transactions WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+                (target_id, per_page, page * per_page),
+            ).fetchall()
+        else:
+            section = "deals"
+            total = int(conn.execute("SELECT COUNT(*) FROM trader_group_deals WHERE trader_id=?", (target_id,)).fetchone()[0])
+            rows = conn.execute(
+                "SELECT id,game_name,offer_name,price,currency,status,published_by,accepted_by,accepted_at,"
+                "completed_by,completed_at,cancelled_by,cancelled_at,created_at "
+                "FROM trader_group_deals WHERE trader_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+                (target_id, per_page, page * per_page),
+            ).fetchall()
+
+    currency = "USD" if str(trader["trader_wallet_currency"] or "DA").upper() == "USD" else "DA"
+    balance = float(trader["balance_usd"] or 0) if currency == "USD" else float(trader["balance"] or 0)
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, pages - 1)
+    header = (
+        f"📊 سجل التاجر: {trader['full_name'] or target_id}\n"
+        f"🆔 Telegram ID: {target_id} | 👥 المجموعة: {group['group_id'] if group else 'غير مربوط'}\n"
+        f"💳 المحفظة: {currency} | الرصيد الحالي: {balance:g} {currency}\n\n"
+    )
+    lines = []
+    if section == "deals":
+        lines.append(f"📦 سجل العروض والطلبات — الصفحة {page+1}/{pages} (الإجمالي: {total})")
+        names = {"open": "🟡 منشور ولم يُقبل", "accepted": "🔵 مقبول وقيد التنفيذ", "completed": "✅ مكتمل", "cancelled": "🔴 ملغى"}
+        if not rows:
+            lines.append("لا توجد عمليات في المجموعة بعد.")
+        for d in rows:
+            line = (f"\n#{d['id']} | {d['game_name']} — {d['offer_name']}\n"
+                    f"💰 {float(d['price']):g} {d['currency']} | {names.get(d['status'], d['status'])}\n"
+                    f"🕒 النشر: {d['created_at'] or '-'}")
+            if d["accepted_by"]:
+                line += f"\n👤 قبله: {d['accepted_by']} ({d['accepted_at'] or '-'})"
+            if d["completed_by"]:
+                line += f"\n📦 الاستلام: {d['completed_by']} ({d['completed_at'] or '-'})"
+            if d["cancelled_by"]:
+                line += f"\n❌ الإلغاء: {d['cancelled_by']} ({d['cancelled_at'] or '-'})"
+            lines.append(line)
+    else:
+        lines.append(f"💳 سجل معاملات المحفظة — الصفحة {page+1}/{pages} (الإجمالي: {total})")
+        if not rows:
+            lines.append("لا توجد معاملات مسجلة في المحفظة.")
+        for r in rows:
+            unit = "USD" if r["currency"] == "USD" else "DA"
+            lines.append(
+                f"\n🕒 {r['created_at'] or '-'}\n{r['kind']} | {float(r['amount']):g} {unit}\n"
+                f"الرصيد: {float(r['balance_before']):g} ← {float(r['balance_after']):g} {unit}\n"
+                f"السبب: {r['note'] or '-'}"
+            )
+    buttons = [[
+        InlineKeyboardButton("📦 سجل العروض", callback_data=f"history:{target_id}:deals:0"),
+        InlineKeyboardButton("💳 سجل المحفظة", callback_data=f"history:{target_id}:wallet:0"),
+    ]]
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"history:{target_id}:{section}:{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="history:noop"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"history:{target_id}:{section}:{page+1}"))
+    if nav:
+        buttons.append(nav)
+    markup = InlineKeyboardMarkup(buttons)
+    text = header + "\n".join(lines)
+    if edit:
+        await target.edit_text(text, reply_markup=markup)
+    else:
+        await target.reply_text(text, reply_markup=markup)
+
+
+async def trader_history_command(update, context):
+    """Show paginated trader group-deal and wallet history."""
+    message, user = update.effective_message, update.effective_user
+    if not message or not user:
+        return
+    target_id = None
+    if context.args:
+        if not is_admin(user.id):
+            await message.reply_text("⛔ عرض سجل تاجر آخر متاح لمالك المتجر فقط.")
+            return
+        if not context.args[0].lstrip("-").isdigit():
+            await message.reply_text("الاستعمال: /history TELEGRAM_ID")
+            return
+        target_id = int(context.args[0])
+    elif is_admin(user.id):
+        chat = update.effective_chat
+        linked = trader_group_for_chat(chat.id) if chat and chat.type in ("group", "supergroup") else None
+        if not linked:
+            await message.reply_text("استعمل /history TELEGRAM_ID أو نفّذ الأمر داخل مجموعة تاجر مرتبطة.")
+            return
+        target_id = int(linked["trader_id"])
+    else:
+        with db() as conn:
+            own = conn.execute("SELECT account_type FROM users WHERE user_id=?", (user.id,)).fetchone()
+        if not own or own["account_type"] != "trader":
+            await message.reply_text("⛔ هذا الأمر متاح للتجار ومالك المتجر فقط.")
+            return
+        target_id = int(user.id)
+    await _send_trader_history_page(message, target_id, "deals", 0, edit=False)
+
+
 async def set_order_group_command(update, context):
     """In a group, admin runs /setordergroup GAME_ID to route that game's orders here."""
     if not is_admin(update.effective_user.id):
@@ -3686,7 +3807,7 @@ async def show_pending_deposits(target, page=0, edit=False):
         text = f"💰 طلبات تعبئة الرصيد المعلّقة\nعدد الطلبات: {total}\nاختر طلبًا لمراجعة الوصل واتخاذ القرار."
         markup = InlineKeyboardMarkup(buttons)
     if edit:
-        try: await target.edit_message_text(text, reply_markup=markup)
+        try: await target.edit_text(text, reply_markup=markup)
         except Exception: await target.message.reply_text(text, reply_markup=markup)
     else:
         await target.reply_text(text, reply_markup=markup)
@@ -3703,6 +3824,27 @@ async def callback_handler(update, context):
     # Default for ordinary section/navigation callbacks; set True only when
     # a group/admin terminal order action is normalized to status:... below.
     group_order_terminal_action = False
+
+    # Paginated trader history navigation.
+    if data == "history:noop":
+        await query.answer()
+        return
+    if data.startswith("history:"):
+        try:
+            _, target_text, section, page_text = data.split(":", 3)
+            target_id, page = int(target_text), int(page_text)
+            if section not in ("deals", "wallet") or page < 0:
+                raise ValueError
+        except ValueError:
+            await query.answer("بيانات السجل غير صالحة.", show_alert=True)
+            return
+        authorized = is_admin(user_id) or user_id == target_id
+        if not authorized:
+            await query.answer("عرض هذا السجل غير مسموح لك.", show_alert=True)
+            return
+        await query.answer()
+        await _send_trader_history_page(query.message, target_id, section, page, edit=True)
+        return
 
     # Independent trader-group workflow (uses the trader's existing SERADJ wallet).
     if data.startswith(("tgcfg:", "tgcfgpage:", "tgp:", "tga:", "tgc:", "tgr:")) or data == "tgcfgnop":
@@ -9131,6 +9273,8 @@ def main():
     app.add_handler(CommandHandler("unsettradergroup", unset_trader_group_command))
     app.add_handler(CommandHandler("groupoffers", trader_group_offers_command))
     app.add_handler(CommandHandler("publish", trader_publish_command))
+    app.add_handler(CommandHandler("history", trader_history_command))
+    app.add_handler(CommandHandler("traderhistory", trader_history_command))
     app.add_handler(CommandHandler("flexy", flexy_command))
     app.add_handler(CommandHandler("setflexysource", set_flexy_source_command))
     app.add_handler(CommandHandler("setlogchannel", set_log_channel_command))
