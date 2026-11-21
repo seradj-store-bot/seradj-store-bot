@@ -915,18 +915,15 @@ def tiktok_quantity_limits():
 
 
 def tiktok_coin_price(method, user_id):
-    """Return TikTok coin unit price for payment method and customer type."""
-    trader = is_trader(user_id)
+    """Return TikTok coin unit price in DZD, calculated from USD source price."""
+    tier = "trader" if is_trader(user_id) else "retail"
     method_key = "flexy" if method == "flexy" else "baridi"
-    tier = "trader" if trader else "retail"
-    key = f"tiktok_coin_price_{tier}_{method_key}"
-    value = get_setting(key, "")
-    # Backward compatibility: the old single price becomes retail Baridi price.
-    if not value and tier == "retail" and method_key == "baridi":
-        value = get_setting("tiktok_coin_price", "0")
     try:
-        price = Decimal(value or "0")
-        return price if price.is_finite() and price > 0 else Decimal("0")
+        usd = Decimal(get_setting(f"tiktok_coin_price_{tier}_{method_key}_usd", "0") or "0")
+        rate = Decimal(get_setting("usd_exchange_rate", "254"))
+        if not usd.is_finite() or not rate.is_finite() or usd <= 0 or rate <= 0:
+            return Decimal("0")
+        return (usd * rate).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
     except (InvalidOperation, ValueError):
         return Decimal("0")
 
@@ -1077,7 +1074,10 @@ def init_db():
             price_flexy INTEGER DEFAULT 0,
             price_baridi_trader INTEGER DEFAULT 0,
             price_flexy_trader INTEGER DEFAULT 0,
+            price_usd REAL DEFAULT 0,
+            price_usd_flexy REAL DEFAULT 0,
             price_usd_trader REAL DEFAULT 0,
+            price_usd_flexy_trader REAL DEFAULT 0,
             reward_points INTEGER DEFAULT 0,
             android_active INTEGER DEFAULT 1,
             ios_active INTEGER DEFAULT 1,
@@ -1406,7 +1406,10 @@ def init_db():
                 "recharge_method_id": "INTEGER",
                 "price_baridi_trader": "INTEGER DEFAULT 0",
                 "price_flexy_trader": "INTEGER DEFAULT 0",
+                "price_usd": "REAL DEFAULT 0",
+                "price_usd_flexy": "REAL DEFAULT 0",
                 "price_usd_trader": "REAL DEFAULT 0",
+                "price_usd_flexy_trader": "REAL DEFAULT 0",
                 "reward_points": "INTEGER DEFAULT 0",
                 "android_active": "INTEGER DEFAULT 1",
                 "ios_active": "INTEGER DEFAULT 1",
@@ -1481,6 +1484,42 @@ def init_db():
                 conn.execute("UPDATE offers SET recharge_method_id=? WHERE game_id=? AND recharge_method_id IS NULL", (cur.lastrowid, g["id"]))
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('whatsapp_number', ?)", (WHATSAPP_NUMBER,))
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('usd_exchange_rate', '254')")
+        # Independent reverse market rate: USD value of 1,000 DZD.
+        try:
+            _r = Decimal(get_setting("usd_exchange_rate", "254"))
+            _reverse_default = Decimal("1000") / _r if _r > 0 else Decimal("0")
+        except Exception:
+            _reverse_default = Decimal("1000") / Decimal("254")
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('dzd_to_usd_per_1000', ?)", (format(_reverse_default, "f"),))
+        # One-time migration: preserve every current DA price as its USD source value.
+        _done = conn.execute("SELECT value FROM settings WHERE key='offer_usd_source_migration_v1'").fetchone()
+        if not _done or _done["value"] != "1":
+            try:
+                _rate = Decimal(get_setting("usd_exchange_rate", "254"))
+                if not _rate.is_finite() or _rate <= 0: _rate = Decimal("254")
+            except Exception: _rate = Decimal("254")
+            conn.execute("""UPDATE offers SET
+                price_usd=ROUND(COALESCE(price_baridi,0)/?,4),
+                price_usd_flexy=ROUND(COALESCE(price_flexy,0)/?,4),
+                price_usd_trader=CASE WHEN COALESCE(price_usd_trader,0)>0 THEN price_usd_trader ELSE ROUND(COALESCE(price_baridi_trader,0)/?,4) END,
+                price_usd_flexy_trader=ROUND(COALESCE(price_flexy_trader,0)/?,4)""", (float(_rate),)*4)
+            conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('offer_usd_source_migration_v1','1')")
+        # TikTok unit prices migrate once from their current DZD values to USD source prices.
+        _tdone = conn.execute("SELECT value FROM settings WHERE key='tiktok_usd_source_migration_v1'").fetchone()
+        if not _tdone or _tdone["value"] != "1":
+            try:
+                _rate = Decimal(get_setting("usd_exchange_rate", "254"))
+                if not _rate.is_finite() or _rate <= 0: _rate = Decimal("254")
+            except Exception: _rate = Decimal("254")
+            for _tier in ("retail", "trader"):
+                for _method in ("baridi", "flexy"):
+                    _key=f"tiktok_coin_price_{_tier}_{_method}"
+                    _v=get_setting(_key, "")
+                    if not _v and _tier == "retail" and _method == "baridi": _v=get_setting("tiktok_coin_price", "0")
+                    try: _usd=(Decimal(_v or "0")/_rate).quantize(Decimal("0.0000000001"), rounding=ROUND_HALF_UP)
+                    except Exception: _usd=Decimal("0")
+                    conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (f"{_key}_usd", format(_usd,"f")))
+            conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('tiktok_usd_source_migration_v1','1')")
         # Requested USD payment options are pre-created but disabled until configured by admin.
         for method_name, method_emoji in (("Binance", "🟡"), ("USDT", "💵"), ("Bybit", "🔶"), ("RedotPay", "🔴")):
             conn.execute(
@@ -1672,6 +1711,7 @@ def parse_datetime(value):
 
 
 def offer_price(offer, method, user_id):
+    """Return the calculated DZD price for Baridi/CCP or Flexy."""
     trader = is_trader(user_id)
     if method == "baridi":
         return int(offer["price_baridi_trader"] if trader else offer["price_baridi"])
@@ -1684,35 +1724,28 @@ def trader_wallet_currency(user_id):
     return "USD" if str(value or "DA").upper() == "USD" else "DA"
 
 
-def trader_offer_price(offer, user_id):
-    """Return the trader price in the trader's assigned currency.
+def _dzd_to_usd_rate():
+    """USD received for 1,000 DZD; independent from USD->DZD rate."""
+    try:
+        rate = Decimal(get_setting("dzd_to_usd_per_1000", "0"))
+        return rate if rate.is_finite() and rate > 0 else Decimal("0")
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
 
-    USD is derived automatically from the trader's DA price and the admin's
-    current market exchange rate; the DA source price remains unchanged.
-    """
+
+def trader_offer_price(offer, user_id):
     da_price = Decimal(str(offer["price_baridi_trader"] or 0))
     if trader_wallet_currency(user_id) == "USD":
-        try:
-            rate = Decimal(get_setting("usd_exchange_rate", "254"))
-            if not rate.is_finite() or rate <= 0:
-                rate = Decimal("254")
-        except (InvalidOperation, ValueError):
-            rate = Decimal("254")
-        return float((da_price / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        rate = _dzd_to_usd_rate()
+        return float((da_price * rate / Decimal("1000")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)) if rate > 0 else 0.0
     return int(da_price)
 
 
 def wallet_offer_price(offer, user_id, currency="DA"):
-    """Wallet price for either account type, converted using the existing USD rate."""
     da_price = Decimal(str(offer["price_baridi_trader"] if is_trader(user_id) else offer["price_baridi"]))
     if str(currency).upper() == "USD":
-        try:
-            rate = Decimal(get_setting("usd_exchange_rate", "254"))
-            if not rate.is_finite() or rate <= 0:
-                rate = Decimal("254")
-        except (InvalidOperation, ValueError):
-            rate = Decimal("254")
-        return float((da_price / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        rate = _dzd_to_usd_rate()
+        return float((da_price * rate / Decimal("1000")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)) if rate > 0 else 0.0
     return int(da_price)
 
 
@@ -2608,13 +2641,11 @@ async def select_payment(
             return
         base_dzd = Decimal(offer_price(offer, "baridi", query.from_user.id))
         if currency == "USD":
-            try:
-                rate = Decimal(get_setting("usd_exchange_rate", "254"))
-                if not rate.is_finite() or rate <= 0:
-                    raise InvalidOperation
-            except (InvalidOperation, ValueError):
-                rate = Decimal("254")
-            price = float((base_dzd / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            reverse_rate = _dzd_to_usd_rate()
+            if reverse_rate <= 0:
+                await query.edit_message_text("❌ سعر التحويل من الدينار إلى الدولار غير مضبوط. تواصل مع الإدارة.")
+                return
+            price = float((base_dzd * reverse_rate / Decimal("1000")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
         else:
             price = int(base_dzd)
         method_name = f"{custom_method['emoji']} {custom_method['name']}"
@@ -3736,12 +3767,14 @@ async def admin_payment_settings(query):
     baridi = get_setting("baridi_details", "غير محددة")
     flexy = get_setting("flexy_details", "غير محددة")
     rate = get_setting("usd_exchange_rate", "254")
+    reverse_rate = get_setting("dzd_to_usd_per_1000", "0")
     usd_on = get_setting("usd_payments_enabled", "0") == "1"
     text = (
         "💳 <b>إعدادات الدفع</b>\n\n"
         f"🏦 <b>BaridiMob / CCP:</b>\n{html.escape(baridi)}\n\n"
         f"📱 <b>Flexy:</b>\n{html.escape(flexy)}\n\n"
-        f"💵 سعر الدولار: 1 USD = {html.escape(str(rate))} DA\n"
+        f"💵 سعر الدولار → الدينار: 1 USD = {html.escape(str(rate))} DA\n"
+        f"💱 سعر الدينار → الدولار: 1000 DA = {html.escape(str(reverse_rate))} USD\n"
         f"حالة الطرق الأساسية:\n🏦 BaridiMob / CCP: {'مفعّل ✅' if get_setting('payment_baridi_enabled', '1') == '1' else 'مخفي ❌'}\n"
         f"📱 Flexy: {'مفعّل ✅' if get_setting('payment_flexy_enabled', '1') == '1' else 'مخفي ❌'}\n\n"
         f"🌐 <b>طرق الدفع بالدولار ككل:</b> {'مفعّلة ✅' if usd_on else 'مخفية ❌'}\n"
@@ -3753,7 +3786,8 @@ async def admin_payment_settings(query):
         [InlineKeyboardButton("📱 تعديل Flexy", callback_data="pay_settings:flexy")],
         [InlineKeyboardButton(f"{'🙈 إخفاء' if get_setting('payment_baridi_enabled','1')=='1' else '👁️ إظهار'} BaridiMob / CCP", callback_data="pay_toggle:baridi")],
         [InlineKeyboardButton(f"{'🙈 إخفاء' if get_setting('payment_flexy_enabled','1')=='1' else '👁️ إظهار'} Flexy", callback_data="pay_toggle:flexy")],
-        [InlineKeyboardButton("💱 تعديل سعر الدولار", callback_data="pay_usd_rate")],
+        [InlineKeyboardButton("💱 تعديل سعر الدولار → الدينار", callback_data="pay_usd_rate")],
+        [InlineKeyboardButton("💱 تعديل سعر الدينار → الدولار", callback_data="pay_dzd_usd_rate")],
         [InlineKeyboardButton(f"{'🙈 إخفاء كل طرق الدولار' if usd_on else '👁️ إظهار كل طرق الدولار'}", callback_data="usd_pay_toggle_all")],
         [InlineKeyboardButton("➕ إضافة طريقة دفع جديدة", callback_data="custom_pay_add")],
     ]
@@ -4315,18 +4349,22 @@ async def callback_handler(update, context):
         if not is_admin(user_id):
             await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
             return
-        values = {
-            "retail_baridi": get_setting("tiktok_coin_price_retail_baridi", get_setting("tiktok_coin_price", "غير محدد")) or "غير محدد",
-            "retail_flexy": get_setting("tiktok_coin_price_retail_flexy", "غير محدد") or "غير محدد",
-            "trader_baridi": get_setting("tiktok_coin_price_trader_baridi", "غير محدد") or "غير محدد",
-            "trader_flexy": get_setting("tiktok_coin_price_trader_flexy", "غير محدد") or "غير محدد",
-        }
+        values = {}
+        _rate = Decimal(get_setting("usd_exchange_rate", "254"))
+        for _tier in ("retail", "trader"):
+            for _method in ("baridi", "flexy"):
+                _usd = get_setting(f"tiktok_coin_price_{_tier}_{_method}_usd", "0") or "0"
+                try:
+                    _dzd = (Decimal(_usd) * _rate).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+                    values[f"{_tier}_{_method}"] = f"{_usd} USD / {format(_dzd, 'f')} DA"
+                except Exception:
+                    values[f"{_tier}_{_method}"] = "غير محدد"
         await query.edit_message_text(
             "🎵 إعداد أسعار عملة TikTok\n\n"
-            f"👤 زبون عادي — BaridiMob / CCP: {values['retail_baridi']} DA/كوين\n"
-            f"👤 زبون عادي — Flexy: {values['retail_flexy']} DA/كوين\n"
-            f"🏪 تاجر — BaridiMob / CCP: {values['trader_baridi']} DA/كوين\n"
-            f"🏪 تاجر — Flexy: {values['trader_flexy']} DA/كوين\n\nاختر السعر الذي تريد تعديله:",
+            f"👤 زبون عادي — BaridiMob / CCP: {values['retail_baridi']}/كوين\n"
+            f"👤 زبون عادي — Flexy: {values['retail_flexy']}/كوين\n"
+            f"🏪 تاجر — BaridiMob / CCP: {values['trader_baridi']}/كوين\n"
+            f"🏪 تاجر — Flexy: {values['trader_flexy']}/كوين\n\nاختر السعر الذي تريد تعديله بالدولار:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("👤 الزبون — BaridiMob / CCP", callback_data="tiktok_price_set:retail:baridi")],
                 [InlineKeyboardButton("👤 الزبون — Flexy", callback_data="tiktok_price_set:retail:flexy")],
@@ -4379,8 +4417,8 @@ async def callback_handler(update, context):
         method_label = "BaridiMob / CCP" if method == "baridi" else "Flexy"
         await query.edit_message_text(
             f"🎵 سعر كوين TikTok — {tier_label} / {method_label}\n"
-            f"السعر الحالي: {current or 'غير محدد'} DA للكوين الواحد.\n\n"
-            "أرسل السعر الجديد للكوين الواحد بالدينار، مثال: 0.15 أو 0,15.\n"
+            f"السعر الحالي: {get_setting(key + '_usd', 'غير محدد')} USD للكوين الواحد.\n\n"
+            "أرسل السعر الجديد للكوين الواحد بالدولار، مثال: 0.0015 أو 0,0015.\n"
             "للإلغاء أرسل /cancel."
         )
         return
@@ -4628,7 +4666,7 @@ async def callback_handler(update, context):
 
     if data.startswith("offer_price_one:"):
         parts = data.split(":")
-        if len(parts) != 3 or parts[2] not in ("price_baridi", "price_baridi_trader"):
+        if len(parts) != 3 or parts[2] not in ("price_usd", "price_usd_trader"):
             await query.answer("اختيار غير صالح.", show_alert=True)
             return
         offer_id, column = int(parts[1]), parts[2]
@@ -4640,14 +4678,14 @@ async def callback_handler(update, context):
         context.user_data["admin_step"] = "edit_single_offer_price"
         context.user_data["pending_offer_id"] = offer_id
         context.user_data["pending_offer_price_column"] = column
-        labels = {"price_baridi":"سعر الزبون عبر BaridiMob/CCP", "price_baridi_trader":"سعر التاجر عبر BaridiMob/CCP"}
-        await query.message.reply_text(f"✏️ {offer['name']}\n{labels[column]} الحالي: {offer['current_price']} DA\nأرسل السعر الجديد فقط. سيُعاد حساب سعر Flexy المقابل تلقائيًا (+18%).\nللإلغاء أرسل /cancel.")
+        labels = {"price_usd":"سعر الزبون الأساسي", "price_usd_trader":"سعر التاجر الأساسي"}
+        await query.message.reply_text(f"✏️ {offer['name']}\n{labels[column]} الحالي: {float(offer['current_price'] or 0):.4f} USD\nأرسل السعر الجديد بالدولار فقط. سيُحسب Baridi بالدينار تلقائيًا حسب سعر الصرف، وFlexy بإضافة 18%.\nللإلغاء أرسل /cancel.")
         return
     if data.startswith("offer_price_all:"):
         offer_id = int(data.split(":", 1)[1])
         context.user_data["admin_step"] = "edit_price_data"
         context.user_data["pending_offer_id"] = offer_id
-        await query.message.reply_text("أرسل السعرين بهذا الترتيب:\nسعر الزبون BaridiMob | سعر التاجر BaridiMob\nمثال: 750 | 650\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
+        await query.message.reply_text("أرسل السعرين بالدولار بهذا الترتيب:\nسعر الزبون USD | سعر التاجر USD\nمثال: 2.95 | 2.50\nسيُحسب Baridi بالدينار حسب سعر الصرف الحالي، وFlexy بإضافة 18%. أرسل /cancel للإلغاء.")
         return
 
     if data == "orders_delete_all":
@@ -5845,14 +5883,14 @@ async def callback_handler(update, context):
 
         context.user_data["pending_offer_id"] = offer_id
         with db() as conn:
-            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, price_usd_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
+            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, price_usd, price_usd_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
             custom_methods = conn.execute("SELECT * FROM custom_payment_methods ORDER BY id").fetchall()
             offer_method_states = {int(r["method_id"]): int(r["enabled"] or 0) for r in conn.execute("SELECT method_id, enabled FROM offer_payment_methods WHERE offer_id=?", (offer_id,)).fetchall()}
         price_buttons = [
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else '🚫'} BaridiMob / CCP — {'إيقاف' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:baridi")],
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
-            [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi")],
-            [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
+            [InlineKeyboardButton("👤 الزبون — USD", callback_data=f"offer_price_one:{offer_id}:price_usd")],
+            [InlineKeyboardButton("🏪 التاجر — USD", callback_data=f"offer_price_one:{offer_id}:price_usd_trader")],
             [InlineKeyboardButton("✏️ تعديل سعري الزبون والتاجر معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         if custom_methods:
@@ -5862,8 +5900,8 @@ async def callback_handler(update, context):
                 price_buttons.append([InlineKeyboardButton(f"{'✅' if is_on else '🚫'} {cm['emoji']} {cm['name']} — {'إيقاف لهذا العرض' if is_on else 'تفعيل لهذا العرض'}", callback_data=f"offer_pay_toggle:{offer_id}:{cm['id']}")])
         await query.message.reply_text(
             f"💰 تعديل سعر العرض: {offer['name']}\n\n"
-            f"الأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\n"
-            f"تاجر DA {price_row['price_baridi_trader']} DA | تاجر USD {price_row['price_usd_trader']} USD\n\n"
+            f"الأسعار الحالية: زبون {float(price_row['price_usd'] or 0):.4f} USD | Baridi {price_row['price_baridi']} DA | Flexy {price_row['price_flexy']} DA\n"
+            f"تاجر {float(price_row['price_usd_trader'] or 0):.4f} USD | Baridi {price_row['price_baridi_trader']} DA | Flexy {price_row['price_flexy_trader']} DA\n\n"
             "اختار السعر اللي تحب تبدله فقط؛ باقي الأسعار تبقى كما هي:",
             reply_markup=InlineKeyboardMarkup(price_buttons)
         )
@@ -5892,21 +5930,21 @@ async def callback_handler(update, context):
         # أعد فتح لوحة أسعار العرض لتحديث أزرار الحالة
         with db() as conn:
             offer = conn.execute("SELECT name FROM offers WHERE id=?", (offer_id,)).fetchone()
-            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, price_usd_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
+            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, price_usd, price_usd_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
             custom_methods = conn.execute("SELECT * FROM custom_payment_methods ORDER BY id").fetchall()
             offer_method_states = {int(r["method_id"]): int(r["enabled"] or 0) for r in conn.execute("SELECT method_id, enabled FROM offer_payment_methods WHERE offer_id=?", (offer_id,)).fetchall()}
         price_buttons = [
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else '🚫'} BaridiMob / CCP — {'إيقاف' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:baridi")],
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
-            [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi")],
-            [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
+            [InlineKeyboardButton("👤 الزبون — USD", callback_data=f"offer_price_one:{offer_id}:price_usd")],
+            [InlineKeyboardButton("🏪 التاجر — USD", callback_data=f"offer_price_one:{offer_id}:price_usd_trader")],
             [InlineKeyboardButton("✏️ تعديل سعري الزبون والتاجر معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         for cm in custom_methods:
             is_on = offer_method_states.get(int(cm["id"]), 1)
             price_buttons.append([InlineKeyboardButton(f"{'✅' if is_on else '🚫'} {cm['emoji']} {cm['name']} — {'إيقاف لهذا العرض' if is_on else 'تفعيل لهذا العرض'}", callback_data=f"offer_pay_toggle:{offer_id}:{cm['id']}")])
         price_buttons.append([InlineKeyboardButton("🔙 إدارة العرض", callback_data=f"offer_manage:{offer_id}")])
-        await query.edit_message_text(f"💰 تعديل سعر العرض: {offer['name']}\n\nالأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\nتاجر Baridi {price_row['price_baridi_trader']} DA | Flexy {price_row['price_flexy_trader']} DA\n\nيمكنك تفعيل أو إيقاف طرق الدفع لهذا العرض فقط.", reply_markup=InlineKeyboardMarkup(price_buttons))
+        await query.edit_message_text(f"💰 تعديل سعر العرض: {offer['name']}\n\nالأسعار الحالية: زبون {float(price_row['price_usd'] or 0):.4f} USD | Baridi {price_row['price_baridi']} DA | Flexy {price_row['price_flexy']} DA\nتاجر {float(price_row['price_usd_trader'] or 0):.4f} USD | Baridi {price_row['price_baridi_trader']} DA | Flexy {price_row['price_flexy_trader']} DA\n\nيمكنك تفعيل أو إيقاف طرق الدفع لهذا العرض فقط.", reply_markup=InlineKeyboardMarkup(price_buttons))
 
     elif data.startswith("offer_pay_toggle:"):
         if not is_admin(user_id):
@@ -5930,26 +5968,32 @@ async def callback_handler(update, context):
         # Refresh the offer's price/payment controls
         with db() as conn:
             offer = conn.execute("SELECT name FROM offers WHERE id=?", (offer_id,)).fetchone()
-            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, price_usd_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
+            price_row = conn.execute("SELECT price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, price_usd, price_usd_trader FROM offers WHERE id=?", (offer_id,)).fetchone()
             custom_methods = conn.execute("SELECT * FROM custom_payment_methods ORDER BY id").fetchall()
             offer_method_states = {int(r["method_id"]): int(r["enabled"] or 0) for r in conn.execute("SELECT method_id, enabled FROM offer_payment_methods WHERE offer_id=?", (offer_id,)).fetchall()}
         price_buttons = [
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else '🚫'} BaridiMob / CCP — {'إيقاف' if get_setting(f'offer_payment_baridi_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:baridi")],
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
-            [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi")],
-            [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
+            [InlineKeyboardButton("👤 الزبون — USD", callback_data=f"offer_price_one:{offer_id}:price_usd")],
+            [InlineKeyboardButton("🏪 التاجر — USD", callback_data=f"offer_price_one:{offer_id}:price_usd_trader")],
             [InlineKeyboardButton("✏️ تعديل سعري الزبون والتاجر معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         for cm in custom_methods:
             is_on = offer_method_states.get(int(cm["id"]), 1)
             price_buttons.append([InlineKeyboardButton(f"{'✅' if is_on else '🚫'} {cm['emoji']} {cm['name']} — {'إيقاف لهذا العرض' if is_on else 'تفعيل لهذا العرض'}", callback_data=f"offer_pay_toggle:{offer_id}:{cm['id']}")])
-        await query.message.reply_text(f"💰 تعديل سعر العرض: {offer['name']}\n\nالأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\nتاجر Baridi {price_row['price_baridi_trader']} DA | Flexy {price_row['price_flexy_trader']} DA\n\nيمكنك تفعيل أو إيقاف طرق الدفع المخصصة لهذا العرض:", reply_markup=InlineKeyboardMarkup(price_buttons))
+        await query.message.reply_text(f"💰 تعديل سعر العرض: {offer['name']}\n\nالأسعار الحالية: زبون {float(price_row['price_usd'] or 0):.4f} USD | Baridi {price_row['price_baridi']} DA | Flexy {price_row['price_flexy']} DA\nتاجر {float(price_row['price_usd_trader'] or 0):.4f} USD | Baridi {price_row['price_baridi_trader']} DA | Flexy {price_row['price_flexy_trader']} DA\n\nيمكنك تفعيل أو إيقاف طرق الدفع المخصصة لهذا العرض:", reply_markup=InlineKeyboardMarkup(price_buttons))
 
     elif data == "pay_usd_rate":
         if not is_admin(user_id):
             return
         context.user_data["admin_step"] = "set_usd_exchange_rate"
         await query.message.reply_text("أرسل سعر الدولار بالدينار الجزائري. مثال: 254\nيعني 1 USD = 254 DA. أرسل /cancel للإلغاء.")
+
+    elif data == "pay_dzd_usd_rate":
+        if not is_admin(user_id):
+            return
+        context.user_data["admin_step"] = "set_dzd_to_usd_rate"
+        await query.message.reply_text("أرسل قيمة الدولار مقابل 1000 دج. مثال: 3.80\nيعني 1000 DA = 3.80 USD. هذا السعر مستقل عن سعر 1 USD بالدينار. أرسل /cancel للإلغاء.")
 
     elif data == "custom_pay_add":
         if not is_admin(user_id):
@@ -7764,17 +7808,37 @@ async def text_handler(update, context):
                 return
             set_setting("usd_exchange_rate", format(rate.normalize(), "f"))
             with db() as conn:
-                conn.execute(
-                    "UPDATE offers SET price_usd_trader = ROUND(COALESCE(price_baridi_trader, 0) / ?, 2)",
-                    (float(rate),),
-                )
+                conn.execute("""UPDATE offers SET
+                    price_baridi=CAST(ROUND(COALESCE(price_usd,0)*?,0) AS INTEGER),
+                    price_flexy=CAST(ROUND(COALESCE(price_usd_flexy,0)*?,0) AS INTEGER),
+                    price_baridi_trader=CAST(ROUND(COALESCE(price_usd_trader,0)*?,0) AS INTEGER),
+                    price_flexy_trader=CAST(ROUND(COALESCE(price_usd_flexy_trader,0)*?,0) AS INTEGER)""", (float(rate),)*4)
+                for _tier in ("retail", "trader"):
+                    for _method in ("baridi", "flexy"):
+                        _key=f"tiktok_coin_price_{_tier}_{_method}_usd"
+                        try:
+                            _usd=Decimal(get_setting(_key,"0") or "0")
+                            _dzd=(_usd*rate).quantize(Decimal("0.0001"),rounding=ROUND_HALF_UP)
+                            conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",(f"tiktok_coin_price_{_tier}_{_method}",format(_dzd,"f")))
+                            if _tier=="retail" and _method=="baridi":
+                                conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('tiktok_coin_price',?)",(format(_dzd,"f"),))
+                        except Exception:
+                            pass
             context.user_data.pop("admin_step", None)
-            await message.reply_text(
-                f"✅ تم حفظ سعر الدولار: 1 USD = {rate} DA.\n"
-                "تم تحديث أسعار USD لجميع عروض التجار تلقائيًا اعتمادًا على سعر التاجر بالدينار.\n"
-                "أي تعديل لاحق لسعر التاجر بالدينار سيظهر بالدولار تلقائيًا أيضًا.",
-                reply_markup=admin_keyboard(),
-            )
+            await message.reply_text(f"✅ تم حفظ سعر الصرف: 1 USD = {rate} DA.\nتم تحديث أسعار Baridi وFlexy لجميع العروض وTikTok تلقائيًا من أسعارها الأساسية بالدولار، دون تغيير أسعار الدولار الأصلية أو الأرصدة.", reply_markup=admin_keyboard())
+            return
+
+        if step == "set_dzd_to_usd_rate":
+            try:
+                rate = Decimal(text.strip().replace(",", "."))
+                if not rate.is_finite() or rate <= 0 or rate > Decimal("1000000"):
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError):
+                await message.reply_text("❌ السعر غير صحيح. أرسل رقمًا أكبر من صفر، مثال: 3.80 (أي 1000 DA = 3.80 USD). أو /cancel للإلغاء.")
+                return
+            set_setting("dzd_to_usd_per_1000", format(rate.normalize(), "f"))
+            context.user_data.pop("admin_step", None)
+            await message.reply_text(f"✅ تم حفظ سعر التحويل العكسي: 1000 DA = {rate} USD.\nسيُستخدم هذا السعر لحساب المبالغ من محافظ الدولار وطرق الدفع بالدولار، بشكل مستقل عن سعر الدولار بالدينار.", reply_markup=admin_keyboard())
             return
 
         if step == "custom_payment_edit_instructions":
@@ -7882,26 +7946,28 @@ async def text_handler(update, context):
 
         if step and step.startswith("tiktok_coin_price_"):
             try:
-                raw_price = text.strip().replace("DA", "").replace("DA", "").replace("da", "").replace(",", ".").replace(" ", "")
+                raw_price = text.strip().replace("USD", "").replace("usd", "").replace(",", ".").replace(" ", "")
                 price = Decimal(raw_price)
                 if not price.is_finite() or price <= 0 or price > Decimal("1000000"):
                     raise InvalidOperation
-                price = price.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP).normalize()
+                price = price.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP).normalize()
             except (InvalidOperation, ValueError):
-                await message.reply_text("❌ السعر غير صحيح. أرسل رقمًا أكبر من صفر، مثال: 0.15 أو 0,15. أو /cancel للإلغاء.")
+                await message.reply_text("❌ السعر غير صحيح. أرسل رقمًا أكبر من صفر بالدولار، مثال: 0.0015 أو 0,0015. أو /cancel للإلغاء.")
                 return
             price_text = format(price, "f")
-            set_setting(step, price_text)
-            # Keep old setting in sync for legacy retail Baridi users.
+            set_setting(step + "_usd", price_text)
+            _rate = Decimal(get_setting("usd_exchange_rate", "254"))
+            _dzd_price = (price * _rate).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            set_setting(step, format(_dzd_price, "f"))
             if step == "tiktok_coin_price_retail_baridi":
-                set_setting("tiktok_coin_price", price_text)
+                set_setting("tiktok_coin_price", format(_dzd_price, "f"))
             context.user_data.pop("admin_step", None)
             tier, method = step.removeprefix("tiktok_coin_price_").split("_", 1)
             tier_label = "التجزئة (الزبائن)" if tier == "retail" else "الجملة (التجار)"
             method_label = "BaridiMob / CCP" if method == "baridi" else "Flexy"
             await message.reply_text(
                 f"✅ تم حفظ سعر TikTok.\nالفئة: {tier_label}\nطريقة الدفع: {method_label}\n"
-                f"سعر الكوين الواحد: {price_text} DA.\nسيُستخدم هذا السعر لحساب الكمية المخصصة تلقائيًا.",
+                f"سعر الكوين الواحد: {price_text} USD (يعادل {format(_dzd_price, 'f')} DA حاليًا).\nسيُستخدم هذا السعر لحساب الكمية المخصصة تلقائيًا.",
                 reply_markup=admin_keyboard(),
             )
             return
@@ -8085,23 +8151,27 @@ async def text_handler(update, context):
             if len(parts) not in (3, 4):
                 await message.reply_text(
                     "❌ الصيغة غير صحيحة.\n\n"
-                    "استعمل: اسم العرض | سعر الزبون BaridiMob | سعر التاجر BaridiMob\n"
-                    "مثال: 100 Coins | 250 | 220"
+                    "استعمل: اسم العرض | سعر الزبون USD | سعر التاجر USD\n"
+                    "مثال: 100 Coins | 0.98 | 0.86"
                 )
                 return
 
             offer_name = parts[0]
             try:
-                price_baridi = int(parts[1])
-                price_baridi_trader = int(parts[2])
-                reward_points = 0  # Loyalty points are calculated from completed order value.
-                if not offer_name or min(price_baridi, price_baridi_trader) < 0:
+                price_usd = Decimal(parts[1].replace(",", "."))
+                price_usd_trader = Decimal(parts[2].replace(",", "."))
+                rate = Decimal(get_setting("usd_exchange_rate", "254"))
+                if not offer_name or min(price_usd, price_usd_trader) < 0 or not rate.is_finite() or rate <= 0:
                     raise ValueError
-                # Match the existing wallet Flexy full-credit mode: customer pays 18% extra.
-                price_flexy = int(round(price_baridi * 1.18))
-                price_flexy_trader = int(round(price_baridi_trader * 1.18))
-            except ValueError:
-                await message.reply_text("❌ تأكد من اسم العرض والأسعار. الأسعار لازم تكون أرقامًا موجبة أو صفرًا.")
+                price_usd_flexy = (price_usd * Decimal("1.18")).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+                price_usd_flexy_trader = (price_usd_trader * Decimal("1.18")).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+                price_baridi = int((price_usd * rate).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+                price_baridi_trader = int((price_usd_trader * rate).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+                price_flexy = int((price_usd_flexy * rate).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+                price_flexy_trader = int((price_usd_flexy_trader * rate).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+                reward_points = 0
+            except (InvalidOperation, ValueError):
+                await message.reply_text("❌ تأكد من اسم العرض والأسعار بالدولار. الأسعار يجب أن تكون أرقامًا موجبة أو صفرًا.")
                 return
 
             game_id = context.user_data.get("pending_game_id")
@@ -8123,8 +8193,8 @@ async def text_handler(update, context):
                 conn.execute(
                     """
                     INSERT INTO offers
-                    (game_id, recharge_method_id, name, price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, reward_points, active, sort_order)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, (SELECT COALESCE(MAX(sort_order),0)+1 FROM offers WHERE game_id=?))
+                    (game_id, recharge_method_id, name, price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, price_usd, price_usd_flexy, price_usd_trader, price_usd_flexy_trader, reward_points, active, sort_order)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, (SELECT COALESCE(MAX(sort_order),0)+1 FROM offers WHERE game_id=?))
                     """,
                     (
                         game_id,
@@ -8134,6 +8204,10 @@ async def text_handler(update, context):
                         price_flexy,
                         price_baridi_trader,
                         price_flexy_trader,
+                        float(price_usd),
+                        float(price_usd_flexy),
+                        float(price_usd_trader),
+                        float(price_usd_flexy_trader),
                         reward_points,
                         game_id,
                     ),
@@ -8145,9 +8219,8 @@ async def text_handler(update, context):
 
             await message.reply_text(
                 f"✅ تمت إضافة العرض: {offer_name}\n\n"
-                f"🏦 BaridiMob/CCP: {price_baridi} DA\n"
-                f"📱 Flexy (محسوب +18%): {price_flexy} DA\n"
-                f"🏪 التاجر — BaridiMob/CCP: {price_baridi_trader} DA | Flexy (محسوب +18%): {price_flexy_trader} DA",
+                f"💵 سعر الزبون: {price_usd} USD → Baridi {price_baridi} DA | Flexy {price_flexy} DA\n"
+                f"🏪 سعر التاجر: {price_usd_trader} USD → Baridi {price_baridi_trader} DA | Flexy {price_flexy_trader} DA",
                 reply_markup=ReplyKeyboardMarkup(
                     ADMIN_PANEL_MENU,
                     resize_keyboard=True,
@@ -8157,30 +8230,35 @@ async def text_handler(update, context):
 
         # تعديل سعر واحد فقط لعرض مع الحفاظ على بقية الأسعار
         if step == "edit_single_offer_price":
-            try:
-                new_price = int(text)
-                if new_price < 0:
-                    raise ValueError
-            except ValueError:
-                await message.reply_text("❌ أرسل سعرًا صحيحًا (0 أو أكثر)، أو /cancel للإلغاء.")
-                return
             offer_id = context.user_data.get("pending_offer_id")
             column = context.user_data.get("pending_offer_price_column")
-            if column not in ("price_baridi", "price_baridi_trader") or not offer_id:
+            if column not in ("price_usd", "price_usd_trader") or not offer_id:
                 context.user_data.pop("admin_step", None)
                 await message.reply_text("❌ انتهت جلسة تعديل السعر. افتح تعديل سعر العرض من جديد.")
                 return
-            flexy_column = "price_flexy" if column == "price_baridi" else "price_flexy_trader"
-            with db() as conn:
-                result = conn.execute(f"UPDATE offers SET {column}=?, {flexy_column}=? WHERE id=?", (new_price, int(round(new_price * 1.18)), offer_id))
-                offer_name_row = conn.execute("SELECT name FROM offers WHERE id=?", (offer_id,)).fetchone()
+            try:
+                new_price = Decimal(text.strip().replace(",", "."))
+                rate = Decimal(get_setting("usd_exchange_rate", "254"))
+                if not new_price.is_finite() or new_price < 0 or not rate.is_finite() or rate <= 0:
+                    raise ValueError
+                is_trader_price = column == "price_usd_trader"
+                baridi_column = "price_baridi_trader" if is_trader_price else "price_baridi"
+                flexy_column = "price_flexy_trader" if is_trader_price else "price_flexy"
+                flexy_usd_column = "price_usd_flexy_trader" if is_trader_price else "price_usd_flexy"
+                new_flexy_usd = (new_price * Decimal("1.18")).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+                with db() as conn:
+                    result = conn.execute(f"UPDATE offers SET {column}=?, {flexy_usd_column}=?, {baridi_column}=?, {flexy_column}=? WHERE id=?", (float(new_price), float(new_flexy_usd), int((new_price*rate).quantize(Decimal('1'),rounding=ROUND_HALF_UP)), int((new_flexy_usd*rate).quantize(Decimal('1'),rounding=ROUND_HALF_UP)), offer_id))
+                    offer_name_row = conn.execute("SELECT name FROM offers WHERE id=?", (offer_id,)).fetchone()
+            except (InvalidOperation, ValueError):
+                await message.reply_text("❌ أرسل سعرًا صحيحًا بالدولار (0 أو أكثر)، أو /cancel للإلغاء.")
+                return
             context.user_data.pop("admin_step", None)
             context.user_data.pop("pending_offer_id", None)
             context.user_data.pop("pending_offer_price_column", None)
             if not result.rowcount or not offer_name_row:
                 await message.reply_text("❌ العرض غير موجود.", reply_markup=admin_keyboard())
             else:
-                await message.reply_text(f"✅ تم تعديل سعر BaridiMob إلى {new_price} DA للعرض {offer_name_row['name']}، وتم حساب سعر Flexy تلقائيًا (+18%).", reply_markup=admin_keyboard())
+                await message.reply_text(f"✅ تم تعديل السعر الأساسي إلى {new_price} USD للعرض {offer_name_row['name']}، وتم حساب Baridi بالدينار وFlexy تلقائيًا (+18%).", reply_markup=admin_keyboard())
             return
 
         # تعديل أسعار عرض
@@ -8190,23 +8268,25 @@ async def text_handler(update, context):
             if len(parts) != 2:
                 await message.reply_text(
                     "❌ الصيغة غير صحيحة.\n\n"
-                    "ابعث سعرين فقط: سعر الزبون BaridiMob | سعر التاجر BaridiMob.\n"
-                    "مثال: 750 | 650\nسيُحسب Flexy تلقائيًا بإضافة 18%."
+                    "ابعث سعرين بالدولار: سعر الزبون USD | سعر التاجر USD.\n"
+                    "مثال: 2.95 | 2.50\nسيُحسب Baridi بالدينار وFlexy تلقائيًا (+18%)."
                 )
                 return
 
             try:
-                price_baridi = int(parts[0])
-                price_baridi_trader = int(parts[1])
-                price_flexy = int(round(price_baridi * 1.18))
-                price_flexy_trader = int(round(price_baridi_trader * 1.18))
-
-                if min(price_baridi, price_baridi_trader) < 0:
+                price_usd = Decimal(parts[0].replace(",", "."))
+                price_usd_trader = Decimal(parts[1].replace(",", "."))
+                rate = Decimal(get_setting("usd_exchange_rate", "254"))
+                if min(price_usd, price_usd_trader) < 0 or not rate.is_finite() or rate <= 0:
                     raise ValueError
-            except ValueError:
-                await message.reply_text(
-                    "❌ الأسعار لازم تكون أرقامًا موجبة أو صفرًا."
-                )
+                price_usd_flexy = (price_usd * Decimal("1.18")).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+                price_usd_flexy_trader = (price_usd_trader * Decimal("1.18")).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+                price_baridi = int((price_usd * rate).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+                price_baridi_trader = int((price_usd_trader * rate).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+                price_flexy = int((price_usd_flexy * rate).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+                price_flexy_trader = int((price_usd_flexy_trader * rate).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            except (InvalidOperation, ValueError):
+                await message.reply_text("❌ الأسعار لازم تكون أرقامًا صحيحة بالدولار (0 أو أكثر).")
                 return
 
             offer_id = context.user_data.get("pending_offer_id")
@@ -8216,10 +8296,13 @@ async def text_handler(update, context):
                     """
                     UPDATE offers
                     SET price_baridi = ?, price_flexy = ?,
-                        price_baridi_trader = ?, price_flexy_trader = ?
+                        price_baridi_trader = ?, price_flexy_trader = ?,
+                        price_usd = ?, price_usd_flexy = ?,
+                        price_usd_trader = ?, price_usd_flexy_trader = ?
                     WHERE id = ?
                     """,
-                    (price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, offer_id),
+                    (price_baridi, price_flexy, price_baridi_trader, price_flexy_trader,
+                     float(price_usd), float(price_usd_flexy), float(price_usd_trader), float(price_usd_flexy_trader), offer_id),
                 )
 
                 if result.rowcount == 0:
@@ -8233,9 +8316,8 @@ async def text_handler(update, context):
 
             await message.reply_text(
                 "✅ تم تعديل الأسعار بنجاح.\n\n"
-                f"🏦 BaridiMob/CCP: {price_baridi} DA\n"
-                f"📱 Flexy (محسوب +18%): {price_flexy} DA\n"
-                f"🏪 للتاجر — BaridiMob/CCP: {price_baridi_trader} DA | Flexy (محسوب +18%): {price_flexy_trader} DA",
+                f"💵 سعر الزبون: {price_usd} USD → Baridi {price_baridi} DA | Flexy {price_flexy} DA\n"
+                f"🏪 سعر التاجر: {price_usd_trader} USD → Baridi {price_baridi_trader} DA | Flexy {price_flexy_trader} DA",
                 reply_markup=ReplyKeyboardMarkup(
                     ADMIN_PANEL_MENU,
                     resize_keyboard=True,
