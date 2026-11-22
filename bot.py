@@ -3302,6 +3302,7 @@ async def photo_handler(update, context):
 
 async def show_my_orders(update, context):
     user_id = update.effective_user.id
+    callback_query = update.callback_query
     target_message = update.effective_message
     if target_message is None and update.callback_query:
         target_message = update.callback_query.message
@@ -3330,10 +3331,12 @@ async def show_my_orders(update, context):
         }
 
     if not orders:
-        await target_message.reply_text(
-            "📦 ما عندك حتى طلب حاليا.",
-            reply_markup=main_keyboard(user_id),
-        )
+        text = "📦 ما عندك حتى طلب حاليا."
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]])
+        if callback_query:
+            await callback_query.edit_message_text(text, reply_markup=markup)
+        else:
+            await target_message.reply_text(text, reply_markup=main_keyboard(user_id))
         return
 
     lines = ["📦 <b>آخر طلباتك:</b>\n"]
@@ -3353,11 +3356,16 @@ async def show_my_orders(update, context):
             f"🕒 التاريخ: {order['created_at']}\n"
         )
 
-    await target_message.reply_text(
-        "\n".join(lines),
-        parse_mode="HTML",
-        reply_markup=main_keyboard(user_id),
-    )
+    lines.append("\nاستعمل القائمة الرئيسية للرجوع إلى المتجر.")
+    if callback_query:
+        await callback_query.edit_message_text(
+            "\n".join(lines), parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]])
+        )
+    else:
+        await target_message.reply_text(
+            "\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(user_id)
+        )
 
 
 async def show_points_shop(message, user_id):
@@ -4025,7 +4033,10 @@ async def callback_handler(update, context):
             ]))
             return
         if action == "upgrade":
-            await query.edit_message_text("🏪 لطلب ترقية حسابك إلى تاجر، تواصل مع الإدارة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📞 اتصل بالإدارة", callback_data="contact_unset")], [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]]))
+            await query.edit_message_text(
+                "🏪 لطلب ترقية حسابك إلى تاجر، اضغط على زر «📞 اتصل بالإدارة» الموجود أسفل المحادثة.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]])
+            )
             return
 
     # Paginated trader history navigation.
@@ -5157,14 +5168,18 @@ async def callback_handler(update, context):
         with db() as conn:
             pending_dep = conn.execute("SELECT id FROM wallet_deposits WHERE user_id=? AND status='pending' LIMIT 1", (user_id,)).fetchone()
         if pending_dep:
-            await query.message.reply_text(f"⏳ لديك طلب تعبئة قيد المراجعة #{pending_dep['id']}، لا يمكنك إرسال طلب آخر حتى تتم معالجته.")
+            await query.edit_message_text(
+                f"⏳ لديك طلب تعبئة قيد المراجعة #{pending_dep['id']}، لا يمكنك إرسال طلب آخر حتى تتم معالجته.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]])
+            )
             await query.answer()
             return
         for k in ("awaiting_deposit_amount", "awaiting_deposit_amount_usd", "deposit_amount", "deposit_amount_usd", "deposit_method", "deposit_currency", "awaiting_deposit_receipt"):
             context.user_data.pop(k, None)
-        await query.message.reply_text("💰 اختر المحفظة التي تريد تعبئتها:", reply_markup=InlineKeyboardMarkup([
+        await query.edit_message_text("💰 اختر المحفظة التي تريد تعبئتها:", reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🇩🇿 محفظة الدينار DA", callback_data="deposit_currency:DA")],
             [InlineKeyboardButton("💵 محفظة الدولار USD", callback_data="deposit_currency:USD")],
+            [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")],
         ]))
         await query.answer()
         return
