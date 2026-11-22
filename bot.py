@@ -2058,6 +2058,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         logger.info("Could not notify referrer %s", referrer_id)
 
+    # Remove only the two previously tracked navigation messages; never touch
+    # order receipts, payment confirmations, or independent notifications.
+    for _key in ("navigation_message_id", "reply_keyboard_message_id"):
+        _old_id = context.user_data.get(_key)
+        if _old_id:
+            try:
+                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=int(_old_id))
+            except Exception:
+                pass
     context.user_data.clear()
     saved = get_user_row(user.id)
     if not is_admin(user.id) and saved and "is_banned" in saved.keys() and int(saved["is_banned"] or 0):
@@ -2097,12 +2106,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "اختر الخدمة من القائمة بالأسفل 👇",
     )
 
-    await update.message.reply_text(
+    nav_msg = await update.message.reply_text(
         welcome_text,
         reply_markup=customer_inline_menu(user.id),
     )
-    # Keep the compact permanent keyboard visible beneath the chat.
-    await update.message.reply_text("القائمة الرئيسية", reply_markup=main_keyboard(user.id))
+    context.user_data["navigation_message_id"] = nav_msg.message_id
+    # Telegram cannot attach inline and reply keyboards to the same message.
+    # Keep the three fixed controls in one tracked, replaceable keyboard message.
+    keyboard_msg = await update.message.reply_text("القائمة الرئيسية", reply_markup=main_keyboard(user.id))
+    context.user_data["reply_keyboard_message_id"] = keyboard_msg.message_id
 
 
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3523,8 +3535,9 @@ async def admin_offers(query, game_id, page=0):
     nav.append(InlineKeyboardButton(f"{page+1}/{pages}",callback_data="offers_game_page:noop"))
     if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️",callback_data=f"offers_game_page:{game_id}:{page+1}"))
     buttons.append(nav)
+    buttons.append([InlineKeyboardButton("📝 إرسال قائمة أسعار اللعبة كاملة", callback_data=f"bulk_price_game:{game_id}")])
     buttons.append([InlineKeyboardButton("🔙 اختيار لعبة أخرى",callback_data="adm_offers")])
-    text=f"{game['emoji']} <b>عروض {game['name']}</b>\n\nاختر العرض لفتح إعداداته.\n🟢 مفعّل | 🔴 متوقف\nالعدد: {total}"
+    text=f"{game['emoji']} <b>عروض {game['name']}</b>\n\nاختر العرض لفتح إعداداته أو أرسل قائمة أسعار اللعبة كاملة.\n🟢 مفعّل | 🔴 متوقف\nالعدد: {total}"
     if not total: text+="\n\nما كاين حتى عرض لهذه اللعبة حاليا."
     await query.edit_message_text(text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -3963,13 +3976,20 @@ async def callback_handler(update, context):
     # sending a fresh navigation window on every tap (for customers/traders/admin).
     if data.startswith("home:"):
         action = data.split(":", 1)[1]
+        context.user_data["navigation_message_id"] = query.message.message_id
         await query.answer()
         if action == "admin":
             if not is_admin(user_id):
                 await query.answer("هذا القسم خاص بالإدارة.", show_alert=True)
                 return
             await query.edit_message_text("👑 لوحة تحكم SERADJ STORE")
-            await query.message.reply_text("اختر من لوحة الإدارة:", reply_markup=admin_keyboard())
+            admin_menu_msg = await query.message.reply_text("اختر من لوحة الإدارة:", reply_markup=admin_keyboard())
+            context.user_data["reply_keyboard_message_id"] = admin_menu_msg.message_id
+            # The edited heading is a transient navigation window; remove it.
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
             return
         if action == "store":
             await query.edit_message_text("🛍️ اختار القسم لي حاب تتصفح:", reply_markup=InlineKeyboardMarkup([
@@ -4516,6 +4536,37 @@ async def callback_handler(update, context):
         except Exception: pass
         return
 
+    if data.startswith("bulk_price_game:"):
+        if not is_admin(user_id):
+            await query.answer("هذه الخاصية للإدارة فقط.", show_alert=True)
+            return
+        try:
+            game_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("اللعبة غير صالحة.", show_alert=True)
+            return
+        with db() as conn:
+            game = conn.execute("SELECT name FROM games WHERE id=?", (game_id,)).fetchone()
+            offers = conn.execute("SELECT name FROM offers WHERE game_id=? ORDER BY CASE WHEN COALESCE(sort_order,0)>0 THEN sort_order ELSE 1000000+id END,id", (game_id,)).fetchall()
+        if not game or not offers:
+            await query.edit_message_text("لا توجد عروض لهذه اللعبة حتى الآن.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"offers_game:{game_id}")]]))
+            return
+        context.user_data["admin_step"] = "bulk_game_prices"
+        context.user_data["bulk_price_game_id"] = game_id
+        names = "\n".join(f"• {r['name']}" for r in offers)
+        await query.edit_message_text(
+            f"📝 تحديث أسعار {game['name']} دفعة واحدة\n\n"
+            "أرسل كل عرض في سطر بهذا الترتيب:\n"
+            "اسم العرض | زبون DA | تاجر DA | زبون USD | تاجر USD\n\n"
+            "مثال: 100 Diamonds | 240 | 220 | 0 | 0\n"
+            "إذا كان السعر بالدينار، ضع 0 في الدولار ليُحسب تلقائياً بسعر شراء الدولار.\n"
+            "إذا كان السعر بالدولار، ضع 0 في الدينار ليُحسب تلقائياً بسعر بيع الدولار.\n"
+            "لكل فئة (زبون/تاجر) أدخل عملة واحدة فقط، والثانية 0.\n"
+            "سعر Flexy يُحسب تلقائياً (+18%).\n\n"
+            f"العروض المسجلة حالياً:\n{names}\n\nأرسل /cancel للإلغاء."
+        )
+        return
+
     if data == "price_menu_offers":
         if not is_admin(user_id):
             await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
@@ -4856,7 +4907,7 @@ async def callback_handler(update, context):
         context.user_data["pending_offer_id"] = offer_id
         context.user_data["pending_offer_usd_column"] = column
         who = "الزبون" if column == "price_usd" else "التاجر"
-        await query.message.reply_text(f"💵 سعر الدولار للـ{who} في {offer['name']} حاليًا: {offer['current_price']} USD\nأرسل السعر الجديد بالدولار (0 لإلغاء السعر بالدولار).\nعند عرض السعر بالدينار يُضرب في سعر بيع الدولار.")
+        await query.edit_message_text(f"💵 سعر الدولار للـ{who} في {offer['name']} حاليًا: {offer['current_price']} USD\nأرسل السعر الجديد بالدولار (0 لإلغاء السعر بالدولار).\nعند عرض السعر بالدينار يُضرب في سعر بيع الدولار.")
         return
 
     if data.startswith("offer_price_one:"):
@@ -4874,13 +4925,13 @@ async def callback_handler(update, context):
         context.user_data["pending_offer_id"] = offer_id
         context.user_data["pending_offer_price_column"] = column
         labels = {"price_baridi":"سعر الزبون عبر BaridiMob/CCP", "price_baridi_trader":"سعر التاجر عبر BaridiMob/CCP"}
-        await query.message.reply_text(f"✏️ {offer['name']}\n{labels[column]} الحالي: {offer['current_price']} DA\nأرسل السعر الجديد فقط. سيُعاد حساب سعر Flexy المقابل تلقائيًا (+18%).\nللإلغاء أرسل /cancel.")
+        await query.edit_message_text(f"✏️ {offer['name']}\n{labels[column]} الحالي: {offer['current_price']} DA\nأرسل السعر الجديد فقط. سيُعاد حساب سعر Flexy المقابل تلقائيًا (+18%).\nللإلغاء أرسل /cancel.")
         return
     if data.startswith("offer_price_all:"):
         offer_id = int(data.split(":", 1)[1])
         context.user_data["admin_step"] = "edit_price_data"
         context.user_data["pending_offer_id"] = offer_id
-        await query.message.reply_text("أرسل السعرين بهذا الترتيب:\nسعر الزبون BaridiMob | سعر التاجر BaridiMob\nمثال: 750 | 650\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
+        await query.edit_message_text("أرسل السعرين بهذا الترتيب:\nسعر الزبون BaridiMob | سعر التاجر BaridiMob\nمثال: 750 | 650\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
         return
 
     if data == "orders_delete_all":
@@ -5682,7 +5733,7 @@ async def callback_handler(update, context):
         context.user_data["admin_step"] = "add_offer_data"
         context.user_data["pending_game_id"] = int(game_id)
         context.user_data["pending_recharge_method_id"] = int(method_id)
-        await query.message.reply_text("➕ أرسل بيانات العرض والأسعار لهذه الطريقة فقط:\nاسم العرض | سعر الزبون BaridiMob/CCP | سعر التاجر BaridiMob/CCP\n\nمثال: 100 Coins | 250 | 220\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
+        await query.edit_message_text("➕ أرسل بيانات العرض والأسعار لهذه الطريقة فقط:\nاسم العرض | سعر الزبون BaridiMob/CCP | سعر التاجر BaridiMob/CCP\n\nمثال: 100 Coins | 250 | 220\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
 
     # إدارة الألعاب
     elif data == "adm_games":
@@ -6102,7 +6153,7 @@ async def callback_handler(update, context):
             for cm in custom_methods:
                 is_on = offer_method_states.get(int(cm["id"]), 1)
                 price_buttons.append([InlineKeyboardButton(f"{'✅' if is_on else '🚫'} {cm['emoji']} {cm['name']} — {'إيقاف لهذا العرض' if is_on else 'تفعيل لهذا العرض'}", callback_data=f"offer_pay_toggle:{offer_id}:{cm['id']}")])
-        await query.message.reply_text(
+        await query.edit_message_text(
             f"💰 تعديل سعر العرض: {offer['name']}\n\n"
             f"الأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\n"
             f"تاجر DA {price_row['price_baridi_trader']} DA | تاجر USD {price_row['price_usd_trader']} USD\n\n"
@@ -8016,6 +8067,78 @@ async def text_handler(update, context):
 
     if is_admin(user_id):
         step = context.user_data.get("admin_step")
+
+        if step == "bulk_game_prices":
+            game_id = context.user_data.get("bulk_price_game_id")
+            if not game_id:
+                context.user_data.pop("admin_step", None)
+                await message.reply_text("❌ انتهت جلسة تحديث الأسعار. افتحها من جديد.", reply_markup=admin_keyboard())
+                return
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            parsed = []
+            errors = []
+            with db() as conn:
+                db_offers = conn.execute("SELECT id,name FROM offers WHERE game_id=?", (int(game_id),)).fetchall()
+            by_name = {str(r["name"]).strip().casefold(): r for r in db_offers}
+            seen = set()
+            for line_no, line in enumerate(lines, 1):
+                parts = [part.strip() for part in line.split("|")]
+                if len(parts) != 5:
+                    errors.append(f"السطر {line_no}: لازم 5 خانات مفصولة بـ |.")
+                    continue
+                name = parts[0]
+                row = by_name.get(name.casefold())
+                if not row:
+                    errors.append(f"السطر {line_no}: اسم العرض غير موجود: {name}")
+                    continue
+                offer_id = int(row["id"])
+                if offer_id in seen:
+                    errors.append(f"السطر {line_no}: العرض مكرر: {name}")
+                    continue
+                try:
+                    values = [Decimal(v.replace(",", ".")) for v in parts[1:]]
+                    if any((not v.is_finite()) or v < 0 or v > Decimal("100000000") for v in values):
+                        raise InvalidOperation
+                    retail_da, trader_da, retail_usd, trader_usd = values
+                    # One source currency per account tier; zero means auto-convert counterpart.
+                    if (retail_da == 0 and retail_usd == 0) or (trader_da == 0 and trader_usd == 0):
+                        raise ValueError("كل فئة لازم يكون عندها سعر واحد على الأقل.")
+                    if retail_da > 0 and retail_usd > 0:
+                        raise ValueError("الزبون: خلي DA أو USD صفراً، ماشي الاثنين معاً.")
+                    if trader_da > 0 and trader_usd > 0:
+                        raise ValueError("التاجر: خلي DA أو USD صفراً، ماشي الاثنين معاً.")
+                    if retail_da != retail_da.to_integral_value() or trader_da != trader_da.to_integral_value():
+                        raise ValueError("أسعار DA لازم تكون أعداداً صحيحة.")
+                except (InvalidOperation, ValueError) as exc:
+                    errors.append(f"السطر {line_no} ({name}): {exc or 'سعر غير صالح'}")
+                    continue
+                parsed.append((offer_id, int(retail_da), int(round(retail_da * Decimal("1.18"))), int(trader_da), int(round(trader_da * Decimal("1.18"))), float(retail_usd), float(trader_usd)))
+                seen.add(offer_id)
+            missing = [str(r["name"]) for r in db_offers if int(r["id"]) not in seen]
+            if missing:
+                errors.append("العروض الناقصة من القائمة: " + "، ".join(missing[:30]))
+            if errors:
+                await message.reply_text("❌ لم يتم تغيير أي سعر بسبب أخطاء في القائمة:\n\n" + "\n".join(errors[:20]) + "\n\nصحح القائمة وأعد إرسالها. /cancel للإلغاء.")
+                return
+            if not parsed:
+                await message.reply_text("❌ القائمة فارغة. أرسل سطرًا واحدًا على الأقل.")
+                return
+            with db() as conn:
+                for item in parsed:
+                    conn.execute(
+                        "UPDATE offers SET price_baridi=?, price_flexy=?, price_baridi_trader=?, price_flexy_trader=?, price_usd=?, price_usd_trader=? WHERE id=? AND game_id=?",
+                        (*item[1:], item[0], int(game_id))
+                    )
+            context.user_data.pop("admin_step", None)
+            context.user_data.pop("bulk_price_game_id", None)
+            await message.reply_text(
+                f"✅ تم تحديث أسعار {len(parsed)} عرض بنجاح.\n"
+                f"💵 سعر شراء الدولار: {usd_buy_rate()} DA\n"
+                f"💱 سعر بيع الدولار: {usd_sell_rate()} DA\n"
+                "أسعار Flexy محسوبة تلقائياً (+18%).",
+                reply_markup=admin_keyboard()
+            )
+            return
 
         if step in ("set_usd_exchange_rate", "set_usd_sell_rate", "set_usd_buy_rate"):
             try:
