@@ -19,6 +19,7 @@ from telegram import (
     ReplyKeyboardRemove,
     KeyboardButton,
     ForceReply,
+    InputMediaPhoto,
 )
 
 from telegram.request import HTTPXRequest
@@ -327,7 +328,7 @@ def get_setting(key, default=""):
     return row["value"] if row else default
 
 
-async def dispatch_order_to_group(context, order_id, user, draft, player_id, payment_method, price, points_used=0, photo=None):
+async def dispatch_order_to_group(context, order_id, user, draft, player_id, payment_method, price, points_used=0, photo=None, photo_ids=None):
     """Send an order to the group configured for its game, falling back to admin DM."""
     game_id = int(draft.get("game_id") or 0)
     group_id = get_setting("order_group_all", "").strip() or get_setting(f"order_group_{game_id}", "").strip()
@@ -352,8 +353,13 @@ async def dispatch_order_to_group(context, order_id, user, draft, player_id, pay
                f"📋 معلومات الشحن: {player_id or 'لا تتطلب'}\n📱 الجهاز: {draft.get('platform') or 'غير محدد'}\n"
                f"💰 السعر: {price} {draft.get('currency', 'DA')}\n" + f"🎁 النقاط المستخدمة: {points_used}\n💳 الدفع: {payment_method}\n📌 الحالة: قيد الانتظار")
     try:
-        if photo:
-            await context.bot.send_photo(chat_id=int(group_id), photo=photo.file_id, caption=caption, reply_markup=keyboard)
+        photo_ids = list(photo_ids or ([photo.file_id] if photo else []))
+        if len(photo_ids) > 1:
+            media = [InputMediaPhoto(media=fid, caption=caption if i == 0 else None) for i, fid in enumerate(photo_ids[:10])]
+            await context.bot.send_media_group(chat_id=int(group_id), media=media)
+            await context.bot.send_message(chat_id=int(group_id), text=f"🧾 التحكم في الطلب #{order_id}", reply_markup=keyboard)
+        elif photo_ids:
+            await context.bot.send_photo(chat_id=int(group_id), photo=photo_ids[0], caption=caption, reply_markup=keyboard)
         else:
             await context.bot.send_message(chat_id=int(group_id), text=caption, reply_markup=keyboard)
         # The group keyboard is visible to everyone, so send the detach control privately to the owner only.
@@ -1100,6 +1106,8 @@ def init_db():
             platform TEXT DEFAULT '',
             credit_charged INTEGER DEFAULT 0,
             credit_refunded INTEGER DEFAULT 0,
+            payment_receipt_file_ids TEXT DEFAULT '[]',
+            shipping_receipt_file_ids TEXT DEFAULT '[]',
             shipping_receipt_file_id TEXT DEFAULT '',
             shipping_receipt_by INTEGER DEFAULT NULL,
             shipping_receipt_at TEXT DEFAULT '',
@@ -1411,6 +1419,7 @@ def init_db():
                 "price_baridi_trader": "INTEGER DEFAULT 0",
                 "price_flexy_trader": "INTEGER DEFAULT 0",
                 "price_usd_trader": "REAL DEFAULT 0",
+                "price_usd": "REAL DEFAULT 0",
                 "reward_points": "INTEGER DEFAULT 0",
                 "android_active": "INTEGER DEFAULT 1",
                 "ios_active": "INTEGER DEFAULT 1",
@@ -1534,6 +1543,8 @@ def init_db():
         # Safe additive migrations for an existing production database.
         order_cols = {r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()}
         for column, definition in {
+            "payment_receipt_file_ids": "TEXT DEFAULT '[]'",
+            "shipping_receipt_file_ids": "TEXT DEFAULT '[]'",
             "shipping_receipt_file_id": "TEXT DEFAULT ''",
             "shipping_receipt_by": "INTEGER DEFAULT NULL",
             "shipping_receipt_at": "TEXT DEFAULT ''",
@@ -1682,10 +1693,13 @@ def parse_datetime(value):
 
 
 def offer_price(offer, method, user_id):
+    """Return the subscriber's payable DA price; USD-priced offers use the sell rate."""
+    usd_source = _offer_usd_source_price(offer, user_id) if "_offer_usd_source_price" in globals() else None
     trader = is_trader(user_id)
+    da_base = (usd_source * usd_sell_rate()) if usd_source is not None else Decimal(str(offer["price_baridi_trader"] if trader else offer["price_baridi"]))
     if method == "baridi":
-        return int(offer["price_baridi_trader"] if trader else offer["price_baridi"])
-    return int(offer["price_flexy_trader"] if trader else offer["price_flexy"])
+        return int(da_base.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return int((da_base * Decimal("1.18")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def trader_wallet_currency(user_id):
@@ -1712,35 +1726,37 @@ def usd_buy_rate():
         return Decimal("254")
 
 
-def trader_offer_price(offer, user_id):
-    """Return the trader price in the trader's assigned currency.
+def _offer_usd_source_price(offer, user_id):
+    """Return an explicitly configured USD price for this subscriber class, if any."""
+    try:
+        key = "price_usd_trader" if is_trader(user_id) else "price_usd"
+        value = Decimal(str(offer[key] or 0)) if key in offer.keys() else Decimal("0")
+        return value if value.is_finite() and value > 0 else None
+    except Exception:
+        return None
 
-    USD is derived automatically from the trader's DA price and the admin's
-    current market exchange rate; the DA source price remains unchanged.
-    """
-    da_price = Decimal(str(offer["price_baridi_trader"] or 0))
+
+def trader_offer_price(offer, user_id):
+    """Trader's configured wallet price; USD source prices are converted to DA at sell rate."""
+    usd_source = _offer_usd_source_price(offer, user_id)
     if trader_wallet_currency(user_id) == "USD":
-        try:
-            rate = usd_buy_rate()
-            if not rate.is_finite() or rate <= 0:
-                rate = Decimal("254")
-        except (InvalidOperation, ValueError):
-            rate = Decimal("254")
-        return float((da_price / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-    return int(da_price)
+        if usd_source is not None:
+            return float(usd_source.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        da_price = Decimal(str(offer["price_baridi_trader"] or 0))
+        return float((da_price / usd_buy_rate()).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    if usd_source is not None:
+        return int((usd_source * usd_sell_rate()).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return int(Decimal(str(offer["price_baridi_trader"] or 0)))
 
 
 def wallet_offer_price(offer, user_id, currency="DA"):
-    """Wallet price for either account type, converted using the existing USD rate."""
+    """Convert each subscriber's configured offer currency using the matching buy/sell rate."""
+    usd_source = _offer_usd_source_price(offer, user_id)
     da_price = Decimal(str(offer["price_baridi_trader"] if is_trader(user_id) else offer["price_baridi"]))
+    if usd_source is not None:
+        return float(usd_source.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)) if str(currency).upper() == "USD" else int((usd_source * usd_sell_rate()).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     if str(currency).upper() == "USD":
-        try:
-            rate = usd_buy_rate()
-            if not rate.is_finite() or rate <= 0:
-                rate = Decimal("254")
-        except (InvalidOperation, ValueError):
-            rate = Decimal("254")
-        return float((da_price / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        return float((da_price / usd_buy_rate()).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
     return int(da_price)
 
 
@@ -2535,7 +2551,7 @@ async def _cart_start_payment(query, context, payment_type):
         if payment_type in ("balance", "balance_usd", "trader_wallet", "trader_wallet_usd"):
             await create_wallet_order(query.message, context, "", user=query.from_user); return
         context.user_data["awaiting_payment_receipt"] = True
-        prompt = "📸 أرسل صورة وصل الدفع لإتمام الطلب."
+        prompt = "📸 أرسل صورة وصل الدفع لإتمام الطلب. تقدر ترسل عدة صور مع بعض كألبوم."
     else:
         context.user_data["awaiting_player_id"] = True
         prompt = "🆔 أرسل Player ID الخاص بنفس اللاعب."
@@ -2636,13 +2652,11 @@ async def select_payment(
             return
         base_dzd = Decimal(offer_price(offer, "baridi", query.from_user.id))
         if currency == "USD":
-            try:
-                rate = usd_buy_rate()
-                if not rate.is_finite() or rate <= 0:
-                    raise InvalidOperation
-            except (InvalidOperation, ValueError):
-                rate = Decimal("254")
-            price = float((base_dzd / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            explicit_usd = _offer_usd_source_price(offer, query.from_user.id)
+            if explicit_usd is not None:
+                price = float(explicit_usd.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            else:
+                price = float((base_dzd / usd_buy_rate()).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
         else:
             price = int(base_dzd)
         method_name = f"{custom_method['emoji']} {custom_method['name']}"
@@ -2710,7 +2724,7 @@ async def select_payment(
             await create_credit_order(query.message, context, "", user=query.from_user)
             return
         context.user_data["awaiting_payment_receipt"] = True
-        prompt = "🧾 هذا العرض لا يحتاج ID أو بيانات دخول. أرسل صورة وصل الدفع مباشرة لإتمام الطلب."
+        prompt = "🧾 هذا العرض لا يحتاج ID أو بيانات دخول. أرسل صورة وصل الدفع مباشرة لإتمام الطلب، وتقدر ترسل عدة صور مع بعض كألبوم."
     else:
         context.user_data["awaiting_player_id"] = True
         prompt = custom_prompt or "🆔 أرسل الآن معرف اللاعب (Player ID).\nإذا ما تحتاجش الخدمة معرف، أرسل: بدون"
@@ -2837,7 +2851,7 @@ async def create_order(update, context):
         f"{('🆔 معرف اللاعب: ' + player_id + chr(10)) if not draft.get('login_mode') else '🔐 تم استلام بيانات الحساب.' + chr(10)}"
         f"💳 طريقة الدفع: {draft['method']}\n"
         f"💰 المبلغ: {draft['price']} {draft.get('currency', 'DA')}\n\n"
-        "📸 الآن أرسل صورة وصل الدفع لإتمام الطلب.\n\n"
+        "📸 الآن أرسل صورة وصل الدفع لإتمام الطلب. تقدر ترسل عدة صور مع بعض كألبوم.\n\n"
         "⚠️ تأكد أن الصورة واضحة وتظهر معلومات العملية.\n"
         "لإلغاء العملية أرسل /cancel"
     )
@@ -2910,6 +2924,13 @@ async def document_handler(update, context):
 async def photo_handler(update, context):
     user = update.effective_user
     message = update.effective_message
+    if user and is_admin(user.id) and context.user_data.get("admin_step") == "notify_broadcast_photo" and message.photo:
+        context.user_data["pending_broadcast_photo_file_id"] = message.photo[-1].file_id
+        context.user_data["admin_step"] = "notify_broadcast_buttons"
+        await message.reply_text(
+            "✅ تم حفظ صورة الإشعار. الآن أرسل الأزرار (كل زر في سطر) أو اكتب بدون."
+        )
+        return
     if user and context.user_data.pop("expired_order_checkout", False):
         await message.reply_text("⏰ انتهت مهلة الدفع (15 دقيقة)، ولم يتم تسجيل الطلب. أعد الطلب من المتجر إذا كنت لا تزال ترغب في الشراء.", reply_markup=main_keyboard(user.id))
         return
@@ -2927,11 +2948,25 @@ async def photo_handler(update, context):
             context.user_data.pop("order_receipt_group_id", None)
             await message.reply_text("⛔ لم يعد الطلب مفتوحًا لإرفاق وصل الشحن.")
             return
+        key = f"shipping_receipts:{receipt_order_id}"
+        ids = context.user_data.setdefault(key, [])
+        fid = message.photo[-1].file_id
+        if fid not in ids:
+            ids.append(fid)
+        await asyncio.sleep(1.3)  # collect all images from a Telegram album
+        current_album = context.user_data.get(key, [])
+        if not current_album or current_album[-1] != fid:
+            return
+        receipt_ids = list(context.user_data.get(key, []))[:10]
+        context.user_data[f"order_receipt_photos:{receipt_order_id}"] = receipt_ids
+        context.user_data[f"order_receipt_photo:{receipt_order_id}"] = receipt_ids[0]
+        with db() as conn:
+            conn.execute("UPDATE orders SET shipping_receipt_file_id=?, shipping_receipt_file_ids=?, shipping_receipt_by=?, shipping_receipt_at=? WHERE id=?",
+                         (receipt_ids[0], json.dumps(receipt_ids), user.id, now_text(), receipt_order_id))
         context.user_data.pop("awaiting_order_receipt", None)
         context.user_data.pop("order_receipt_group_id", None)
-        context.user_data[f"order_receipt_photo:{receipt_order_id}"] = message.photo[-1].file_id
         await message.reply_text(
-            f"✅ تم حفظ صورة الوصل للطلب #{receipt_order_id}. اضغط لإتمام الطلب وإرسال الوصل للزبون:",
+            f"✅ تم حفظ {len(context.user_data[key])} صورة لوصل الطلب #{receipt_order_id}. اضغط لإتمام الطلب وإرسالها للزبون:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ إتمام وإرسال الوصل", callback_data=f"order_finish_with_receipt:{receipt_order_id}")]])
         )
         return
@@ -2977,30 +3012,37 @@ async def photo_handler(update, context):
             context.user_data.pop("awaiting_order_receipt", None); return
         receipt_order_id = int(context.user_data.get("awaiting_order_receipt"))
         source_group = context.user_data.get("order_receipt_group_id")
+        if source_group and message.chat_id != int(source_group):
+            await message.reply_text("📷 أرسل الوصل في نفس قروب الطلب الذي بدأت منه العملية."); return
+        if not source_group and not is_admin(user.id):
+            context.user_data.pop("awaiting_order_receipt", None); return
         if source_group:
-            if message.chat_id != int(source_group):
-                await message.reply_text("📷 أرسل الوصل في نفس قروب الطلب الذي بدأت منه العملية."); return
             with db() as conn:
                 claimed = conn.execute("SELECT claimed_by,status FROM orders WHERE id=?", (receipt_order_id,)).fetchone()
-                valid_receipt_order = bool(claimed and int(claimed["claimed_by"] or 0) and claimed["status"] not in ("completed", "rejected"))
-                if valid_receipt_order:
-                    conn.execute("UPDATE orders SET shipping_receipt_file_id=?, shipping_receipt_by=?, shipping_receipt_at=? WHERE id=?",
-                                 (message.photo[-1].file_id, user.id, now_text(), receipt_order_id))
+            valid_receipt_order = bool(claimed and int(claimed["claimed_by"] or 0) and claimed["status"] not in ("completed", "rejected"))
             if not valid_receipt_order:
                 context.user_data.pop("awaiting_order_receipt", None)
                 context.user_data.pop("order_receipt_group_id", None)
                 await message.reply_text("⛔ الطلب غير مستلم أو تمت معالجته؛ لا يمكن إرفاق وصل له."); return
-        elif not is_admin(user.id):
-            context.user_data.pop("awaiting_order_receipt", None); return
+        key = f"shipping_receipts:{receipt_order_id}"
+        ids = context.user_data.setdefault(key, [])
+        fid = message.photo[-1].file_id
+        if fid not in ids:
+            ids.append(fid)
+        await asyncio.sleep(1.3)
+        current_album = context.user_data.get(key, [])
+        if not current_album or current_album[-1] != fid:
+            return
+        receipt_ids = list(context.user_data.get(key, []))[:10]
+        context.user_data[f"order_receipt_photos:{receipt_order_id}"] = receipt_ids
+        context.user_data[f"order_receipt_photo:{receipt_order_id}"] = receipt_ids[0]
+        with db() as conn:
+            conn.execute("UPDATE orders SET shipping_receipt_file_id=?, shipping_receipt_file_ids=?, shipping_receipt_by=?, shipping_receipt_at=? WHERE id=?",
+                         (receipt_ids[0], json.dumps(receipt_ids), user.id, now_text(), receipt_order_id))
         context.user_data.pop("awaiting_order_receipt", None)
         context.user_data.pop("order_receipt_group_id", None)
-        context.user_data[f"order_receipt_photo:{receipt_order_id}"] = message.photo[-1].file_id
-        if not source_group:
-            with db() as conn:
-                conn.execute("UPDATE orders SET shipping_receipt_file_id=?, shipping_receipt_by=?, shipping_receipt_at=? WHERE id=?",
-                             (message.photo[-1].file_id, user.id, now_text(), receipt_order_id))
         await message.reply_text(
-            f"✅ تم حفظ صورة الوصل للطلب #{receipt_order_id}. اختر إتمام الطلب بالصورة:",
+            f"✅ تم حفظ {len(receipt_ids)} صورة لوصل الطلب #{receipt_order_id}. اختر إتمام الطلب بالصورة:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ إتمام وإرسال الوصل", callback_data=f"order_finish_with_receipt:{receipt_order_id}")], [InlineKeyboardButton("❌ إلغاء الخطوة", callback_data=f"order_finish_back:{receipt_order_id}")]])
         )
         return
@@ -3119,7 +3161,17 @@ async def photo_handler(update, context):
         await message.reply_text(store_closed_notice(), reply_markup=main_keyboard(user.id))
         return
 
-    # الحصول على صورة الوصل
+    # Collect all photos sent together as a Telegram album before creating the order.
+    receipt_key = "pending_order_receipt_photos"
+    receipt_ids = context.user_data.setdefault(receipt_key, [])
+    incoming_file_id = message.photo[-1].file_id
+    if incoming_file_id not in receipt_ids:
+        receipt_ids.append(incoming_file_id)
+    await asyncio.sleep(1.3)
+    current_receipts = context.user_data.get(receipt_key, [])
+    if not current_receipts or current_receipts[-1] != incoming_file_id:
+        return
+    receipt_ids = list(context.user_data.get(receipt_key, []))[:10]
     photo = message.photo[-1]
 
     # إنشاء الطلب بعد استلام صورة الوصل
@@ -3128,9 +3180,9 @@ async def photo_handler(update, context):
             """
             INSERT INTO orders (
                 user_id, game_id, offer_id, player_id,
-                payment_method, price, currency, status, created_at, points_used, platform
+                payment_method, price, currency, status, created_at, points_used, platform, payment_receipt_file_ids
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user.id,
@@ -3144,6 +3196,7 @@ async def photo_handler(update, context):
                 now_text(),
                 int(draft.get("points_used", 0)),
                 draft.get("platform", ""),
+                json.dumps(receipt_ids),
             ),
         )
         order_id = cursor.lastrowid
@@ -3177,12 +3230,13 @@ async def photo_handler(update, context):
     ])
 
     # Send the order to its configured product group (or admin fallback).
-    await dispatch_order_to_group(context, order_id, user, draft, player_id, draft["method"], draft["price"], int(draft.get("points_used", 0)), photo=photo)
+    await dispatch_order_to_group(context, order_id, user, draft, player_id, draft["method"], draft["price"], int(draft.get("points_used", 0)), photo=photo, photo_ids=receipt_ids)
 
     # إنهاء حالة الطلب المؤقتة
     context.user_data.pop("order_draft", None)
     context.user_data.pop("pending_player_id", None)
     context.user_data.pop("awaiting_payment_receipt", None)
+    context.user_data.pop("pending_order_receipt_photos", None)
     context.user_data.pop("use_points_for_order", None)
     if draft.get("cart_mode"):
         context.user_data.pop("cart", None)
@@ -3192,7 +3246,7 @@ async def photo_handler(update, context):
     if task and not task.done(): task.cancel()
 
     await message.reply_text(
-        "✅ تم استلام صورة وصل الدفع وتسجيل طلبك!\n\n"
+        f"✅ تم استلام {len(receipt_ids)} صورة لوصل الدفع وتسجيل طلبك!\n\n"
         f"🧾 رقم الطلب: #{order_id}\n"
         f"🎮 الخدمة: {draft['game_name']}\n"
         f"📦 العرض: {draft['offer_name']}\n"
@@ -4207,12 +4261,12 @@ async def callback_handler(update, context):
                 await query.answer("هذا الإجراء خاص بمالك المتجر.", show_alert=True); return
         elif query.message.chat.type in ("group", "supergroup"):
             with db() as conn:
-                claimed = conn.execute("SELECT claimed_by,status,shipping_receipt_file_id FROM orders WHERE id=?", (finish_id,)).fetchone()
+                claimed = conn.execute("SELECT claimed_by,status,shipping_receipt_file_id,shipping_receipt_file_ids FROM orders WHERE id=?", (finish_id,)).fetchone()
             if not claimed or not int(claimed["claimed_by"] or 0) or claimed["status"] in ("completed", "rejected"):
                 await query.answer("الطلب غير مستلم أو تمت معالجته.", show_alert=True); return
             if data.startswith("order_finish_now:") and int(claimed["claimed_by"] or 0) != user_id:
                 await query.answer("إتمام الطلب بدون وصل متاح فقط للعضو الذي استلمه.", show_alert=True); return
-            if data.startswith("order_finish_with_receipt:") and not (claimed["shipping_receipt_file_id"] or context.user_data.get(f"order_receipt_photo:{finish_id}")):
+            if data.startswith("order_finish_with_receipt:") and not (claimed["shipping_receipt_file_id"] or claimed["shipping_receipt_file_ids"] not in (None, "", "[]") or context.user_data.get(f"order_receipt_photo:{finish_id}") or context.user_data.get(f"order_receipt_photos:{finish_id}")):
                 await query.answer("أرسل صورة الوصل أولاً من زر إرسال وصل الشحن.", show_alert=True); return
         else:
             await query.answer("هذا الإجراء غير متاح هنا.", show_alert=True); return
@@ -4659,6 +4713,30 @@ async def callback_handler(update, context):
             await query.answer("⛔ غير مسموح لك.", show_alert=True)
             return
 
+    if data.startswith("offer_price_usd:"):
+        if not is_admin(user_id):
+            return
+        try:
+            _, offer_id_text, column = data.split(":", 2)
+            offer_id = int(offer_id_text)
+        except (ValueError, TypeError):
+            await query.answer("اختيار غير صالح.", show_alert=True)
+            return
+        if column not in ("price_usd", "price_usd_trader"):
+            await query.answer("اختيار غير صالح.", show_alert=True)
+            return
+        with db() as conn:
+            offer = conn.execute(f"SELECT name, {column} AS current_price FROM offers WHERE id=?", (offer_id,)).fetchone()
+        if not offer:
+            await query.answer("العرض غير موجود.", show_alert=True)
+            return
+        context.user_data["admin_step"] = "edit_single_offer_usd_price"
+        context.user_data["pending_offer_id"] = offer_id
+        context.user_data["pending_offer_usd_column"] = column
+        who = "الزبون" if column == "price_usd" else "التاجر"
+        await query.message.reply_text(f"💵 سعر الدولار للـ{who} في {offer['name']} حاليًا: {offer['current_price']} USD\nأرسل السعر الجديد بالدولار (0 لإلغاء السعر بالدولار).\nعند عرض السعر بالدينار يُضرب في سعر بيع الدولار.")
+        return
+
     if data.startswith("offer_price_one:"):
         parts = data.split(":")
         if len(parts) != 3 or parts[2] not in ("price_baridi", "price_baridi_trader"):
@@ -5032,7 +5110,7 @@ async def callback_handler(update, context):
         context.user_data["deposit_currency"] = "USD"
         context.user_data["awaiting_deposit_receipt"] = True
         details = method_row["instructions"] or "تواصل مع الإدارة لمعرفة تعليمات الدفع."
-        await query.edit_message_text(f"💵 تعبئة محفظة الدولار\nالمبلغ: {amount_usd:.2f} USD\nطريقة الدفع: {method_row['name']}\n\n{details}\n\n📸 بعد الدفع، أرسل صورة وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
+        await query.edit_message_text(f"💵 تعبئة محفظة الدولار\nالمبلغ: {amount_usd:.2f} USD\nطريقة الدفع: {method_row['name']}\n\n{details}\n\n📸 بعد الدفع، أرسل صورة أو فيديو وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
         return
 
     if data.startswith("deposit_method:"):
@@ -5067,7 +5145,7 @@ async def callback_handler(update, context):
         context.user_data["deposit_paid_amount"] = amount
         details_key = "ccp_details" if method == "ccp" else "baridi_details"
         details = get_setting(details_key, get_setting("baridi_details", "تواصل مع الإدارة لمعرفة معلومات الدفع."))
-        await query.edit_message_text(f"💳 تعبئة محفظة الدينار\nالمبلغ الذي سيضاف للمحفظة: {amount} DA\nالمبلغ المطلوب دفعه عبر {method_names[method]}: {amount} DA\n\n{details}\n\n📸 بعد الدفع، أرسل صورة وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
+        await query.edit_message_text(f"💳 تعبئة محفظة الدينار\nالمبلغ الذي سيضاف للمحفظة: {amount} DA\nالمبلغ المطلوب دفعه عبر {method_names[method]}: {amount} DA\n\n{details}\n\n📸 بعد الدفع، أرسل صورة أو فيديو وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
         return
 
     if data.startswith("deposit_flexy_mode:"):
@@ -5088,7 +5166,7 @@ async def callback_handler(update, context):
         await query.edit_message_text(
             f"🟠 تعبئة محفظة Flexy\nالمبلغ المدفوع: {paid_amount} DA\n"
             f"المبلغ الذي سيضاف إلى محفظتك بعد الموافقة: {credit_amount} DA\n\n"
-            f"{details}\n\n📸 أرسل صورة وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة."
+            f"{details}\n\n📸 أرسل صورة أو فيديو وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة."
         )
         return
 
@@ -5889,6 +5967,8 @@ async def callback_handler(update, context):
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
             [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi")],
             [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
+            [InlineKeyboardButton("💵 سعر الدولار للزبون", callback_data=f"offer_price_usd:{offer_id}:price_usd")],
+            [InlineKeyboardButton("💵 سعر الدولار للتاجر", callback_data=f"offer_price_usd:{offer_id}:price_usd_trader")],
             [InlineKeyboardButton("✏️ تعديل سعري الزبون والتاجر معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         if custom_methods:
@@ -5936,6 +6016,8 @@ async def callback_handler(update, context):
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
             [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi")],
             [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
+            [InlineKeyboardButton("💵 سعر الدولار للزبون", callback_data=f"offer_price_usd:{offer_id}:price_usd")],
+            [InlineKeyboardButton("💵 سعر الدولار للتاجر", callback_data=f"offer_price_usd:{offer_id}:price_usd_trader")],
             [InlineKeyboardButton("✏️ تعديل سعري الزبون والتاجر معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         for cm in custom_methods:
@@ -5974,6 +6056,8 @@ async def callback_handler(update, context):
             [InlineKeyboardButton(f"{'✅' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else '🚫'} Flexy — {'إيقاف' if get_setting(f'offer_payment_flexy_{offer_id}', '1') == '1' else 'تفعيل'} لهذا العرض", callback_data=f"offer_base_pay_toggle:{offer_id}:flexy")],
             [InlineKeyboardButton("👤 الزبون — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi")],
             [InlineKeyboardButton("🏪 التاجر — BaridiMob/CCP", callback_data=f"offer_price_one:{offer_id}:price_baridi_trader")],
+            [InlineKeyboardButton("💵 سعر الدولار للزبون", callback_data=f"offer_price_usd:{offer_id}:price_usd")],
+            [InlineKeyboardButton("💵 سعر الدولار للتاجر", callback_data=f"offer_price_usd:{offer_id}:price_usd_trader")],
             [InlineKeyboardButton("✏️ تعديل سعري الزبون والتاجر معًا", callback_data=f"offer_price_all:{offer_id}")],
         ]
         for cm in custom_methods:
@@ -6142,7 +6226,7 @@ async def callback_handler(update, context):
                 """SELECT o.user_id, o.game_id, o.offer_id, o.player_id, o.payment_method,
                           o.status, o.points_awarded, o.points_used, o.wallet_charged,
                           o.wallet_refunded, o.credit_charged, o.credit_refunded, o.price,
-                          o.currency, o.shipping_receipt_file_id, o.completion_message,
+                          o.currency, o.shipping_receipt_file_id, o.shipping_receipt_file_ids, o.completion_message,
                           g.name AS game_name, f.name AS offer_name
                    FROM orders o
                    LEFT JOIN games g ON g.id = o.game_id
@@ -6249,17 +6333,25 @@ async def callback_handler(update, context):
                     cta_markup = InlineKeyboardMarkup([
                         [InlineKeyboardButton("🚀 اشحن وانطلق!", url=f"https://t.me/{bot_username}")]
                     ])
-                receipt_file_id = context.user_data.pop(f"order_receipt_photo:{order_id}", None) or order["shipping_receipt_file_id"]
-                if receipt_file_id:
-                    await context.bot.send_photo(
-                        chat_id=customer_id, photo=receipt_file_id, caption=customer_notice,
-                        reply_markup=cta_markup or main_keyboard(customer_id),
-                    )
+                receipt_file_ids = context.user_data.pop(f"order_receipt_photos:{order_id}", None)
+                if not receipt_file_ids:
+                    try:
+                        receipt_file_ids = json.loads(order["shipping_receipt_file_ids"] or "[]")
+                    except Exception:
+                        receipt_file_ids = []
+                if not receipt_file_ids:
+                    receipt_file_id = context.user_data.pop(f"order_receipt_photo:{order_id}", None) or order["shipping_receipt_file_id"]
+                    receipt_file_ids = [receipt_file_id] if receipt_file_id else []
+                if len(receipt_file_ids) > 1:
+                    media = [InputMediaPhoto(media=fid, caption=customer_notice if i == 0 else None) for i, fid in enumerate(receipt_file_ids[:10])]
+                    await context.bot.send_media_group(chat_id=customer_id, media=media)
+                    await context.bot.send_message(chat_id=customer_id, text="🚀 شكراً لثقتك في SERADJ STORE!", reply_markup=cta_markup or main_keyboard(customer_id))
+                elif receipt_file_ids:
+                    await context.bot.send_photo(chat_id=customer_id, photo=receipt_file_ids[0], caption=customer_notice,
+                                                 reply_markup=cta_markup or main_keyboard(customer_id))
                 else:
-                    await context.bot.send_message(
-                        chat_id=customer_id, text=customer_notice,
-                        reply_markup=cta_markup or main_keyboard(customer_id),
-                    )
+                    await context.bot.send_message(chat_id=customer_id, text=customer_notice,
+                                                   reply_markup=cta_markup or main_keyboard(customer_id))
             else:
                 await context.bot.send_message(
                     chat_id=customer_id,
@@ -6673,10 +6765,19 @@ async def callback_handler(update, context):
                         MessageEntity.de_json({**item, "offset": int(item.get("offset", 0)) + prefix_utf16_len}, context.bot)
                         for item in raw_entities
                     ]
-                await context.bot.send_message(
-                    chat_id=recipient, text=prefix + broadcast_text,
-                    reply_markup=keyboard, **kwargs
-                )
+                broadcast_photo = context.user_data.get("pending_broadcast_photo_file_id")
+                if broadcast_photo:
+                    caption_text = prefix + broadcast_text
+                    if len(caption_text) <= 1024:
+                        await context.bot.send_photo(chat_id=recipient, photo=broadcast_photo,
+                            caption=caption_text, reply_markup=keyboard)
+                    else:
+                        await context.bot.send_photo(chat_id=recipient, photo=broadcast_photo)
+                        await context.bot.send_message(chat_id=recipient, text=caption_text,
+                            reply_markup=keyboard, **kwargs)
+                else:
+                    await context.bot.send_message(chat_id=recipient, text=prefix + broadcast_text,
+                        reply_markup=keyboard, **kwargs)
                 sent += 1
             except Exception as exc:
                 failed += 1
@@ -6696,32 +6797,29 @@ async def callback_handler(update, context):
             try:
                 if not channel_id:
                     raise ValueError("لم يتم ضبط قناة النشر")
-                source_chat_id = context.user_data.get("pending_broadcast_source_chat_id")
-                source_message_id = context.user_data.get("pending_broadcast_source_message_id")
-                if source_chat_id and source_message_id:
-                    # Copy the original Telegram message instead of rebuilding it
-                    # from text/entities; this preserves custom (premium) emojis.
-                    await context.bot.copy_message(
-                        chat_id=channel_id,
-                        from_chat_id=source_chat_id,
-                        message_id=source_message_id,
-                        reply_markup=keyboard,
-                    )
+                broadcast_photo = context.user_data.get("pending_broadcast_photo_file_id")
+                if broadcast_photo:
+                    if len(broadcast_text) <= 1024:
+                        await context.bot.send_photo(chat_id=channel_id, photo=broadcast_photo,
+                            caption=broadcast_text, reply_markup=keyboard)
+                    else:
+                        await context.bot.send_photo(chat_id=channel_id, photo=broadcast_photo)
+                        await context.bot.send_message(chat_id=channel_id, text=broadcast_text, reply_markup=keyboard)
                 else:
-                    kwargs = {"entities": [
-                        MessageEntity.de_json(item, context.bot)
-                        for item in raw_entities
-                    ]} if raw_entities else {}
-                    await context.bot.send_message(
-                        chat_id=channel_id, text=broadcast_text,
-                        reply_markup=keyboard, **kwargs
-                    )
+                    source_chat_id = context.user_data.get("pending_broadcast_source_chat_id")
+                    source_message_id = context.user_data.get("pending_broadcast_source_message_id")
+                    if source_chat_id and source_message_id:
+                        await context.bot.copy_message(chat_id=channel_id, from_chat_id=source_chat_id,
+                            message_id=source_message_id, reply_markup=keyboard)
+                    else:
+                        kwargs = {"entities": [MessageEntity.de_json(item, context.bot) for item in raw_entities]} if raw_entities else {}
+                        await context.bot.send_message(chat_id=channel_id, text=broadcast_text, reply_markup=keyboard, **kwargs)
                 sent += 1
             except Exception as exc:
                 failed += 1
                 failure_details.append(("القناة", f"{type(exc).__name__}: {str(exc)[:180]}"))
                 logger.exception("Channel broadcast failed")
-        for key in ("pending_broadcast_text", "pending_broadcast_entities", "pending_broadcast_buttons", "pending_broadcast_target", "pending_broadcast_source_chat_id", "pending_broadcast_source_message_id"):
+        for key in ("pending_broadcast_text", "pending_broadcast_entities", "pending_broadcast_buttons", "pending_broadcast_target", "pending_broadcast_source_chat_id", "pending_broadcast_source_message_id", "pending_broadcast_photo_file_id"):
             context.user_data.pop(key, None)
         context.user_data.pop("admin_step", None)
         summary = f"✅ انتهى إرسال الإشعار.\nوصل إلى: {sent}\nتعذّر الإرسال إلى: {failed}"
@@ -7552,7 +7650,7 @@ async def text_handler(update, context):
             "✅ تم استلام بيانات الحساب.\n\n"
             f"🎮 اللعبة: {draft['game_name']}\n📦 العرض: {draft['offer_name']}\n"
             f"💳 طريقة الدفع: {draft['method']}\n💰 المبلغ: {draft['price']} {draft.get('currency', 'DA')}\n\n"
-            "📸 الآن أرسل صورة وصل الدفع لإتمام الطلب.\nلإلغاء العملية أرسل /cancel"
+            "📸 الآن أرسل صورة وصل الدفع لإتمام الطلب. تقدر ترسل عدة صور مع بعض كألبوم.\nلإلغاء العملية أرسل /cancel"
         )
         return
 
@@ -8192,6 +8290,29 @@ async def text_handler(update, context):
             )
             return
 
+        if step == "edit_single_offer_usd_price":
+            try:
+                new_price = Decimal(text.strip().replace(",", "."))
+                if not new_price.is_finite() or new_price < 0 or new_price > Decimal("10000000"):
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError):
+                await message.reply_text("❌ أرسل سعرًا صحيحًا بالدولار (0 أو أكثر).")
+                return
+            offer_id = context.user_data.get("pending_offer_id")
+            column = context.user_data.get("pending_offer_usd_column")
+            if column not in ("price_usd", "price_usd_trader") or not offer_id:
+                context.user_data.pop("admin_step", None)
+                await message.reply_text("❌ انتهت جلسة تعديل السعر. أعد فتح العرض.")
+                return
+            with db() as conn:
+                result = conn.execute(f"UPDATE offers SET {column}=? WHERE id=?", (float(new_price), int(offer_id)))
+                offer_name = conn.execute("SELECT name FROM offers WHERE id=?", (int(offer_id),)).fetchone()
+            context.user_data.pop("admin_step", None)
+            context.user_data.pop("pending_offer_id", None)
+            context.user_data.pop("pending_offer_usd_column", None)
+            await message.reply_text(f"✅ تم حفظ سعر الدولار {new_price} USD للعرض {offer_name['name'] if offer_name else ''}. سعر الدينار المقابل يُحسب تلقائيًا بسعر بيع الدولار.", reply_markup=admin_keyboard())
+            return
+
         # تعديل سعر واحد فقط لعرض مع الحفاظ على بقية الأسعار
         if step == "edit_single_offer_price":
             try:
@@ -8501,21 +8622,23 @@ async def text_handler(update, context):
             # preserves premium/custom emoji entities exactly in channel posts.
             context.user_data["pending_broadcast_source_chat_id"] = message.chat_id
             context.user_data["pending_broadcast_source_message_id"] = message.message_id
+            context.user_data["admin_step"] = "notify_broadcast_photo"
+            await message.reply_text(
+                "✅ حفظت نص الإشعار.\n\nابعث صورة لإرفاقها بالإشعار، أو اكتب بدون إذا تحب إشعار نصّي فقط.\nللإلغاء ابعث /cancel."
+            )
+            return
+
+        if step == "notify_broadcast_photo":
+            if text.strip().lower() not in ("بدون", "لا", "no", "none"):
+                await message.reply_text("ابعث صورة أو اكتب بدون للمتابعة.")
+                return
+            context.user_data.pop("pending_broadcast_photo_file_id", None)
             context.user_data["admin_step"] = "notify_broadcast_buttons"
             await message.reply_text(
-                "✅ حفظت نص الإشعار.\n\n"
-                "تقدر تبعث إيموجيات Premium داخل النص مباشرة إذا كانت ظاهرة عندك في تيليغرام.\n\n"
-                "إذا حبيت تزيد أزرار، ابعث كل زر في سطر بهذا الشكل:\n"
+                "تمام. إذا تحب تزيد أزرار، ابعث كل زر في سطر بهذا الشكل:\n"
                 "رابط | اسم الزر | https://example.com\n"
-                "قسم | اسم الزر | store_category:game (قسم الألعاب)\n"
-                "قسم | اسم الزر | store_category:app (قسم التطبيقات)\n"
-                "قسم | اسم الزر | game:ID (لعبة محددة)\n"
-                "قسم | اسم الزر | offer:GAME_ID:OFFER_ID (عرض محدد)\n"
-                "قسم | اسم الزر | recharge_select:GAME_ID:METHOD_ID:none (طريقة شحن/سيرفر محدد)\n"
-                "قسم | اسم الزر | freefire أو store أو back_main\n\n"
-                "تقدر تستعمل callback_data لأي زر تنقل موجود في البوت؛ الضغط من القناة يفتح الوجهة في الخاص وما يبدلش منشور القناة. الحد الأقصى 8 أزرار.\n"
-                "إذا ما تحتاجش أزرار ابعث: بدون\n"
-                "للإلغاء ابعث /cancel."
+                "قسم | اسم الزر | freefire أو store\n"
+                "إذا ما تحتاجش أزرار ابعث: بدون"
             )
             return
 
@@ -9109,17 +9232,26 @@ async def text_handler(update, context):
             return
 
         if text == "💳 إعدادات الدفع":
-            await message.reply_text(
-                "💳 إعدادات الدفع:",
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            "فتح إعدادات الدفع",
-                            callback_data="adm_payment",
-                        )
-                    ]
-                ]),
+            # Show the payment controls immediately from the reply-keyboard menu.
+            # This avoids an extra intermediate button that could confuse admins.
+            sell_rate = get_setting("usd_sell_rate", get_setting("usd_exchange_rate", "254"))
+            buy_rate = get_setting("usd_buy_rate", get_setting("usd_exchange_rate", "254"))
+            usd_on = get_setting("usd_payments_enabled", "0") == "1"
+            payment_text = (
+                "💳 <b>إعدادات الدفع</b>\n\n"
+                f"💵 سعر بيع الدولار: 1 USD = {html.escape(str(sell_rate))} DA\n"
+                "طريقة الحساب: سعر العرض بالدولار × سعر البيع = السعر بالدينار.\n\n"
+                f"💱 سعر شراء الدولار: 1 USD = {html.escape(str(buy_rate))} DA\n"
+                "طريقة الحساب: السعر بالدينار ÷ سعر الشراء = السعر بالدولار.\n\n"
+                f"🌐 طرق الدفع بالدولار: {'مفعّلة ✅' if usd_on else 'مخفية ❌'}"
             )
+            payment_buttons = [
+                [InlineKeyboardButton("💵 تعديل سعر بيع الدولار (يضرب في)", callback_data="pay_usd_sell_rate")],
+                [InlineKeyboardButton("💱 تعديل سعر شراء الدولار (يقسم على)", callback_data="pay_usd_buy_rate")],
+                [InlineKeyboardButton(f"{'🙈 إخفاء كل طرق الدولار' if usd_on else '👁️ إظهار كل طرق الدولار'}", callback_data="usd_pay_toggle_all")],
+                [InlineKeyboardButton("فتح باقي إعدادات الدفع", callback_data="adm_payment")],
+            ]
+            await message.reply_text(payment_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(payment_buttons))
             return
         if text in ("📏 حدود كمية TikTok", "🎵 سعر عملة TikTok"):
             await message.reply_text(
@@ -9223,7 +9355,7 @@ async def text_handler(update, context):
 
         if text == "📨 إرسال إشعار":
             context.user_data["admin_step"] = "notify_broadcast_message"
-            await message.reply_text("📨 ابعث نص الإشعار الذي تريد إرساله لجميع المشتركين.\n\nابعث /cancel للإلغاء.")
+            await message.reply_text("📨 ابعث نص الإشعار الذي تريد إرساله لجميع المشتركين. بعده تقدر ترفق صورة.\n\nابعث /cancel للإلغاء.")
             return
 
         if text == "🔙 القائمة الرئيسية":
@@ -9290,6 +9422,7 @@ def main():
     )
     app = (
         Application.builder()
+        .concurrent_updates(16)
         .token(TOKEN)
         .request(telegram_request)
         .get_updates_request(telegram_updates_request)
