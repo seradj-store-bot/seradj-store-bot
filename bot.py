@@ -942,17 +942,24 @@ def is_admin(user_id):
 
 
 def main_keyboard(user_id):
-    if is_admin(user_id):
-        keyboard = [row[:] for row in ADMIN_MAIN_MENU]
-    else:
-        keyboard = [row[:] for row in MAIN_MENU]
-    if not points_enabled(user_id):
-        keyboard = [row for row in keyboard if not any("نقاطي" in item or "الإحالة" in item or "قسائم" in item for item in row)]
-    # Traders should not see the account-upgrade button.
-    if is_trader(user_id):
-        keyboard = [[item for item in row if "ترقية الحساب" not in item] for row in keyboard]
-        keyboard = [row for row in keyboard if row]
+    # Keep only the three permanent customer controls in the reply keyboard.
+    # All shop navigation is presented as inline buttons in the current message.
+    keyboard = [["/start"], ["📞 اتصل بالإدارة"], ["🔐 السياسات والخصوصية"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
+
+
+def customer_inline_menu(user_id):
+    rows = [
+        [InlineKeyboardButton("👤 حسابي", callback_data="home:account"), InlineKeyboardButton("🛍️ المتجر", callback_data="home:store")],
+        [InlineKeyboardButton("✨ مزايا متجرنا", callback_data="home:benefits"), InlineKeyboardButton("📦 طلباتي", callback_data="home:orders")],
+        [InlineKeyboardButton("💰 تعبئة الرصيد", callback_data="home:deposit"), InlineKeyboardButton("🎯 الإحالة والنقاط", callback_data="home:referral")],
+        [InlineKeyboardButton("➕ طلب لعبة غير موجودة", callback_data="home:request")],
+    ]
+    if not is_trader(user_id):
+        rows.append([InlineKeyboardButton("🏪 ترقية الحساب إلى تاجر", callback_data="home:upgrade")])
+    if is_admin(user_id):
+        rows.append([InlineKeyboardButton("🛠️ لوحة التحكم", callback_data="home:admin")])
+    return InlineKeyboardMarkup(rows)
 
 async def ids_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show game, recharge-method/server, and offer IDs to the admin."""
@@ -2092,8 +2099,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         welcome_text,
-        reply_markup=main_keyboard(user.id),
+        reply_markup=customer_inline_menu(user.id),
     )
+    # Keep the compact permanent keyboard visible beneath the chat.
+    await update.message.reply_text("القائمة الرئيسية", reply_markup=main_keyboard(user.id))
 
 
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2205,7 +2214,18 @@ async def show_store(message, user_id, category=None, context=None, query=None):
         icon = g['emoji'] or "🎮"
         safe_name = str(g["name"] or "")
         lines.append(f"{icon} {safe_name}")
-    await message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
+    # Keep store browsing inside the same Telegram message. Callback navigation
+    # must edit the current message instead of creating another window.
+    markup = InlineKeyboardMarkup(buttons)
+    if query is not None:
+        try:
+            await query.edit_message_text("\n".join(lines), reply_markup=markup)
+        except Exception as exc:
+            # Telegram raises MessageNotModified when the content is identical.
+            if "Message is not modified" not in str(exc):
+                raise
+    else:
+        await message.reply_text("\n".join(lines), reply_markup=markup)
 
 
 # ====== حساب الزبون ======
@@ -3930,6 +3950,83 @@ async def callback_handler(update, context):
     # Default for ordinary section/navigation callbacks; set True only when
     # a group/admin terminal order action is normalized to status:... below.
     group_order_terminal_action = False
+
+    # Main customer navigation: edit the current menu message instead of
+    # sending a fresh navigation window on every tap (for customers/traders/admin).
+    if data.startswith("home:"):
+        action = data.split(":", 1)[1]
+        await query.answer()
+        if action == "admin":
+            if not is_admin(user_id):
+                await query.answer("هذا القسم خاص بالإدارة.", show_alert=True)
+                return
+            await query.edit_message_text("👑 لوحة تحكم SERADJ STORE")
+            await query.message.reply_text("اختر من لوحة الإدارة:", reply_markup=admin_keyboard())
+            return
+        if action == "store":
+            await query.edit_message_text("🛍️ اختار القسم لي حاب تتصفح:", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎮 الألعاب", callback_data="store_category:game")],
+                [InlineKeyboardButton("📱 التطبيقات", callback_data="store_category:app")],
+                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")],
+            ]))
+            return
+        if action == "main":
+            await query.edit_message_text(get_setting("welcome_message", f"🎮 مرحباً بك في {STORE_NAME}!\n\n🛍️ شحن الألعاب والخدمات الرقمية\n💳 الدفع عبر BaridiMob / CCP أو Flexy"), reply_markup=customer_inline_menu(user_id))
+            return
+        if action == "benefits":
+            await query.edit_message_text(STORE_BENEFITS_TEXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]]))
+            return
+        if action == "account":
+            with db() as conn:
+                u = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+                total = conn.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (user_id,)).fetchone()[0]
+            if not u:
+                body = "أرسل /start لتسجيل حسابك."
+            else:
+                body = ("👤 حسابك في SERADJ STORE\n\n"
+                    f"🆔 ID: {user_id}\n👤 الاسم: {u['full_name']}\n"
+                    f"🏷️ نوع الحساب: {'تاجر معتمد' if u['account_type']=='trader' else 'زبون عادي'}\n"
+                    f"📦 عدد الطلبات: {total}\n💰 محفظة الدينار: {int(u['balance'] or 0)} DA\n"
+                    f"💵 محفظة الدولار: {float(u['balance_usd'] or 0):.2f} USD\n"
+                    f"🎁 نقاط DA: {int(u['points_da'] or 0)} | نقاط USD: {float(u['points_usd'] or 0):.3f}")
+            await query.edit_message_text(body, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 طلباتي", callback_data="account_orders"), InlineKeyboardButton("💰 تعبئة المحفظة", callback_data="account_deposit")],
+                [InlineKeyboardButton("📜 سجل المحفظة", callback_data="wallet_history")],
+                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")],
+            ]))
+            return
+        if action == "request":
+            context.user_data["awaiting_game_request"] = True
+            await query.edit_message_text("🎮 اكتب اسم اللعبة أو التطبيق الذي تريد إضافته، ويمكنك ذكر تفاصيل النسخة أو طريقة الشحن. أرسل /cancel للإلغاء.")
+            return
+        if action == "referral":
+            if not points_enabled(user_id):
+                await query.edit_message_text("🎯 نظام الإحالة غير متاح حالياً.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]])); return
+            bot_username = get_setting("bot_username", "").strip()
+            if not bot_username:
+                try:
+                    me = await context.bot.get_me(); bot_username = me.username or ""
+                    if bot_username: set_setting("bot_username", bot_username)
+                except Exception: bot_username = ""
+            row = get_user_row(user_id)
+            da = int(row["points_da"] or 0) if row else 0
+            usd = float(row["points_usd"] or 0) if row else 0.0
+            link = f"https://t.me/{bot_username}?start=ref_{user_id}" if bot_username else "تعذر إنشاء الرابط الآن."
+            await query.edit_message_text(f"🎯 نظام الإحالة والمكافآت\n\nرابطك: {link}\n\nنقاط DA: {da:,} | نقاط USD: {usd:.3f}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]]))
+            return
+        if action == "orders":
+            await query.edit_message_text("📦 لعرض طلباتك اضغط الزر أدناه:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض طلباتي", callback_data="account_orders")], [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]]))
+            return
+        if action == "deposit":
+            await query.edit_message_text("💰 اختر المحفظة التي تريد تعبئتها:", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🇩🇿 محفظة الدينار DA", callback_data="deposit_currency:DA")],
+                [InlineKeyboardButton("💵 محفظة الدولار USD", callback_data="deposit_currency:USD")],
+                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")],
+            ]))
+            return
+        if action == "upgrade":
+            await query.edit_message_text("🏪 لطلب ترقية حسابك إلى تاجر، تواصل مع الإدارة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📞 اتصل بالإدارة", callback_data="contact_unset")], [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]]))
+            return
 
     # Paginated trader history navigation.
     if data == "history:noop":
