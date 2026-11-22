@@ -2157,9 +2157,13 @@ def game_button_label(game):
 
 # ====== عرض المتجر ======
 
-async def show_store(message, user_id, category=None):
+async def show_store(message, user_id, category=None, context=None, query=None):
     if category not in ("game", "app"):
-        await message.reply_text("اختر زر 🎮 الألعاب أو 📱 التطبيقات من القائمة الرئيسية.", reply_markup=main_keyboard(user_id))
+        text = "اختر زر 🎮 الألعاب أو 📱 التطبيقات من القائمة الرئيسية."
+        if query:
+            await query.edit_message_text(text, reply_markup=main_keyboard(user_id))
+        else:
+            await message.reply_text(text, reply_markup=main_keyboard(user_id))
         return
     with db() as conn:
         if category == "app":
@@ -2179,7 +2183,11 @@ async def show_store(message, user_id, category=None):
         else:
             games = conn.execute("SELECT * FROM games WHERE active=1 AND COALESCE(NULLIF(trim(category),''),'game')='game' ORDER BY id").fetchall()
     if not games:
-        await message.reply_text("😕 لا توجد خدمات في هذا القسم حالياً.", reply_markup=main_keyboard(user_id))
+        text = "😕 لا توجد خدمات في هذا القسم حالياً."
+        if query:
+            await query.edit_message_text(text, reply_markup=main_keyboard(user_id))
+        else:
+            await message.reply_text(text, reply_markup=main_keyboard(user_id))
         return
     buttons = []
     for g in games:
@@ -4502,12 +4510,7 @@ async def callback_handler(update, context):
         if category not in ("game", "app"):
             await query.answer("القسم غير معروف.", show_alert=True)
             return
-        # Remove the category chooser instead of leaving a permanent loading message.
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-        await show_store(query.message, user_id, category)
+        await show_store(query.message, user_id, category, context=context, query=query)
         await query.answer()
         return
 
@@ -8872,9 +8875,9 @@ async def text_handler(update, context):
         return
     # توافق مع الأزرار القديمة إذا كانت ما زالت ظاهرة في جلسة المستخدم
     if text == "🎮 الألعاب":
-        await show_store(message, user_id, "game"); return
+        await show_store(message, user_id, "game", context=context); return
     if text == "📱 التطبيقات":
-        await show_store(message, user_id, "app"); return
+        await show_store(message, user_id, "app", context=context); return
     if text in ("🎁 إشتري بنقاطي", "⭐ نقاطي"):
         await show_points_shop(message, user_id); return
     if text in ("🎯 الإحالة والنقاط", "🎯 الإحالة"):
@@ -9147,10 +9150,10 @@ async def text_handler(update, context):
             return
 
         if text == "📱 التطبيقات":
-            await show_store(message, user_id, "app")
+            await show_store(message, user_id, "app", context=context)
             return
         if text == "🎮 الألعاب":
-            await show_store(message, user_id, "game")
+            await show_store(message, user_id, "game", context=context)
             return
 
         if text == "✨ إدارة إيموجيات Premium":
