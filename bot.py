@@ -4256,7 +4256,22 @@ async def callback_handler(update, context):
             f"📌 الحالة: {status_names.get(review['status'], review['status'])}"
         )
         await query.message.reply_text(text_review)
-        await query.answer("تم عرض تفاصيل الطلب.")
+        # Notify the customer that the store has started reviewing the order.
+        try:
+            await context.bot.send_message(
+                chat_id=int(review["user_id"]),
+                text=(
+                    f"👀 طلبك قيد المراجعة الآن\n\n"
+                    f"🔢 رقم الطلب: REQ{review_id:06d}\n"
+                    f"🎮 اللعبة: {review['game_name'] or 'غير محددة'}\n"
+                    f"📦 العرض: {review['offer_name'] or 'غير محدد'}\n\n"
+                    "يقوم فريق SERADJ STORE بمراجعة طلبك، وسنرسل لك إشعاراً عند بدء التنفيذ أو إتمامه. ❤️"
+                ),
+                reply_markup=main_keyboard(int(review["user_id"])),
+            )
+        except Exception:
+            logger.exception("تعذر إرسال إشعار قيد المراجعة للزبون (order=%s)", review_id)
+        await query.answer("تم عرض التفاصيل وإرسال إشعار للزبون.")
         return
 
     if data.startswith("order_release:"):
@@ -4569,7 +4584,31 @@ async def callback_handler(update, context):
         ])
         try: await query.edit_message_reply_markup(reply_markup=keyboard)
         except Exception: pass
-        await query.answer("تم استلام الطلب باسمك!")
+        # The claim changes the order to processing; immediately notify its customer.
+        try:
+            with db() as conn:
+                customer_row = conn.execute(
+                    "SELECT user_id, game_id FROM orders WHERE id=?", (order_id,)
+                ).fetchone()
+                game_row = conn.execute(
+                    "SELECT name FROM games WHERE id=?", (customer_row["game_id"],)
+                ).fetchone() if customer_row else None
+            if customer_row:
+                await context.bot.send_message(
+                    chat_id=int(customer_row["user_id"]),
+                    text=(
+                        f"🔄 تم استلام طلبك وبدأ فريقنا العمل عليه!\n\n"
+                        f"🔢 رقم الطلب: REQ{order_id:06d}\n"
+                        f"🎮 اللعبة: {game_row['name'] if game_row else 'غير محددة'}\n"
+                        f"👨‍💻 المسؤول عن الطلب: {query.from_user.full_name}\n"
+                        "📌 الحالة: قيد التنفيذ\n\n"
+                        "سنرسل لك إشعاراً فور إتمام الطلب. ❤️"
+                    ),
+                    reply_markup=main_keyboard(int(customer_row["user_id"])),
+                )
+        except Exception:
+            logger.exception("تعذر إرسال إشعار استلام الطلب للزبون (order=%s)", order_id)
+        await query.answer("تم استلام الطلب وإشعار الزبون!")
         await query.message.reply_text(f"📥 الطلب #{order_id} استلمه: {query.from_user.full_name}")
         return
 
