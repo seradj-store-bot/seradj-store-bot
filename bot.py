@@ -1727,10 +1727,21 @@ def usd_buy_rate():
 
 
 def _offer_usd_source_price(offer, user_id):
-    """Return an explicitly configured USD price for this subscriber class, if any."""
+    """Return USD source price only when the matching DZD source price is unset.
+
+    DZD prices take precedence whenever configured. This prevents an old USD
+    override from silently replacing a newly entered customer/trader DZD price.
+    To make a USD-denominated offer, its matching DZD base price is set to zero
+    by the USD-price editor below.
+    """
     try:
-        key = "price_usd_trader" if is_trader(user_id) else "price_usd"
+        trader = is_trader(user_id)
+        key = "price_usd_trader" if trader else "price_usd"
+        da_key = "price_baridi_trader" if trader else "price_baridi"
+        da_value = Decimal(str(offer[da_key] or 0)) if da_key in offer.keys() else Decimal("0")
         value = Decimal(str(offer[key] or 0)) if key in offer.keys() else Decimal("0")
+        if da_value > 0:
+            return None
         return value if value.is_finite() and value > 0 else None
     except Exception:
         return None
@@ -8305,7 +8316,19 @@ async def text_handler(update, context):
                 await message.reply_text("❌ انتهت جلسة تعديل السعر. أعد فتح العرض.")
                 return
             with db() as conn:
-                result = conn.execute(f"UPDATE offers SET {column}=? WHERE id=?", (float(new_price), int(offer_id)))
+                # A USD price is a separate source currency: clear the matching
+                # DZD source price so the USD amount can be used for conversion.
+                if column == "price_usd":
+                    conn.execute(
+                        "UPDATE offers SET price_usd=?, price_baridi=0, price_flexy=0 WHERE id=?",
+                        (float(new_price), int(offer_id)),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE offers SET price_usd_trader=?, price_baridi_trader=0, price_flexy_trader=0 WHERE id=?",
+                        (float(new_price), int(offer_id)),
+                    )
+                result = conn.execute("SELECT changes() AS changed").fetchone()
                 offer_name = conn.execute("SELECT name FROM offers WHERE id=?", (int(offer_id),)).fetchone()
             context.user_data.pop("admin_step", None)
             context.user_data.pop("pending_offer_id", None)
