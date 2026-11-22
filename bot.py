@@ -8330,7 +8330,12 @@ async def text_handler(update, context):
                 return
             flexy_column = "price_flexy" if column == "price_baridi" else "price_flexy_trader"
             with db() as conn:
-                result = conn.execute(f"UPDATE offers SET {column}=?, {flexy_column}=? WHERE id=?", (new_price, int(round(new_price * 1.18)), offer_id))
+                usd_column = "price_usd" if column == "price_baridi" else "price_usd_trader"
+                # A newly entered DZD price becomes the active source price; clear any old USD override.
+                result = conn.execute(
+                    f"UPDATE offers SET {column}=?, {flexy_column}=?, {usd_column}=0 WHERE id=?",
+                    (new_price, int(round(new_price * 1.18)), offer_id),
+                )
                 offer_name_row = conn.execute("SELECT name FROM offers WHERE id=?", (offer_id,)).fetchone()
             context.user_data.pop("admin_step", None)
             context.user_data.pop("pending_offer_id", None)
@@ -8374,7 +8379,8 @@ async def text_handler(update, context):
                     """
                     UPDATE offers
                     SET price_baridi = ?, price_flexy = ?,
-                        price_baridi_trader = ?, price_flexy_trader = ?
+                        price_baridi_trader = ?, price_flexy_trader = ?,
+                        price_usd = 0, price_usd_trader = 0
                     WHERE id = ?
                     """,
                     (price_baridi, price_flexy, price_baridi_trader, price_flexy_trader, offer_id),
