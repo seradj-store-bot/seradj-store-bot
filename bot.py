@@ -1210,6 +1210,8 @@ def init_db():
             currency TEXT DEFAULT 'DA',
             payment_method TEXT DEFAULT '',
             receipt_file_id TEXT DEFAULT '',
+            receipt_file_ids TEXT DEFAULT '[]',
+            receipt_type TEXT DEFAULT 'photo',
             status TEXT DEFAULT 'pending',
             created_at TEXT,
             processed_at TEXT DEFAULT ''
@@ -1240,6 +1242,8 @@ def init_db():
             amount INTEGER NOT NULL,
             payment_method TEXT DEFAULT '',
             receipt_file_id TEXT DEFAULT '',
+            receipt_file_ids TEXT DEFAULT '[]',
+            receipt_type TEXT DEFAULT 'photo',
             status TEXT DEFAULT 'pending',
             created_at TEXT,
             processed_at TEXT DEFAULT ''
@@ -1481,6 +1485,8 @@ def init_db():
                 conn.execute("UPDATE offers SET recharge_method_id=? WHERE game_id=? AND recharge_method_id IS NULL", (cur.lastrowid, g["id"]))
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('whatsapp_number', ?)", (WHATSAPP_NUMBER,))
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('usd_exchange_rate', '254')")
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('usd_sell_rate', (SELECT value FROM settings WHERE key='usd_exchange_rate'))")
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('usd_buy_rate', (SELECT value FROM settings WHERE key='usd_exchange_rate'))")
         # Requested USD payment options are pre-created but disabled until configured by admin.
         for method_name, method_emoji in (("Binance", "🟡"), ("USDT", "💵"), ("Bybit", "🔶"), ("RedotPay", "🔴")):
             conn.execute(
@@ -1545,6 +1551,10 @@ def init_db():
             conn.execute("ALTER TABLE wallet_deposits ADD COLUMN currency TEXT DEFAULT 'DA'")
         if "paid_amount" not in deposit_cols:
             conn.execute("ALTER TABLE wallet_deposits ADD COLUMN paid_amount REAL DEFAULT 0")
+        if "receipt_file_ids" not in deposit_cols:
+            conn.execute("ALTER TABLE wallet_deposits ADD COLUMN receipt_file_ids TEXT DEFAULT '[]'")
+        if "receipt_type" not in deposit_cols:
+            conn.execute("ALTER TABLE wallet_deposits ADD COLUMN receipt_type TEXT DEFAULT 'photo'")
         order_cols = {r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()}
         if "completion_message" not in order_cols:
             conn.execute("ALTER TABLE orders ADD COLUMN completion_message TEXT DEFAULT ''")
@@ -1684,6 +1694,24 @@ def trader_wallet_currency(user_id):
     return "USD" if str(value or "DA").upper() == "USD" else "DA"
 
 
+def usd_sell_rate():
+    """DA received for 1 USD when pricing a USD-denominated offer in DA."""
+    try:
+        value = Decimal(get_setting("usd_sell_rate", get_setting("usd_exchange_rate", "254")))
+        return value if value.is_finite() and value > 0 else Decimal("254")
+    except (InvalidOperation, ValueError):
+        return Decimal("254")
+
+
+def usd_buy_rate():
+    """DA divisor used to convert a DA-denominated offer into USD."""
+    try:
+        value = Decimal(get_setting("usd_buy_rate", get_setting("usd_exchange_rate", "254")))
+        return value if value.is_finite() and value > 0 else Decimal("254")
+    except (InvalidOperation, ValueError):
+        return Decimal("254")
+
+
 def trader_offer_price(offer, user_id):
     """Return the trader price in the trader's assigned currency.
 
@@ -1693,7 +1721,7 @@ def trader_offer_price(offer, user_id):
     da_price = Decimal(str(offer["price_baridi_trader"] or 0))
     if trader_wallet_currency(user_id) == "USD":
         try:
-            rate = Decimal(get_setting("usd_exchange_rate", "254"))
+            rate = usd_buy_rate()
             if not rate.is_finite() or rate <= 0:
                 rate = Decimal("254")
         except (InvalidOperation, ValueError):
@@ -1707,7 +1735,7 @@ def wallet_offer_price(offer, user_id, currency="DA"):
     da_price = Decimal(str(offer["price_baridi_trader"] if is_trader(user_id) else offer["price_baridi"]))
     if str(currency).upper() == "USD":
         try:
-            rate = Decimal(get_setting("usd_exchange_rate", "254"))
+            rate = usd_buy_rate()
             if not rate.is_finite() or rate <= 0:
                 rate = Decimal("254")
         except (InvalidOperation, ValueError):
@@ -2609,7 +2637,7 @@ async def select_payment(
         base_dzd = Decimal(offer_price(offer, "baridi", query.from_user.id))
         if currency == "USD":
             try:
-                rate = Decimal(get_setting("usd_exchange_rate", "254"))
+                rate = usd_buy_rate()
                 if not rate.is_finite() or rate <= 0:
                     raise InvalidOperation
             except (InvalidOperation, ValueError):
@@ -3041,15 +3069,17 @@ async def photo_handler(update, context):
                 await message.reply_text(f"❌ مبلغ التعبئة خارج الحدود المسموحة ({minimum} إلى {maximum} DA). ابدأ من جديد.")
                 return
             amount_usd = 0.0
-        photo = message.photo[-1]
+        receipt_type = "video" if message.video else "photo"
+        receipt_file_id = message.video.file_id if message.video else message.photo[-1].file_id
         paid_amount = (float(context.user_data.get("deposit_paid_amount", 0) or 0) or (int(round(amount * 1.18)) if method.lower() == "flexy" else amount)) if currency == "DA" else amount_usd
         with db() as conn:
-            cur = conn.execute("INSERT INTO wallet_deposits (user_id, amount, amount_usd, currency, payment_method, receipt_file_id, status, created_at, paid_amount) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)", (user.id, amount, amount_usd, currency, method, photo.file_id, now_text(), paid_amount))
+            cur = conn.execute("INSERT INTO wallet_deposits (user_id, amount, amount_usd, currency, payment_method, receipt_file_id, receipt_file_ids, receipt_type, status, created_at, paid_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)", (user.id, amount, amount_usd, currency, method, receipt_file_id, json.dumps([receipt_file_id]), receipt_type, now_text(), paid_amount))
             deposit_id = cur.lastrowid
         display_amount = f"{amount_usd:.2f} USD" if currency == "USD" else f"{amount} DA"
         if ADMIN_ID:
             try:
-                await context.bot.send_photo(ADMIN_ID, photo.file_id,
+                send_receipt = context.bot.send_video if receipt_type == "video" else context.bot.send_photo
+                await send_receipt(ADMIN_ID, receipt_file_id,
                     caption=f"💰 طلب تعبئة رصيد #{deposit_id}\nالزبون: {user.full_name}\nTelegram ID: {user.id}\nالمبلغ المضاف للمحفظة: {display_amount}\nالمبلغ المدفوع: {paid_amount:g} {'USD' if currency == 'USD' else 'DA'}\nالمحفظة: {currency}\nطريقة الدفع: {method}\nالحالة: قيد المراجعة",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ قبول التعبئة", callback_data=f"deposit_approve:{deposit_id}"), InlineKeyboardButton("❌ رفض", callback_data=f"deposit_reject:{deposit_id}")]]))
             except Exception:
@@ -3735,13 +3765,15 @@ async def show_stats(query):
 async def admin_payment_settings(query):
     baridi = get_setting("baridi_details", "غير محددة")
     flexy = get_setting("flexy_details", "غير محددة")
-    rate = get_setting("usd_exchange_rate", "254")
+    sell_rate = get_setting("usd_sell_rate", get_setting("usd_exchange_rate", "254"))
+    buy_rate = get_setting("usd_buy_rate", get_setting("usd_exchange_rate", "254"))
     usd_on = get_setting("usd_payments_enabled", "0") == "1"
     text = (
         "💳 <b>إعدادات الدفع</b>\n\n"
         f"🏦 <b>BaridiMob / CCP:</b>\n{html.escape(baridi)}\n\n"
         f"📱 <b>Flexy:</b>\n{html.escape(flexy)}\n\n"
-        f"💵 سعر الدولار: 1 USD = {html.escape(str(rate))} DA\n"
+        f"💵 سعر بيع الدولار: 1 USD = {html.escape(str(sell_rate))} DA (يضرب في)\n"
+        f"💱 سعر شراء الدولار: 1 USD = {html.escape(str(buy_rate))} DA (يقسم على)\n"
         f"حالة الطرق الأساسية:\n🏦 BaridiMob / CCP: {'مفعّل ✅' if get_setting('payment_baridi_enabled', '1') == '1' else 'مخفي ❌'}\n"
         f"📱 Flexy: {'مفعّل ✅' if get_setting('payment_flexy_enabled', '1') == '1' else 'مخفي ❌'}\n\n"
         f"🌐 <b>طرق الدفع بالدولار ككل:</b> {'مفعّلة ✅' if usd_on else 'مخفية ❌'}\n"
@@ -3753,7 +3785,8 @@ async def admin_payment_settings(query):
         [InlineKeyboardButton("📱 تعديل Flexy", callback_data="pay_settings:flexy")],
         [InlineKeyboardButton(f"{'🙈 إخفاء' if get_setting('payment_baridi_enabled','1')=='1' else '👁️ إظهار'} BaridiMob / CCP", callback_data="pay_toggle:baridi")],
         [InlineKeyboardButton(f"{'🙈 إخفاء' if get_setting('payment_flexy_enabled','1')=='1' else '👁️ إظهار'} Flexy", callback_data="pay_toggle:flexy")],
-        [InlineKeyboardButton("💱 تعديل سعر الدولار", callback_data="pay_usd_rate")],
+        [InlineKeyboardButton("💵 تعديل سعر بيع الدولار (يضرب في)", callback_data="pay_usd_sell_rate")],
+        [InlineKeyboardButton("💱 تعديل سعر شراء الدولار (يقسم على)", callback_data="pay_usd_buy_rate")],
         [InlineKeyboardButton(f"{'🙈 إخفاء كل طرق الدولار' if usd_on else '👁️ إظهار كل طرق الدولار'}", callback_data="usd_pay_toggle_all")],
         [InlineKeyboardButton("➕ إضافة طريقة دفع جديدة", callback_data="custom_pay_add")],
     ]
@@ -4256,22 +4289,7 @@ async def callback_handler(update, context):
             f"📌 الحالة: {status_names.get(review['status'], review['status'])}"
         )
         await query.message.reply_text(text_review)
-        # Notify the customer that the store has started reviewing the order.
-        try:
-            await context.bot.send_message(
-                chat_id=int(review["user_id"]),
-                text=(
-                    f"👀 طلبك قيد المراجعة الآن\n\n"
-                    f"🔢 رقم الطلب: REQ{review_id:06d}\n"
-                    f"🎮 اللعبة: {review['game_name'] or 'غير محددة'}\n"
-                    f"📦 العرض: {review['offer_name'] or 'غير محدد'}\n\n"
-                    "يقوم فريق SERADJ STORE بمراجعة طلبك، وسنرسل لك إشعاراً عند بدء التنفيذ أو إتمامه. ❤️"
-                ),
-                reply_markup=main_keyboard(int(review["user_id"])),
-            )
-        except Exception:
-            logger.exception("تعذر إرسال إشعار قيد المراجعة للزبون (order=%s)", review_id)
-        await query.answer("تم عرض التفاصيل وإرسال إشعار للزبون.")
+        await query.answer("تم عرض تفاصيل الطلب.")
         return
 
     if data.startswith("order_release:"):
@@ -4584,31 +4602,7 @@ async def callback_handler(update, context):
         ])
         try: await query.edit_message_reply_markup(reply_markup=keyboard)
         except Exception: pass
-        # The claim changes the order to processing; immediately notify its customer.
-        try:
-            with db() as conn:
-                customer_row = conn.execute(
-                    "SELECT user_id, game_id FROM orders WHERE id=?", (order_id,)
-                ).fetchone()
-                game_row = conn.execute(
-                    "SELECT name FROM games WHERE id=?", (customer_row["game_id"],)
-                ).fetchone() if customer_row else None
-            if customer_row:
-                await context.bot.send_message(
-                    chat_id=int(customer_row["user_id"]),
-                    text=(
-                        f"🔄 تم استلام طلبك وبدأ فريقنا العمل عليه!\n\n"
-                        f"🔢 رقم الطلب: REQ{order_id:06d}\n"
-                        f"🎮 اللعبة: {game_row['name'] if game_row else 'غير محددة'}\n"
-                        f"👨‍💻 المسؤول عن الطلب: {query.from_user.full_name}\n"
-                        "📌 الحالة: قيد التنفيذ\n\n"
-                        "سنرسل لك إشعاراً فور إتمام الطلب. ❤️"
-                    ),
-                    reply_markup=main_keyboard(int(customer_row["user_id"])),
-                )
-        except Exception:
-            logger.exception("تعذر إرسال إشعار استلام الطلب للزبون (order=%s)", order_id)
-        await query.answer("تم استلام الطلب وإشعار الزبون!")
+        await query.answer("تم استلام الطلب باسمك!")
         await query.message.reply_text(f"📥 الطلب #{order_id} استلمه: {query.from_user.full_name}")
         return
 
@@ -5126,7 +5120,10 @@ async def callback_handler(update, context):
                  f"المبلغ المطلوب إضافته: {amount}\nطريقة الدفع: {dep['payment_method']}\nالتاريخ: {dep['created_at']}\nالحالة: قيد المراجعة")
         actions=InlineKeyboardMarkup([[InlineKeyboardButton("✅ قبول التعبئة",callback_data=f"deposit_approve:{dep_id}"),InlineKeyboardButton("❌ رفض",callback_data=f"deposit_reject:{dep_id}")], [InlineKeyboardButton("🔙 قائمة طلبات التعبئة",callback_data=f"deposit_queue:{page}")]])
         try:
-            await context.bot.send_photo(chat_id=user_id, photo=dep["receipt_file_id"], caption=caption, reply_markup=actions)
+            if "receipt_type" in dep.keys() and dep["receipt_type"] == "video":
+                await context.bot.send_video(chat_id=user_id, video=dep["receipt_file_id"], caption=caption, reply_markup=actions)
+            else:
+                await context.bot.send_photo(chat_id=user_id, photo=dep["receipt_file_id"], caption=caption, reply_markup=actions)
         except Exception:
             logger.exception("Could not display deposit %s from admin queue", dep_id)
             await query.message.reply_text(caption, reply_markup=actions)
@@ -5984,11 +5981,14 @@ async def callback_handler(update, context):
             price_buttons.append([InlineKeyboardButton(f"{'✅' if is_on else '🚫'} {cm['emoji']} {cm['name']} — {'إيقاف لهذا العرض' if is_on else 'تفعيل لهذا العرض'}", callback_data=f"offer_pay_toggle:{offer_id}:{cm['id']}")])
         await query.message.reply_text(f"💰 تعديل سعر العرض: {offer['name']}\n\nالأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\nتاجر Baridi {price_row['price_baridi_trader']} DA | Flexy {price_row['price_flexy_trader']} DA\n\nيمكنك تفعيل أو إيقاف طرق الدفع المخصصة لهذا العرض:", reply_markup=InlineKeyboardMarkup(price_buttons))
 
-    elif data == "pay_usd_rate":
+    elif data in ("pay_usd_rate", "pay_usd_sell_rate", "pay_usd_buy_rate"):
         if not is_admin(user_id):
             return
-        context.user_data["admin_step"] = "set_usd_exchange_rate"
-        await query.message.reply_text("أرسل سعر الدولار بالدينار الجزائري. مثال: 254\nيعني 1 USD = 254 DA. أرسل /cancel للإلغاء.")
+        which = "sell" if data == "pay_usd_sell_rate" else ("buy" if data == "pay_usd_buy_rate" else "sell")
+        context.user_data["admin_step"] = f"set_usd_{which}_rate"
+        operation = "يضرب في السعر" if which == "sell" else "يقسم على السعر"
+        label = "بيع" if which == "sell" else "شراء"
+        await query.message.reply_text(f"أرسل سعر {label} الدولار بالدينار الجزائري.\nمثال: 260\nالعملية: {operation}.\nأرسل /cancel للإلغاء.")
 
     elif data == "custom_pay_add":
         if not is_admin(user_id):
@@ -7793,27 +7793,25 @@ async def text_handler(update, context):
     if is_admin(user_id):
         step = context.user_data.get("admin_step")
 
-        if step == "set_usd_exchange_rate":
+        if step in ("set_usd_exchange_rate", "set_usd_sell_rate", "set_usd_buy_rate"):
             try:
                 rate = Decimal(text.strip().replace(",", "."))
                 if not rate.is_finite() or rate <= 0 or rate > Decimal("10000000"):
                     raise InvalidOperation
             except (InvalidOperation, ValueError):
-                await message.reply_text("❌ السعر غير صحيح. أرسل رقمًا أكبر من صفر، مثال: 254. أو /cancel للإلغاء.")
+                await message.reply_text("❌ السعر غير صحيح. أرسل رقمًا أكبر من صفر، مثال: 260.")
                 return
-            set_setting("usd_exchange_rate", format(rate.normalize(), "f"))
-            with db() as conn:
-                conn.execute(
-                    "UPDATE offers SET price_usd_trader = ROUND(COALESCE(price_baridi_trader, 0) / ?, 2)",
-                    (float(rate),),
-                )
+            which = "buy" if step == "set_usd_buy_rate" else "sell"
+            set_setting(f"usd_{which}_rate", format(rate.normalize(), "f"))
+            # Keep the legacy setting synchronized with the sell rate for older integrations.
+            if which == "sell":
+                set_setting("usd_exchange_rate", format(rate.normalize(), "f"))
             context.user_data.pop("admin_step", None)
+            operation = "القسمة على سعر الشراء" if which == "buy" else "الضرب في سعر البيع"
             await message.reply_text(
-                f"✅ تم حفظ سعر الدولار: 1 USD = {rate} DA.\n"
-                "تم تحديث أسعار USD لجميع عروض التجار تلقائيًا اعتمادًا على سعر التاجر بالدينار.\n"
-                "أي تعديل لاحق لسعر التاجر بالدينار سيظهر بالدولار تلقائيًا أيضًا.",
-                reply_markup=admin_keyboard(),
-            )
+                f"✅ تم حفظ سعر {('شراء' if which == 'buy' else 'بيع')} الدولار: 1 USD = {rate} DA.\n"
+                f"العملية المعتمدة: {operation}.\n"
+                "سيُطبّق السعر على جميع المشتركين.", reply_markup=admin_keyboard())
             return
 
         if step == "custom_payment_edit_instructions":
@@ -9331,7 +9329,7 @@ def main():
 
     # استقبال صور وصل الدفع
     app.add_handler(
-        MessageHandler(filters.PHOTO, photo_handler)
+        MessageHandler(filters.PHOTO | filters.VIDEO, photo_handler)
     )
     
     # الصور والملفات المرسلة ضمن محادثة الدعم
