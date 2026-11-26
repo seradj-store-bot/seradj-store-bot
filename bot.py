@@ -2,6 +2,7 @@ import re
 import os
 import html
 import json
+import io
 import sqlite3
 import logging
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -23,6 +24,12 @@ from telegram import (
 )
 
 from telegram.request import HTTPXRequest
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_AVAILABLE = True
+except Exception:
+    PIL_AVAILABLE = False
 
 from telegram.ext import (
     Application,
@@ -941,24 +948,89 @@ def is_admin(user_id):
     return user_id == ADMIN_ID and ADMIN_ID != 0
 
 
+LANGUAGE_TEXTS = {
+    "ar": {
+        "language": "🌐 اللغة", "choose_language": "اختر لغة واجهة المتجر:",
+        "language_saved": "✅ تم تغيير لغة المتجر إلى العربية.",
+        "dashboard": "🎛️ لوحة التحكم", "account": "👤 حسابي", "store": "🛍️ المتجر", "benefits": "✨ مزايا متجرنا",
+        "orders": "📦 طلباتي", "deposit": "💰 تعبئة الرصيد", "referral": "🎯 الإحالة والنقاط",
+        "request": "➕ طلب لعبة غير موجودة", "upgrade": "🏪 ترقية الحساب إلى تاجر",
+        "admin": "🛡️ لوحة الإدارة", "welcome": "🎮 مرحباً بك في {store}!\n\n🛍️ شحن الألعاب والخدمات الرقمية\n💳 الدفع عبر BaridiMob / CCP أو Flexy\n\nاختر الخدمة من القائمة بالأسفل 👇",
+        "store_choose": "🛍️ اختار القسم لي حاب تتصفح:", "games": "🎮 الألعاب", "apps": "📱 التطبيقات",
+        "back": "🔙 القائمة الرئيسية", "account_title": "👤 حسابك في SERADJ STORE",
+        "id": "🆔 ID", "name": "👤 الاسم", "type": "🏷️ نوع الحساب", "trader": "تاجر معتمد", "customer": "زبون عادي",
+        "order_count": "📦 عدد الطلبات", "wallet_da": "💰 محفظة الدينار", "wallet_usd": "💵 محفظة الدولار",
+        "points": "🎁 النقاط", "account_orders": "📦 طلباتي", "account_deposit": "💰 تعبئة المحفظة", "wallet_history": "📜 سجل المحفظة",
+        "contact": "📞 اتصل بالإدارة", "privacy": "🔐 الخصوصية والسياسات", "username": "🔗 اسم المستخدم",
+        "not_available": "غير متوفر", "not_registered": "أرسل /start لتسجيل حسابك.",
+        "account_points": "⭐ نقاطي", "benefits_text": "✨ مزايا متجرنا ✨\n\n🎮 شحن ألعابك بسهولة\nشحن بالـID أو بالحساب، مع خيارات متعددة للألعاب والعروض.\n\n⚡ سرعة وسهولة\nخطوات بسيطة لطلب الشحن ومتابعة طلباتك.\n\n🔐 خدمة آمنة ومنظمة\nطلباتك ومحفظتك ونقاطك مرتبطة بحسابك.\n\n⭐ نظام النقاط والإحالة\nاجمع النقاط وشارك رابطك مع أصدقائك للاستفادة من المكافآت.\n\n💰 المحفظة\nاشحن محفظتك واستعمل رصيدك في الطلبات.",
+        "referral_title": "🎯 نظام الإحالة والمكافآت", "referral_link": "رابطك", "points_da": "نقاط DA", "points_usd": "نقاط USD",
+        "request_prompt": "🎮 اكتب اسم اللعبة أو التطبيق الذي تريد إضافته، ويمكنك ذكر تفاصيل النسخة أو طريقة الشحن. أرسل /cancel للإلغاء.",
+        "deposit_choose": "💰 اختر المحفظة التي تريد تعبئتها:", "deposit_da": "🇩🇿 محفظة الدينار DA", "deposit_usd": "💵 محفظة الدولار USD",
+        "orders_prompt": "📦 لعرض طلباتك اضغط الزر أدناه:", "view_orders": "عرض طلباتي", "upgrade_prompt": "🏪 لطلب ترقية حسابك إلى تاجر، اتصل بالإدارة من الزر الموجود أسفل المحادثة.",
+        "referral_unavailable": "🎯 نظام الإحالة غير متاح حالياً.", "referral_link_unavailable": "تعذر إنشاء الرابط الآن.",
+    },
+    "en": {
+        "language": "🌐 Language", "choose_language": "Choose your store interface language:",
+        "language_saved": "✅ Store language changed to English.",
+        "dashboard": "🎛️ Control Panel", "account": "👤 My Account", "store": "🛍️ Store", "benefits": "✨ Store Benefits",
+        "orders": "📦 My Orders", "deposit": "💰 Top Up Wallet", "referral": "🎯 Referrals & Points",
+        "request": "➕ Request a Missing Game", "upgrade": "🏪 Become a Trader",
+        "admin": "🛡️ Admin Panel", "welcome": "🎮 Welcome to {store}!\n\n🛍️ Game top-ups and digital services\n💳 Pay via BaridiMob / CCP or Flexy\n\nChoose a service below 👇",
+        "store_choose": "🛍️ Choose a category to browse:", "games": "🎮 Games", "apps": "📱 Apps",
+        "back": "🔙 Main Menu", "account_title": "👤 Your SERADJ STORE Account",
+        "id": "🆔 ID", "name": "👤 Name", "type": "🏷️ Account type", "trader": "Verified trader", "customer": "Customer",
+        "order_count": "📦 Orders", "wallet_da": "💰 DZD Wallet", "wallet_usd": "💵 USD Wallet",
+        "points": "🎁 Points", "account_orders": "📦 My Orders", "account_deposit": "💰 Top Up Wallet", "wallet_history": "📜 Wallet History",
+        "contact": "📞 Contact Admin", "privacy": "🔐 Privacy & Policies", "username": "🔗 Username",
+        "not_available": "Not available", "not_registered": "Send /start to register your account.",
+        "account_points": "⭐ My Points", "benefits_text": "✨ Store Benefits ✨\n\n🎮 Easy game top-ups\nTop up by ID or account, with multiple games and offers.\n\n⚡ Fast and simple\nA few steps to place and track your orders.\n\n🔐 Safe and organized service\nYour orders, wallet and points are linked to your account.\n\n⭐ Points and referrals\nEarn points and share your referral link to receive rewards.\n\n💰 Wallet\nTop up your wallet and use your balance for orders.",
+        "referral_title": "🎯 Referral & Rewards", "referral_link": "Your link", "points_da": "DA Points", "points_usd": "USD Points",
+        "request_prompt": "🎮 Enter the name of the game or app you want us to add. You can include version or top-up details. Send /cancel to cancel.",
+        "deposit_choose": "💰 Choose the wallet you want to top up:", "deposit_da": "🇩🇿 DZD Wallet", "deposit_usd": "💵 USD Wallet",
+        "orders_prompt": "📦 Press the button below to view your orders:", "view_orders": "View My Orders", "upgrade_prompt": "🏪 To upgrade your account to trader, contact the administration using the button below the chat.",
+        "referral_unavailable": "🎯 The referral system is currently unavailable.", "referral_link_unavailable": "Unable to create the link right now.",
+    },
+
+}
+
+def user_language(user_id):
+    row = get_user_row(user_id)
+    lang = (row["language"] if row and "language" in row.keys() else "ar") or "ar"
+    return lang if lang in LANGUAGE_TEXTS else "ar"
+
+def tr(user_id, key, **kwargs):
+    lang = user_language(user_id)
+    value = LANGUAGE_TEXTS.get(lang, LANGUAGE_TEXTS["ar"]).get(key, LANGUAGE_TEXTS["ar"].get(key, key))
+    return value.format(**kwargs) if kwargs else value
+
 def main_keyboard(user_id):
     # Keep only the three permanent customer controls in the reply keyboard.
     # All shop navigation is presented as inline buttons in the current message.
-    keyboard = [["/start"], ["📞 اتصل بالإدارة"], ["🔐 السياسات والخصوصية"]]
+    lang = user_language(user_id)
+    labels = {
+        "ar": ("📞 اتصل بالإدارة", "🔐 الخصوصية والسياسات"),
+        "en": ("📞 Contact Admin", "🔐 Privacy & Policies"),
+    }
+    contact_label, policy_label = labels.get(lang, labels["ar"])
+    keyboard = [["/start"], [contact_label], [policy_label]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 
 def customer_inline_menu(user_id):
     rows = [
-        [InlineKeyboardButton("👤 حسابي", callback_data="home:account"), InlineKeyboardButton("🛍️ المتجر", callback_data="home:store")],
-        [InlineKeyboardButton("✨ مزايا متجرنا", callback_data="home:benefits"), InlineKeyboardButton("📦 طلباتي", callback_data="home:orders")],
-        [InlineKeyboardButton("💰 تعبئة الرصيد", callback_data="home:deposit"), InlineKeyboardButton("🎯 الإحالة والنقاط", callback_data="home:referral")],
-        [InlineKeyboardButton("➕ طلب لعبة غير موجودة", callback_data="home:request")],
+        [InlineKeyboardButton(tr(user_id, "account"), callback_data="home:account"), InlineKeyboardButton(tr(user_id, "store"), callback_data="home:store")],
+        [InlineKeyboardButton(tr(user_id, "benefits"), callback_data="home:benefits"), InlineKeyboardButton(tr(user_id, "orders"), callback_data="home:orders")],
+        [InlineKeyboardButton(tr(user_id, "deposit"), callback_data="home:deposit"), InlineKeyboardButton(tr(user_id, "referral"), callback_data="home:referral")],
+        [InlineKeyboardButton(tr(user_id, "request"), callback_data="home:request")],
+        [InlineKeyboardButton(tr(user_id, "language"), callback_data="language_menu")],
     ]
     if not is_trader(user_id):
-        rows.append([InlineKeyboardButton("🏪 ترقية الحساب إلى تاجر", callback_data="home:upgrade")])
+        rows.append([InlineKeyboardButton(tr(user_id, "upgrade"), callback_data="home:upgrade")])
+    # Control/admin panels are deliberately kept as the final menu entries.
+    rows.append([InlineKeyboardButton(tr(user_id, "dashboard"), callback_data="home:account")])
     if is_admin(user_id):
-        rows.append([InlineKeyboardButton("🛠️ لوحة التحكم", callback_data="home:admin")])
+        rows.append([InlineKeyboardButton(tr(user_id, "admin"), callback_data="home:admin")])
     return InlineKeyboardMarkup(rows)
 
 async def ids_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1562,6 +1634,8 @@ def init_db():
         user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         if "balance_usd" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN balance_usd REAL DEFAULT 0")
+        if "language" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'ar'")
         deposit_cols = {r["name"] for r in conn.execute("PRAGMA table_info(wallet_deposits)").fetchall()}
         if "amount_usd" not in deposit_cols:
             conn.execute("ALTER TABLE wallet_deposits ADD COLUMN amount_usd REAL DEFAULT 0")
@@ -1917,7 +1991,7 @@ async def admin_person_card(query, target_id):
         f"الرصيد: {int(row['balance'] or 0)} DA\n"
         f"💵 رصيد الدولار: {float(row['balance_usd'] or 0):.2f} USD\n"
         + (f"💳 الدين الحالي: {int(row['credit_debt'] or 0)} DA\n" if row['account_type'] == 'trader' else "")
-        + f"🎁 نقاط DA: {int(row['points_da'] or 0)} | نقاط USD: {float(row['points_usd'] or 0):.3f}\n"
+        + f"🎁 نقاط DA: {float(row['points_da'] or 0):g} | نقاط USD: {float(row['points_usd'] or 0):.3f}\n"
         f"عدد الطلبات: {orders}\n"
         f"تاريخ التسجيل: {row['created_at'] or 'غير معروف'}",
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -2048,13 +2122,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     conn.execute("INSERT INTO referrals (referred_user_id, referrer_user_id, points_awarded, created_at) VALUES (?, ?, ?, ?)", (user.id, referrer_id, 1 if award else 0, now_text()))
                     if award:
                         ref_wallet = conn.execute("SELECT balance, balance_usd FROM users WHERE user_id=?", (referrer_id,)).fetchone()
+                        reward_ratio = 0.5 if referrer_type["account_type"] == "trader" else 1.0
+                        referral_da = 5 * reward_ratio
+                        referral_usd = 0.019 * reward_ratio
                         before_da = float(ref_wallet["balance"] or 0)
                         before_usd = float(ref_wallet["balance_usd"] or 0)
-                        conn.execute("UPDATE users SET balance=COALESCE(balance,0)+5, balance_usd=COALESCE(balance_usd,0)+0.019 WHERE user_id=?", (referrer_id,))
-                        conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,created_at) VALUES(?,?,?,?,?,?,?,?)", (referrer_id,"DA","مكافأة تسجيل إحالة",5,before_da,before_da+5,"تسجيل مشترك جديد عبر رابط الإحالة",now_text()))
-                        conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,created_at) VALUES(?,?,?,?,?,?,?,?)", (referrer_id,"USD","مكافأة تسجيل إحالة",0.019,before_usd,before_usd+0.019,"تسجيل مشترك جديد عبر رابط الإحالة",now_text()))
+                        conn.execute("UPDATE users SET balance=COALESCE(balance,0)+?, balance_usd=COALESCE(balance_usd,0)+? WHERE user_id=?", (referral_da, referral_usd, referrer_id))
+                        conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,created_at) VALUES(?,?,?,?,?,?,?,?)", (referrer_id,"DA","مكافأة تسجيل إحالة",referral_da,before_da,before_da+referral_da,"تسجيل مشترك جديد عبر رابط الإحالة",now_text()))
+                        conn.execute("INSERT INTO wallet_transactions(user_id,currency,kind,amount,balance_before,balance_after,note,created_at) VALUES(?,?,?,?,?,?,?,?)", (referrer_id,"USD","مكافأة تسجيل إحالة",referral_usd,before_usd,before_usd+referral_usd,"تسجيل مشترك جديد عبر رابط الإحالة",now_text()))
                     try:
-                        await context.bot.send_message(referrer_id, "🎉 انضم مشترك جديد عبر رابط إحالتك! تمت إضافة 5 DA إلى محفظة الدينار و0.019 USD إلى محفظة الدولار." if award else "تم تسجيل الإحالة بنجاح.")
+                        await context.bot.send_message(referrer_id, (f"🎉 انضم مشترك جديد عبر رابط إحالتك! تمت إضافة {referral_da:g} DA إلى محفظة الدينار و{referral_usd:g} USD إلى محفظة الدولار.") if award else "تم تسجيل الإحالة بنجاح.")
                     except Exception:
                         logger.info("Could not notify referrer %s", referrer_id)
 
@@ -2098,13 +2175,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await callback_handler(fake_update, context)
         return
 
-    welcome_text = get_setting(
-        "welcome_message",
-        f"🎮 مرحباً بك في {STORE_NAME}!\n\n"
-        "🛍️ شحن الألعاب والخدمات الرقمية\n"
-        "💳 الدفع عبر BaridiMob / CCP أو Flexy\n\n"
-        "اختر الخدمة من القائمة بالأسفل 👇",
-    )
+    welcome_text = tr(user.id, "welcome", store=STORE_NAME)
+    if user_language(user.id) == "ar":
+        welcome_text = get_setting("welcome_message", welcome_text)
 
     nav_msg = await update.message.reply_text(
         welcome_text,
@@ -2242,13 +2315,96 @@ async def show_store(message, user_id, category=None, context=None, query=None):
 
 # ====== حساب الزبون ======
 
+def generate_account_gif(full_name, balance_da, balance_usd, total_orders, language="ar"):
+    """Create a small personalized animated account card in memory."""
+    if not PIL_AVAILABLE:
+        return None
+
+    W, H = 960, 540
+    font_ar = "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf"
+    font_ar_bold = "/usr/share/fonts/truetype/noto/NotoSansArabic-Bold.ttf"
+    font_latin = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    font_latin_bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    def load_font(path, size, fallback=font_latin):
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            return ImageFont.truetype(fallback, size)
+
+    f_brand = load_font(font_latin_bold, 30)
+    f_welcome = load_font(font_ar_bold, 31)
+    f_name = load_font(font_ar_bold, 48)
+    f_label = load_font(font_ar, 26)
+    f_value = load_font(font_latin_bold, 43)
+    f_small = load_font(font_ar, 20)
+
+    name = (str(full_name or "صديقنا").strip() or "صديقنا")
+    if len(name) > 24:
+        name = name[:23] + "…"
+
+    def draw_rtl(draw, xy, text, font, fill):
+        # Some hosting Pillow builds are compiled without libraqm. In that case
+        # Pillow rejects the direction argument; fall back to right-anchored text
+        # so the account animation is still generated instead of failing.
+        try:
+            draw.text(xy, text, font=font, fill=fill, anchor="ra", direction="rtl")
+        except (KeyError, ValueError, TypeError):
+            draw.text(xy, text, font=font, fill=fill, anchor="ra")
+
+    frames = []
+    for idx in range(20):
+        im = Image.new("RGB", (W, H), (9, 10, 16))
+        px = im.load()
+        # dark black-to-gold background
+        for x in range(W):
+            t = max(0.0, min(1.0, (x - 480) / 480))
+            glow = int(72 * t)
+            for y in range(H):
+                px[x, y] = (8 + int(glow*.02), 12 + int(glow*.10), 24 + int(glow*.45))
+        d = ImageDraw.Draw(im, "RGBA")
+        # Decorative gold corner glow and card
+        d.ellipse((690, -210, 1120, 220), fill=(0, 112, 255, 28))
+        d.rounded_rectangle((55, 45, 905, 495), radius=34, fill=(12, 15, 24, 238), outline=(0, 112, 255, 255), width=3)
+        # brand
+        d.text((80, 72), "SERADJ STORE", font=f_brand, fill=(255, 255, 255, 255))
+        # Localized welcome/name
+        labels = {
+            "ar": ("مرحباً بعودتك", "شحن ألعاب وتطبيقات | دفع آمن | توصيل سريع", "رصيد المحفظة", "عدد الطلبات", "شكراً لثقتك بنا"),
+            "en": ("Welcome back", "Games & apps | Secure payment | Fast delivery", "Wallet Balance", "Total Orders", "Thank you for your trust"),
+        }
+        welcome_label, tagline, wallet_label, orders_label, thanks_label = labels.get(language, labels["ar"])
+        draw_rtl(d, (865, 125), welcome_label, f_welcome, (255, 255, 255, 255))
+        draw_rtl(d, (865, 170), name, f_name, (250, 250, 252, 255))
+        draw_rtl(d, (865, 240), tagline, f_small, (195, 198, 207, 255))
+        # statistics panel
+        d.rounded_rectangle((85, 315, 875, 455), radius=24, fill=(20, 27, 42, 255), outline=(0, 112, 255, 255), width=2)
+        d.line((480, 337, 480, 432), fill=(105, 111, 126, 200), width=2)
+        # left side wallet
+        draw_rtl(d, (440, 333), wallet_label, f_label, (220, 226, 238, 255))
+        d.text((112, 374), f"{float(balance_da or 0):,.0f} DA", font=f_value, fill=(255, 255, 255, 255))
+        d.text((112, 425), f"${float(balance_usd or 0):,.2f}", font=load_font(font_latin_bold, 25), fill=(255, 255, 255, 255))
+        # right side order count
+        draw_rtl(d, (835, 333), orders_label, f_label, (220, 226, 238, 255))
+        d.text((535, 365), f"{int(total_orders or 0):,}", font=load_font(font_latin_bold, 61), fill=(255, 255, 255, 255))
+        draw_rtl(d, (835, 418), thanks_label, f_small, (255, 255, 255, 255))
+        # moving shine across the outline
+        shine_x = 70 + (idx * 47) % 820
+        d.line((shine_x, 47, min(shine_x + 75, 900), 47), fill=(255, 230, 150, 220), width=4)
+        frames.append(im)
+
+    out = io.BytesIO()
+    frames[0].save(out, format="GIF", save_all=True, append_images=frames[1:], duration=110, loop=0, optimize=True)
+    out.seek(0)
+    out.name = "seradj_account.gif"
+    return out
+
+
 async def show_account(message, user_id):
     with db() as conn:
         user = conn.execute(
             "SELECT * FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
-
         total = conn.execute(
             "SELECT COUNT(*) FROM orders WHERE user_id = ?",
             (user_id,),
@@ -2261,29 +2417,39 @@ async def show_account(message, user_id):
         )
         return
 
-    username = (
-        f"@{user['username']}"
-        if user["username"]
-        else "غير متوفر"
-    )
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton(tr(user_id, "account_points"), callback_data="account_points"), InlineKeyboardButton(tr(user_id, "account_orders"), callback_data="account_orders")],
+        [InlineKeyboardButton(tr(user_id, "account_deposit"), callback_data="account_deposit")],
+        [InlineKeyboardButton(tr(user_id, "wallet_history"), callback_data="wallet_history")],
+    ])
 
-    await message.reply_text(
-        "👤 حسابك في SERADJ STORE\n\n"
-        f"🆔 ID: {user_id}\n"
-        f"👤 الاسم: {user['full_name']}\n"
-        f"🔗 Username: {username}\n"
-        f"📦 عدد الطلبات: {total}\n"
-        f"🏷️ نوع الحساب: {'تاجر معتمد' if user['account_type'] == 'trader' else 'زبون عادي'}\n"
-        f"💰 محفظة الدينار: {int(user['balance'] or 0)} DA\n"
-        f"💵 محفظة الدولار: {float(user['balance_usd'] or 0):.2f} USD\n"
-        f"🔄 لتحويل الدولار إلى الدينار، تواصل مع الإدارة مباشرة (لا يوجد تحويل آلي داخل البوت).\n"
-        f"🎁 نقاط DA: {int(user['points_da'] or 0) if points_enabled(user_id) else 0} | نقاط USD: {float(user['points_usd'] or 0):.3f}\n"
-        f"📅 التسجيل: {user['created_at']}",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⭐ نقاطي", callback_data="account_points"), InlineKeyboardButton("📦 طلباتي", callback_data="account_orders")],
-            [InlineKeyboardButton("💰 تعبئة المحفظة", callback_data="account_deposit")],
-            [InlineKeyboardButton("📜 سجل المحفظة", callback_data="wallet_history")],
-        ]),
+    animation = None
+    try:
+        animation = generate_account_gif(
+            user["full_name"], user["balance"], user["balance_usd"], total, user_language(user_id)
+        )
+        if animation:
+            await message.reply_animation(
+                animation=animation,
+                caption=tr(user_id, "account_title"),
+                reply_markup=markup,
+            )
+            return
+    except Exception:
+        logging.exception("Failed to generate or send customer account GIF")
+
+    if not animation:
+        username = f"@{user['username']}" if user["username"] else "غير متوفر"
+        lang = user_language(user_id)
+        type_label = tr(user_id, "trader") if user["account_type"] == "trader" else tr(user_id, "customer")
+        await message.reply_text(
+            f"{tr(user_id, 'account_title')}\n\n"
+            f"{tr(user_id, 'id')}: {user_id}\n{tr(user_id, 'name')}: {user['full_name']}\n{tr(user_id, 'username')}: {username or tr(user_id, 'not_available')}\n"
+            f"{tr(user_id, 'order_count')}: {total}\n"
+            f"{tr(user_id, 'wallet_da')}: {int(user['balance'] or 0)} DA\n"
+            f"{tr(user_id, 'wallet_usd')}: {float(user['balance_usd'] or 0):.2f} USD\n"
+            f"{tr(user_id, 'type')}: {type_label}",
+            reply_markup=markup,
         )
 
 # ====== عرض عروض اللعبة ======
@@ -3385,8 +3551,9 @@ async def show_points_shop(message, user_id):
         await message.reply_text("⭐ نظام النقاط متاح لجميع المشترين.", reply_markup=main_keyboard(user_id)); return
     with db() as conn:
         row = conn.execute("SELECT points_da, points_usd FROM users WHERE user_id=?", (user_id,)).fetchone()
-    da = int(row["points_da"] or 0) if row else 0
+    da = float(row["points_da"] or 0) if row else 0
     usd = float(row["points_usd"] or 0) if row else 0.0
+    points_rate = 200 if is_trader(user_id) else 100
     buttons = [
         [InlineKeyboardButton("🔄 تحويل نقاط DA إلى محفظة الدينار", callback_data="points_convert:DA")],
         [InlineKeyboardButton("🔄 تحويل نقاط USD إلى محفظة الدولار", callback_data="points_convert:USD")],
@@ -3395,9 +3562,9 @@ async def show_points_shop(message, user_id):
         "⭐ نقاطك في SERADJ STORE\n\n"
         f"🇩🇿 نقاط الدينار: {da:,} نقطة DA\n"
         f"💵 نقاط الدولار: {usd:.3f} نقطة USD\n\n"
-        "💱 كل 100 نقطة DA = 1 DA في المحفظة.\n"
-        "💱 كل 100 نقطة USD = 1 USD في المحفظة.\n"
-        "يمكنك تحويل مضاعفات 100 نقطة، والباقي يبقى محفوظًا.",
+        f"💱 كل {points_rate} نقطة DA = 1 DA في المحفظة.\n"
+        f"💱 كل {points_rate} نقطة USD = 1 USD في المحفظة.\n"
+        f"يمكنك تحويل مضاعفات {points_rate} نقطة، والباقي يبقى محفوظًا.",
         reply_markup=InlineKeyboardMarkup(buttons))
 
 async def show_admin_panel(update, context):
@@ -3972,6 +4139,25 @@ async def callback_handler(update, context):
     # a group/admin terminal order action is normalized to status:... below.
     group_order_terminal_action = False
 
+    if data == "language_menu":
+        await query.answer()
+        await query.edit_message_text(tr(user_id, "choose_language"), reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🇩🇿 العربية", callback_data="language_set:ar")],
+            [InlineKeyboardButton("🇬🇧 English", callback_data="language_set:en")],
+            [InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")],
+        ]))
+        return
+    if data.startswith("language_set:"):
+        lang = data.split(":", 1)[1]
+        if lang not in LANGUAGE_TEXTS:
+            await query.answer("Unsupported language", show_alert=True)
+            return
+        with db() as conn:
+            conn.execute("UPDATE users SET language=? WHERE user_id=?", (lang, user_id))
+        await query.answer(LANGUAGE_TEXTS[lang]["language_saved"])
+        await query.edit_message_text(LANGUAGE_TEXTS[lang]["welcome"].format(store=STORE_NAME), reply_markup=customer_inline_menu(user_id))
+        return
+
     # Main customer navigation: edit the current menu message instead of
     # sending a fresh navigation window on every tap (for customers/traders/admin).
     if data.startswith("home:"):
@@ -3992,17 +4178,20 @@ async def callback_handler(update, context):
                 pass
             return
         if action == "store":
-            await query.edit_message_text("🛍️ اختار القسم لي حاب تتصفح:", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎮 الألعاب", callback_data="store_category:game")],
-                [InlineKeyboardButton("📱 التطبيقات", callback_data="store_category:app")],
-                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")],
+            await query.edit_message_text(tr(user_id, "store_choose"), reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(tr(user_id, "games"), callback_data="store_category:game")],
+                [InlineKeyboardButton(tr(user_id, "apps"), callback_data="store_category:app")],
+                [InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")],
             ]))
             return
         if action == "main":
-            await query.edit_message_text(get_setting("welcome_message", f"🎮 مرحباً بك في {STORE_NAME}!\n\n🛍️ شحن الألعاب والخدمات الرقمية\n💳 الدفع عبر BaridiMob / CCP أو Flexy"), reply_markup=customer_inline_menu(user_id))
+            welcome = tr(user_id, "welcome", store=STORE_NAME)
+            if user_language(user_id) == "ar":
+                welcome = get_setting("welcome_message", welcome)
+            await query.edit_message_text(welcome, reply_markup=customer_inline_menu(user_id))
             return
         if action == "benefits":
-            await query.edit_message_text(STORE_BENEFITS_TEXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]]))
+            await query.edit_message_text(tr(user_id, "benefits_text"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]]))
             return
         if action == "account":
             with db() as conn:
@@ -4011,25 +4200,25 @@ async def callback_handler(update, context):
             if not u:
                 body = "أرسل /start لتسجيل حسابك."
             else:
-                body = ("👤 حسابك في SERADJ STORE\n\n"
-                    f"🆔 ID: {user_id}\n👤 الاسم: {u['full_name']}\n"
-                    f"🏷️ نوع الحساب: {'تاجر معتمد' if u['account_type']=='trader' else 'زبون عادي'}\n"
-                    f"📦 عدد الطلبات: {total}\n💰 محفظة الدينار: {int(u['balance'] or 0)} DA\n"
-                    f"💵 محفظة الدولار: {float(u['balance_usd'] or 0):.2f} USD\n"
-                    f"🎁 نقاط DA: {int(u['points_da'] or 0)} | نقاط USD: {float(u['points_usd'] or 0):.3f}")
+                body = (f"{tr(user_id, 'account_title')}\n\n"
+                    f"{tr(user_id, 'id')}: {user_id}\n{tr(user_id, 'name')}: {u['full_name']}\n"
+                    f"{tr(user_id, 'type')}: {tr(user_id, 'trader') if u['account_type']=='trader' else tr(user_id, 'customer')}\n"
+                    f"{tr(user_id, 'order_count')}: {total}\n{tr(user_id, 'wallet_da')}: {int(u['balance'] or 0)} DA\n"
+                    f"{tr(user_id, 'wallet_usd')}: {float(u['balance_usd'] or 0):.2f} USD\n"
+                    f"{tr(user_id, 'points')}: {float(u['points_da'] or 0):g} DA | {float(u['points_usd'] or 0):.3f} USD")
             await query.edit_message_text(body, reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📦 طلباتي", callback_data="account_orders"), InlineKeyboardButton("💰 تعبئة المحفظة", callback_data="account_deposit")],
-                [InlineKeyboardButton("📜 سجل المحفظة", callback_data="wallet_history")],
-                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")],
+                [InlineKeyboardButton(tr(user_id, "account_orders"), callback_data="account_orders"), InlineKeyboardButton(tr(user_id, "account_deposit"), callback_data="account_deposit")],
+                [InlineKeyboardButton(tr(user_id, "wallet_history"), callback_data="wallet_history")],
+                [InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")],
             ]))
             return
         if action == "request":
             context.user_data["awaiting_game_request"] = True
-            await query.edit_message_text("🎮 اكتب اسم اللعبة أو التطبيق الذي تريد إضافته، ويمكنك ذكر تفاصيل النسخة أو طريقة الشحن. أرسل /cancel للإلغاء.")
+            await query.edit_message_text(tr(user_id, "request_prompt"))
             return
         if action == "referral":
             if not points_enabled(user_id):
-                await query.edit_message_text("🎯 نظام الإحالة غير متاح حالياً.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]])); return
+                await query.edit_message_text(tr(user_id, "referral_unavailable"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]])); return
             bot_username = get_setting("bot_username", "").strip()
             if not bot_username:
                 try:
@@ -4037,25 +4226,25 @@ async def callback_handler(update, context):
                     if bot_username: set_setting("bot_username", bot_username)
                 except Exception: bot_username = ""
             row = get_user_row(user_id)
-            da = int(row["points_da"] or 0) if row else 0
+            float(row["points_da"] or 0) if row else 0
             usd = float(row["points_usd"] or 0) if row else 0.0
-            link = f"https://t.me/{bot_username}?start=ref_{user_id}" if bot_username else "تعذر إنشاء الرابط الآن."
-            await query.edit_message_text(f"🎯 نظام الإحالة والمكافآت\n\nرابطك: {link}\n\nنقاط DA: {da:,} | نقاط USD: {usd:.3f}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]]))
+            link = f"https://t.me/{bot_username}?start=ref_{user_id}" if bot_username else tr(user_id, "referral_link_unavailable")
+            await query.edit_message_text(f"{tr(user_id, 'referral_title')}\n\n{tr(user_id, 'referral_link')}: {link}\n\n{tr(user_id, 'points_da')}: {da:,} | {tr(user_id, 'points_usd')}: {usd:.3f}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]]))
             return
         if action == "orders":
-            await query.edit_message_text("📦 لعرض طلباتك اضغط الزر أدناه:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض طلباتي", callback_data="account_orders")], [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]]))
+            await query.edit_message_text(tr(user_id, "orders_prompt"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "view_orders"), callback_data="account_orders")], [InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]]))
             return
         if action == "deposit":
-            await query.edit_message_text("💰 اختر المحفظة التي تريد تعبئتها:", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🇩🇿 محفظة الدينار DA", callback_data="deposit_currency:DA")],
-                [InlineKeyboardButton("💵 محفظة الدولار USD", callback_data="deposit_currency:USD")],
-                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")],
+            await query.edit_message_text(tr(user_id, "deposit_choose"), reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(tr(user_id, "deposit_da"), callback_data="deposit_currency:DA")],
+                [InlineKeyboardButton(tr(user_id, "deposit_usd"), callback_data="deposit_currency:USD")],
+                [InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")],
             ]))
             return
         if action == "upgrade":
             await query.edit_message_text(
-                "🏪 لطلب ترقية حسابك إلى تاجر، اضغط على زر «📞 اتصل بالإدارة» الموجود أسفل المحادثة.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]])
+                tr(user_id, "upgrade_prompt"),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]])
             )
             return
 
@@ -4689,13 +4878,14 @@ async def callback_handler(update, context):
             await query.answer("نوع نقاط غير صالح.", show_alert=True); return
         column = "points_da" if ccy == "DA" else "points_usd"
         wallet = "balance" if ccy == "DA" else "balance_usd"
+        points_rate = 200 if is_trader(user_id) else 100
         with db() as conn:
             row = conn.execute(f"SELECT {column} AS pts FROM users WHERE user_id=?", (user_id,)).fetchone()
             available = float(row["pts"] or 0) if row else 0.0
-            whole = int(available // 100)
+            whole = int(available // points_rate)
             if whole < 1:
-                await query.answer("تحتاج إلى 100 نقطة على الأقل للتحويل.", show_alert=True); return
-            redeem_points = whole * 100
+                await query.answer(f"تحتاج إلى {points_rate} نقطة على الأقل للتحويل.", show_alert=True); return
+            redeem_points = whole * points_rate
             credit = whole if ccy == "DA" else round(whole, 2)
             conn.execute(f"UPDATE users SET {column}=COALESCE({column},0)-?, {wallet}=COALESCE({wallet},0)+? WHERE user_id=?", (redeem_points, credit, user_id))
         await query.answer("تم تحويل النقاط إلى محفظتك بنجاح.", show_alert=True)
@@ -6422,11 +6612,13 @@ async def callback_handler(update, context):
             # Rewards are granted only once, on the first transition to completed.
             if new_status == "completed" and order["status"] != "completed" and not int(order["points_awarded"] or 0):
                 amount = max(0.0, float(order["price"] or 0))
-                reward_points_granted = amount
+                account_row = conn.execute("SELECT account_type FROM users WHERE user_id=?", (customer_id,)).fetchone()
+                reward_multiplier = 0.5 if account_row and account_row["account_type"] == "trader" else 1.0
+                reward_points_granted = amount * reward_multiplier
                 if str(order["currency"] or "DA").upper() == "USD":
-                    conn.execute("UPDATE users SET points_usd=COALESCE(points_usd,0)+? WHERE user_id=?", (amount, customer_id))
+                    conn.execute("UPDATE users SET points_usd=COALESCE(points_usd,0)+? WHERE user_id=?", (reward_points_granted, customer_id))
                 else:
-                    conn.execute("UPDATE users SET points_da=COALESCE(points_da,0)+? WHERE user_id=?", (int(amount), customer_id))
+                    conn.execute("UPDATE users SET points_da=COALESCE(points_da,0)+? WHERE user_id=?", (reward_points_granted, customer_id))
                 conn.execute("UPDATE orders SET points_awarded = 1 WHERE id = ?", (order_id,))
             # Refund wallet balance and redeemed points if an order is rejected.
             if new_status == "rejected" and order["status"] != "rejected":
@@ -9125,14 +9317,17 @@ async def text_handler(update, context):
                 if bot_username: set_setting("bot_username", bot_username)
             except Exception: bot_username = ""
         user_row = get_user_row(user_id)
-        points_da = int(user_row["points_da"] or 0) if user_row else 0
+        points_da = float(user_row["points_da"] or 0) if user_row else 0
         points_usd = float(user_row["points_usd"] or 0) if user_row else 0.0
         link = f"https://t.me/{bot_username}?start=ref_{user_id}" if bot_username else "تعذر إنشاء الرابط الآن؛ حاول لاحقاً."
-        await message.reply_text(f"🎯 نظام الإحالة والمكافآت\n\nرابط الإحالة الخاص بك:\n{link}\n\n🎁 عند تسجيل مشترك جديد عبر رابطك: 5 DA إلى محفظة الدينار و0.019 USD إلى محفظة الدولار.\n\n🇩🇿 نقاط DA: {points_da:,} | 💵 نقاط USD: {points_usd:.3f}")
+        referral_ratio = 0.5 if user_row and user_row["account_type"] == "trader" else 1.0
+        referral_da = 5 * referral_ratio
+        referral_usd = 0.019 * referral_ratio
+        await message.reply_text(f"🎯 نظام الإحالة والمكافآت\n\nرابط الإحالة الخاص بك:\n{link}\n\n🎁 عند تسجيل مشترك جديد عبر رابطك: {referral_da:g} DA إلى محفظة الدينار و{referral_usd:g} USD إلى محفظة الدولار.\n\n🇩🇿 نقاط DA: {points_da:g} | 💵 نقاط USD: {points_usd:.3f}")
         return
     if text == "✨ مزايا متجرنا":
         await message.reply_text(STORE_BENEFITS_TEXT, reply_markup=main_keyboard(user_id)); return
-    if text == "🔐 السياسات والخصوصية":
+    if text in ("🔐 السياسات والخصوصية", "🔐 Privacy & Policies", "🔐 Confidentialité et règles"):
         policy_text = get_setting("terms_policy", TERMS_PRIVACY_TEXT)
         await message.reply_text(policy_text, reply_markup=main_keyboard(user_id)); return
     if text == "➕ طلب لعبة غير موجودة":
@@ -9204,7 +9399,7 @@ async def text_handler(update, context):
         await message.reply_text(f"💳 تسديد القرض\nالدين الحالي: {debt} DA\nتاريخ الاستحقاق: {due_at or 'غير محدد'}\n\nأرسل مبلغ التسديد بالدينار (كلي أو جزئي)، ثم أرسل صورة وصل الدفع. ينقص الدين بعد موافقة الإدارة فقط.\nللإلغاء أرسل /cancel")
         return
 
-    if text == "📞 اتصل بالإدارة":
+    if text in ("📞 اتصل بالإدارة", "📞 Contact Admin", "📞 Contacter l’administration"):
         await message.reply_text("📞 اختر وسيلة التواصل مع إدارة SERADJ STORE:", reply_markup=contact_admin_keyboard())
         return
 
