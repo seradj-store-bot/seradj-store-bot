@@ -2182,10 +2182,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_language(user.id) == "ar":
         welcome_text = get_setting("welcome_message", welcome_text)
 
-    nav_msg = await update.message.reply_text(
-        welcome_text,
-        reply_markup=customer_inline_menu(user.id),
-    )
+    # Show the personalized branded account animation immediately on /start.
+    # The inline shop menu is attached to the animation; if GIF generation or
+    # Telegram delivery fails, fall back to the regular welcome message.
+    nav_msg = None
+    try:
+        account_row = get_user_row(user.id)
+        with db() as conn:
+            welcome_orders = conn.execute(
+                "SELECT COUNT(*) FROM orders WHERE user_id = ?", (user.id,)
+            ).fetchone()[0]
+        welcome_gif = generate_account_gif(
+            user.full_name or (account_row["full_name"] if account_row else ""),
+            account_row["balance"] if account_row else 0,
+            account_row["balance_usd"] if account_row else 0,
+            welcome_orders,
+            user_language(user.id),
+            username=(user.username or (account_row["username"] if account_row else "")),
+        )
+        if welcome_gif:
+            nav_msg = await update.message.reply_animation(
+                animation=welcome_gif,
+                caption=welcome_text,
+                reply_markup=customer_inline_menu(user.id),
+            )
+    except Exception:
+        logger.exception("Failed to show welcome account GIF for user %s", user.id)
+
+    if nav_msg is None:
+        nav_msg = await update.message.reply_text(
+            welcome_text,
+            reply_markup=customer_inline_menu(user.id),
+        )
     context.user_data["navigation_message_id"] = nav_msg.message_id
     # Telegram cannot attach inline and reply keyboards to the same message.
     # Keep the three fixed controls in one tracked, replaceable keyboard message.
@@ -2318,7 +2346,7 @@ async def show_store(message, user_id, category=None, context=None, query=None):
 
 # ====== حساب الزبون ======
 
-def generate_account_gif(full_name, balance_da, balance_usd, total_orders, language="ar"):
+def generate_account_gif(full_name, balance_da, balance_usd, total_orders, language="ar", username=None):
     """Generate a lightweight branded SERADJ STORE account GIF."""
     if not PIL_AVAILABLE:
         logging.error("Account GIF unavailable: Pillow is not installed.")
@@ -2499,6 +2527,7 @@ def generate_account_gif(full_name, balance_da, balance_usd, total_orders, langu
     ))
     logo_image = Image.open(io.BytesIO(logo_data)).convert("RGBA").resize((76, 76), Image.Resampling.LANCZOS)
 
+
     font_ar = "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf"
     font_ar_bold = "/usr/share/fonts/truetype/noto/NotoSansArabic-Bold.ttf"
     font_latin = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -2513,12 +2542,12 @@ def generate_account_gif(full_name, balance_da, balance_usd, total_orders, langu
             except Exception:
                 return ImageFont.load_default()
 
-    f_brand = load_font(font_latin_bold, 21)
-    f_welcome = load_font(font_ar_bold, 24)
-    f_name = load_font(font_ar_bold, 30)
-    f_label = load_font(font_ar, 19)
+    f_brand = load_font(font_latin_bold, 18)
+    f_name = load_font(font_ar_bold, 34)
+    f_username = load_font(font_latin, 18)
+    f_label = load_font(font_ar, 17)
     f_value = load_font(font_latin_bold, 30)
-    f_small = load_font(font_ar, 15)
+    f_orders = load_font(font_latin_bold, 38)
 
     def draw_rtl(draw, xy, text, font, fill):
         try:
@@ -2527,47 +2556,63 @@ def generate_account_gif(full_name, balance_da, balance_usd, total_orders, langu
             draw.text(xy, text, font=font, fill=fill, anchor="ra")
 
     name = (str(full_name or "صديقنا").strip() or "صديقنا")
-    if len(name) > 22:
-        name = name[:21] + "…"
+    if len(name) > 23:
+        name = name[:22] + "…"
+    clean_username = str(username or "").strip().lstrip("@")
+    username_text = f"@{clean_username}" if clean_username else ("غير متوفر" if language == "ar" else "Not available")
 
     labels = {
-        "ar": ("مرحباً بعودتك", "شحن ألعاب وبطاقات هدايا", "رصيد المحفظة", "الطلبات"),
-        "en": ("Welcome back", "Games & gift cards", "Wallet balance", "Orders"),
+        "ar": ("رصيد المحفظة بالدينار", "رصيد المحفظة بالدولار", "عدد الطلبات"),
+        "en": ("DZD wallet balance", "USD wallet balance", "Total orders"),
     }
-    welcome, tagline, wallet_label, orders_label = labels.get(language, labels["ar"])
+    da_label, usd_label, orders_label = labels.get(language, labels["ar"])
 
-    # Build the background once; only the small shine changes between frames.
-    base = Image.new("RGB", (W, H), (8, 9, 15))
-    pix = base.load()
-    for x in range(W):
-        t = x / max(1, W - 1)
-        gold = int(52 * max(0, (t - 0.48) / 0.52))
-        for y in range(H):
-            pix[x, y] = (8 + gold // 12, 9 + gold // 3, 15 + gold // 2)
-
+    # Bespoke SERADJ STORE customer card: deep navy, electric blue and silver.
+    # Render one base frame, then add only a tiny moving highlight to keep the GIF light.
+    base = Image.new("RGB", (W, H), (5, 10, 23))
     d = ImageDraw.Draw(base, "RGBA")
-    d.rounded_rectangle((22, 20, 618, 340), radius=25, fill=(16, 22, 34, 255), outline=(230, 174, 30, 255), width=2)
-    base.paste(logo_image, (530, 31), logo_image)
-    d.text((38, 43), "SERADJ STORE", font=f_brand, fill=(255, 255, 255, 255))
-    draw_rtl(d, (510, 139), welcome, f_welcome, (244, 184, 32, 255))
-    draw_rtl(d, (510, 180), name, f_name, (255, 255, 255, 255))
-    draw_rtl(d, (510, 210), tagline, f_small, (190, 197, 210, 255))
+    d.rounded_rectangle((14, 14, 626, 346), radius=28,
+                        fill=(8, 18, 39, 255), outline=(0, 145, 255, 255), width=3)
+    d.rounded_rectangle((23, 23, 617, 337), radius=23,
+                        outline=(37, 83, 142, 190), width=1)
 
-    # Compact statistics panel, similar to the supplied reference video.
-    d.rounded_rectangle((48, 245, 592, 318), radius=17, fill=(20, 29, 44, 255), outline=(230, 174, 30, 255), width=2)
-    d.line((320, 258, 320, 305), fill=(110, 119, 137, 190), width=1)
-    draw_rtl(d, (296, 257), wallet_label, f_label, (190, 197, 210, 255))
-    d.text((67, 280), f"{float(balance_da or 0):,.0f} DA", font=load_font(font_latin_bold, 22), fill=(255, 255, 255, 255))
-    d.text((67, 303), f"${float(balance_usd or 0):,.2f}", font=load_font(font_latin_bold, 15), fill=(225, 230, 240, 255))
-    draw_rtl(d, (568, 257), orders_label, f_label, (190, 197, 210, 255))
-    d.text((390, 272), f"{int(total_orders or 0):,}", font=f_value, fill=(255, 255, 255, 255))
+    # Blue accent bars and a subtle glow strip.
+    d.rounded_rectangle((32, 32, 608, 38), radius=3, fill=(0, 130, 255, 210))
+    base.paste(logo_image, (38, 55), logo_image)
+    d.text((128, 64), "SERADJ STORE", font=f_brand, fill=(225, 239, 255, 255))
+    d.line((128, 91, 590, 91), fill=(0, 125, 245, 170), width=2)
+
+    # Customer identity: customer's name and Telegram username, not the store handle.
+    draw_rtl(d, (585, 145), name, f_name, (255, 255, 255, 255))
+    d.text((132, 155), username_text, font=f_username, fill=(65, 190, 255, 255))
+    d.rounded_rectangle((128, 184, 590, 188), radius=2, fill=(0, 112, 220, 125))
+
+    # Three clear compact metric tiles.
+    tiles = [
+        (30, 215, 220, 322, da_label, f"{float(balance_da or 0):,.0f}", "DA"),
+        (225, 215, 415, 322, usd_label, f"{float(balance_usd or 0):,.2f}", "$"),
+        (420, 215, 610, 322, orders_label, f"{int(total_orders or 0):,}", ""),
+    ]
+    for x1, y1, x2, y2, label, value, suffix in tiles:
+        d.rounded_rectangle((x1, y1, x2, y2), radius=17,
+                            fill=(13, 30, 56, 255), outline=(0, 133, 245, 220), width=2)
+        draw_rtl(d, (x2 - 12, y1 + 25), label, f_label, (192, 214, 239, 255))
+        value_font = f_orders if not suffix else f_value
+        bbox = d.textbbox((0, 0), value, font=value_font)
+        tw = bbox[2] - bbox[0]
+        d.text((x1 + (x2 - x1 - tw) // 2, y1 + 55), value,
+               font=value_font, fill=(255, 255, 255, 255))
+        if suffix:
+            d.text((x2 - 42, y1 + 75), suffix, font=load_font(font_latin_bold, 16),
+                   fill=(0, 177, 255, 255))
 
     frames = []
     for idx in range(4):
         frame = base.copy()
         fd = ImageDraw.Draw(frame, "RGBA")
-        x = 35 + (idx * 105) % 560
-        fd.line((x, 21, min(x + 34, 615), 21), fill=(255, 226, 135, 190), width=2)
+        shine_x = 30 + idx * 150
+        fd.line((shine_x, 16, min(shine_x + 45, 610), 16),
+                fill=(130, 215, 255, 190), width=3)
         frames.append(frame.quantize(colors=64, method=Image.Quantize.MEDIANCUT))
 
     out = io.BytesIO()
@@ -2608,7 +2653,8 @@ async def show_account(message, user_id):
     animation = None
     try:
         animation = generate_account_gif(
-            user["full_name"], user["balance"], user["balance_usd"], total, user_language(user_id)
+            user["full_name"], user["balance"], user["balance_usd"], total,
+            user_language(user_id), username=user["username"]
         )
         if animation:
             await message.reply_animation(
