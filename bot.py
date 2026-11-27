@@ -2424,8 +2424,8 @@ def generate_account_gif(full_name, balance_da, balance_usd, total_orders, langu
     # Personalized identity is written exactly where the reference says Telegram / @SERADJ_STORE.
     identity = base.copy()
     d = ImageDraw.Draw(identity, "RGBA")
-    name_font = fit_font(name, font_ar_bold, 58, 30, 500, font_latin_bold)
-    username_font = fit_font(username_text, font_latin_bold, 34, 20, 590, font_latin_bold)
+    name_font = fit_font(name, font_ar_bold, 74, 38, 500, font_latin_bold)
+    username_font = fit_font(username_text, font_latin_bold, 42, 24, 590, font_latin_bold)
     try:
         d.text((525, 105), name, font=name_font, fill=(255, 255, 255, 255),
                anchor="mm", direction="rtl", stroke_width=1, stroke_fill=(2, 18, 48, 230))
@@ -2558,8 +2558,8 @@ def generate_account_mp4(full_name, balance_da, balance_usd, total_orders, langu
     # Personalized identity is written exactly where the reference says Telegram / @SERADJ_STORE.
     identity = base.copy()
     d = ImageDraw.Draw(identity, "RGBA")
-    name_font = fit_font(name, font_ar_bold, 58, 30, 500, font_latin_bold)
-    username_font = fit_font(username_text, font_latin_bold, 34, 20, 590, font_latin_bold)
+    name_font = fit_font(name, font_ar_bold, 74, 38, 500, font_latin_bold)
+    username_font = fit_font(username_text, font_latin_bold, 42, 24, 590, font_latin_bold)
     try:
         d.text((525, 105), name, font=name_font, fill=(255, 255, 255, 255),
                anchor="mm", direction="rtl", stroke_width=1, stroke_fill=(2, 18, 48, 230))
