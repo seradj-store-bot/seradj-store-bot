@@ -13,6 +13,7 @@ import base64
 import hashlib
 import subprocess
 import tempfile
+import shutil
 from types import SimpleNamespace
 
 from telegram import (
@@ -281,10 +282,33 @@ async def account_card_cache_worker(application):
                     conn.execute("DELETE FROM account_card_dirty WHERE user_id=? AND queued_at=?", (uid, queued_at))
                 continue
 
-            path = await asyncio.to_thread(
-                generate_account_mp4, user["full_name"], user["balance"], user["balance_usd"],
-                order_count, (user["language"] or "ar"), username=user["username"], user_id=uid
-            )
+            # Prefer MP4, but do not let a missing FFmpeg binary block the card forever.
+            # Pillow can still build a lightweight GIF in the background; /start only
+            # reads the finished file and never performs rendering itself.
+            try:
+                path = await asyncio.to_thread(
+                    generate_account_mp4, user["full_name"], user["balance"], user["balance_usd"],
+                    order_count, (user["language"] or "ar"), username=user["username"], user_id=uid
+                )
+                if not path or not os.path.isfile(path) or os.path.getsize(path) < 1000:
+                    raise RuntimeError("MP4 renderer returned no usable file")
+            except Exception as mp4_error:
+                logger.warning("MP4 account card unavailable for %s; generating cached GIF fallback: %s", uid, mp4_error)
+                gif_obj = await asyncio.to_thread(
+                    generate_account_gif, user["full_name"], user["balance"], user["balance_usd"],
+                    order_count, (user["language"] or "ar"), username=user["username"]
+                )
+                if not gif_obj:
+                    raise RuntimeError("Both MP4 and GIF account-card renderers failed")
+                cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "account_cache")
+                os.makedirs(cache_dir, exist_ok=True)
+                gif_path = os.path.join(cache_dir, f"account_{uid}_{signature[:24]}.gif")
+                with open(gif_path, "wb") as gif_file:
+                    gif_file.write(gif_obj.getvalue())
+                if not os.path.isfile(gif_path) or os.path.getsize(gif_path) < 1000:
+                    raise RuntimeError("GIF fallback did not produce a usable file")
+                path = gif_path
+
             with db() as conn:
                 conn.execute("""INSERT INTO account_card_cache(user_id,file_path,signature,updated_at)
                     VALUES(?,?,?,CURRENT_TIMESTAMP)
@@ -301,6 +325,23 @@ async def account_card_cache_worker(application):
 
 
 async def post_init(application):
+    # Verify FFmpeg from the bot process environment (not only the hosting shell).
+    # This makes PATH/permission problems visible in FadeHost logs immediately.
+    configured_ffmpeg = os.getenv("FFMPEG_PATH", "").strip()
+    ffmpeg_binary = configured_ffmpeg or shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+    try:
+        version_check = subprocess.run(
+            [ffmpeg_binary, "-version"], stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, timeout=8, check=False,
+        )
+        first_line = version_check.stdout.decode("utf-8", "ignore").splitlines()
+        if version_check.returncode == 0 and first_line:
+            logger.info("Account-card FFmpeg ready: %s (%s)", ffmpeg_binary, first_line[0])
+        else:
+            logger.warning("FFmpeg version check failed (path=%s, exit=%s)", ffmpeg_binary, version_check.returncode)
+    except Exception as exc:
+        logger.warning("FFmpeg is not available to the bot process at %s: %s", ffmpeg_binary, exc)
+
     application.create_task(account_card_cache_worker(application), name="account-card-cache-worker")
     application.create_task(scheduled_broadcast_loop(application), name="scheduled-broadcast-loop")
     application.create_task(store_schedule_loop(application), name="store-schedule-loop")
@@ -2744,9 +2785,19 @@ def generate_account_mp4(full_name, balance_da, balance_usd, total_orders, langu
                 except OSError:
                     pass
 
-    ffmpeg = os.getenv("FFMPEG_PATH", "ffmpeg")
-    if not (os.path.isfile(ffmpeg) or __import__("shutil").which(ffmpeg)):
-        raise RuntimeError("FFmpeg is not installed; falling back to GIF")
+    # Resolve the binary from an explicit hosting setting first, then PATH.
+    # FadeHost commonly exposes Debian FFmpeg as /usr/bin/ffmpeg.
+    configured_ffmpeg = os.getenv("FFMPEG_PATH", "").strip()
+    ffmpeg = configured_ffmpeg or shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+    if not (os.path.isfile(ffmpeg) and os.access(ffmpeg, os.X_OK)):
+        located_ffmpeg = shutil.which(ffmpeg)
+        if located_ffmpeg:
+            ffmpeg = located_ffmpeg
+        else:
+            raise RuntimeError(
+                "FFmpeg executable not found. Set FFMPEG_PATH to the full path, "
+                "for example /usr/bin/ffmpeg."
+            )
 
     with tempfile.TemporaryDirectory(prefix="seradj_account_") as temp_dir:
         for idx in range(48):
