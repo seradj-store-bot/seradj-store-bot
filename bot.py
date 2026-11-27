@@ -2138,16 +2138,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         logger.info("Could not notify referrer %s", referrer_id)
 
-    # Remove only the two previously tracked navigation messages; never touch
-    # order receipts, payment confirmations, or independent notifications.
-    for _key in ("navigation_message_id", "reply_keyboard_message_id"):
-        _old_id = context.user_data.get(_key)
-        if _old_id:
-            try:
-                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=int(_old_id))
-            except Exception:
-                pass
+    # Replace the previous inline navigation card on /start, but keep the
+    # persistent reply-keyboard message. Re-sending it on every /start caused
+    # repeated standalone "القائمة الرئيسية" messages in the chat.
+    _existing_reply_keyboard_id = context.user_data.get("reply_keyboard_message_id")
+    _old_navigation_id = context.user_data.get("navigation_message_id")
+    if _old_navigation_id:
+        try:
+            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=int(_old_navigation_id))
+        except Exception:
+            pass
     context.user_data.clear()
+    if _existing_reply_keyboard_id:
+        context.user_data["reply_keyboard_message_id"] = _existing_reply_keyboard_id
     saved = get_user_row(user.id)
     if not is_admin(user.id) and saved and "is_banned" in saved.keys() and int(saved["is_banned"] or 0):
         await update.message.reply_text("🚫 حسابك محظور من استعمال البوت. تواصل مع الإدارة.")
@@ -2215,9 +2218,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     context.user_data["navigation_message_id"] = nav_msg.message_id
     # Telegram cannot attach inline and reply keyboards to the same message.
-    # Keep the three fixed controls in one tracked, replaceable keyboard message.
-    keyboard_msg = await update.message.reply_text("القائمة الرئيسية", reply_markup=main_keyboard(user.id))
-    context.user_data["reply_keyboard_message_id"] = keyboard_msg.message_id
+    # Send the persistent reply keyboard only once per user session; it remains
+    # available after /start without adding another "القائمة الرئيسية" bubble.
+    if not context.user_data.get("reply_keyboard_message_id"):
+        keyboard_msg = await update.message.reply_text("القائمة الرئيسية", reply_markup=main_keyboard(user.id))
+        context.user_data["reply_keyboard_message_id"] = keyboard_msg.message_id
 
 
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
