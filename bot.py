@@ -1956,7 +1956,7 @@ async def admin_wallet_ranking(query, currency="DA", page=0):
         nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"wallet_rank:{currency}:{page+1}"))
     buttons.append(nav)
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
-    await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
+    await edit_query_message(query, "\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def admin_person_card(query, target_id):
@@ -1964,7 +1964,7 @@ async def admin_person_card(query, target_id):
         row = conn.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
         orders = conn.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (target_id,)).fetchone()[0]
     if not row:
-        await query.edit_message_text("❌ المشترك غير موجود.")
+        await edit_query_message(query, "❌ المشترك غير موجود.")
         return
     username = "@" + row["username"] if row["username"] else "غير متوفر"
     phone = row["phone_number"] if "phone_number" in row.keys() and row["phone_number"] else "غير مشارك"
@@ -1986,7 +1986,7 @@ async def admin_person_card(query, target_id):
         [InlineKeyboardButton("🗑️ حذف الحساب", callback_data=f"person_delete_confirm:{target_id}")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="people_active" if not banned else "people_banned")],
     ]
-    await query.edit_message_text(
+    await edit_query_message(query, 
         f"👤 معلومات المشترك\n\nالاسم: {row['full_name'] or 'غير متوفر'}\n"
         f"Username: {username}\nTelegram ID: {target_id}\nالهاتف: {phone}\n"
         f"نوع الحساب: {'تاجر' if row['account_type']=='trader' else 'زبون'}\n"
@@ -2290,7 +2290,7 @@ async def show_store(message, user_id, category=None, context=None, query=None):
     if category not in ("game", "app"):
         text = "اختر زر 🎮 الألعاب أو 📱 التطبيقات من القائمة الرئيسية."
         if query:
-            await query.edit_message_text(text, reply_markup=main_keyboard(user_id))
+            await edit_query_message(query, text, reply_markup=main_keyboard(user_id))
         else:
             await message.reply_text(text, reply_markup=main_keyboard(user_id))
         return
@@ -2314,7 +2314,7 @@ async def show_store(message, user_id, category=None, context=None, query=None):
     if not games:
         text = "😕 لا توجد خدمات في هذا القسم حالياً."
         if query:
-            await query.edit_message_text(text, reply_markup=main_keyboard(user_id))
+            await edit_query_message(query, text, reply_markup=main_keyboard(user_id))
         else:
             await message.reply_text(text, reply_markup=main_keyboard(user_id))
         return
@@ -2339,7 +2339,7 @@ async def show_store(message, user_id, category=None, context=None, query=None):
     markup = InlineKeyboardMarkup(buttons)
     if query is not None:
         try:
-            await query.edit_message_text("\n".join(lines), reply_markup=markup)
+            await edit_query_message(query, "\n".join(lines), reply_markup=markup)
         except Exception as exc:
             # Telegram raises MessageNotModified when the content is identical.
             if "Message is not modified" not in str(exc):
@@ -2531,7 +2531,7 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None, pric
     game = get_game(game_id)
 
     if not game or not game["active"]:
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "❌ هذه الخدمة غير متاحة حالياً."
         )
         return
@@ -2540,7 +2540,7 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None, pric
     category_back = "back_apps" if game_category == "app" else "back_games"
     mode = game["platform_mode"] if "platform_mode" in game.keys() else "none"
     if mode == "both" and platform is None:
-        await query.edit_message_text(
+        await edit_query_message(query, 
             f"📱 اختر نوع الهاتف لخدمة {game['name']}: ",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🤖 Android", callback_data=f"platform:{game_id}:android")],
@@ -2559,11 +2559,11 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None, pric
     if recharge_method_id is None and methods:
         buttons = [[InlineKeyboardButton(f"🔀 {m['title']}", callback_data=f"recharge_select:{game_id}:{m['id']}:{platform or 'none'}")] for m in methods]
         buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data=category_back)])
-        await query.edit_message_text(f"{game['emoji']} {game['name']}\n\nاختر طريقة الشحن:", reply_markup=InlineKeyboardMarkup(buttons))
+        await edit_query_message(query, f"{game['emoji']} {game['name']}\n\nاختر طريقة الشحن:", reply_markup=InlineKeyboardMarkup(buttons))
         return
     selected_method = next((m for m in methods if int(m["id"]) == int(recharge_method_id)), None) if recharge_method_id is not None else (methods[0] if methods else None)
     if not selected_method:
-        await query.edit_message_text("لا توجد طريقة شحن مفعلة لهذه الخدمة."); return
+        await edit_query_message(query, "لا توجد طريقة شحن مفعلة لهذه الخدمة."); return
     context_method_id = int(selected_method["id"])
     offers = [o for o in get_offers(game_id) if o["recharge_method_id"] is not None and int(o["recharge_method_id"]) == context_method_id]
     if platform == "android":
@@ -2573,7 +2573,7 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None, pric
     description = (game["description"] or "").strip()
 
     if not offers:
-        await query.edit_message_text(
+        await edit_query_message(query, 
             f"{game['emoji']} {game['name']}\n\n"
             f"{description + chr(10) + chr(10) if description else ''}"
             "لا توجد عروض حالياً.\n"
@@ -2614,7 +2614,7 @@ async def open_game(query, game_id, platform=None, recharge_method_id=None, pric
         )
     ])
 
-    await query.edit_message_text(
+    await edit_query_message(query, 
         f"{game['emoji']} {game['name']}\n\n"
         f"{description + chr(10) + chr(10) if description else ''}"
         f"📱 الجهاز: {'Android' if platform == 'android' else 'iPhone (iOS)' if platform == 'ios' else 'غير مطلوب'}\n"
@@ -2636,15 +2636,15 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
     )
 
     if not game or not offer:
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "❌ هذا العرض غير متاح."
         )
         return
     if platform == "android" and not int(offer["android_active"] or 0):
-        await query.edit_message_text("❌ هذا العرض غير متوفر على Android.")
+        await edit_query_message(query, "❌ هذا العرض غير متوفر على Android.")
         return
     if platform == "ios" and not int(offer["ios_active"] or 0):
-        await query.edit_message_text("❌ هذا العرض غير متوفر على iPhone.")
+        await edit_query_message(query, "❌ هذا العرض غير متوفر على iPhone.")
         return
 
     buttons = []
@@ -2663,7 +2663,7 @@ async def open_offer(query, game_id, offer_id, platform=None, context=None, pric
     buttons.append([InlineKeyboardButton("🔙 رجوع للعروض", callback_data=f"recharge_select:{game_id}:{int(offer['recharge_method_id'])}:{platform or 'none'}")])
     if context is not None:
         context.user_data["use_points_for_order"] = False
-    await query.edit_message_text(
+    await edit_query_message(query, 
         "🛍️ تفاصيل العرض\n\n"
         f"🎮 اللعبة: {game['name']}\n"
         f"📦 العرض: {offer['name']}\n"
@@ -2772,7 +2772,7 @@ async def _cart_add(query, context, game_id, offer_id, platform, price_mode="cho
     else:
         cart["items"].append({"offer_id": int(offer_id), "quantity": 1})
     await query.answer("تمت إضافة العرض إلى السلة ✅")
-    await query.edit_message_text(_cart_text(cart, query.from_user.id), reply_markup=InlineKeyboardMarkup([
+    await edit_query_message(query, _cart_text(cart, query.from_user.id), reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("🛒 عرض السلة", callback_data="cart_view")],
         [InlineKeyboardButton("🔙 مواصلة التسوق", callback_data=f"recharge_select:{game_id}:{method_id}:{platform}")]
     ]))
@@ -2781,7 +2781,7 @@ async def _cart_add(query, context, game_id, offer_id, platform, price_mode="cho
 async def _cart_view(query, context):
     cart = context.user_data.get("cart")
     if not cart or not cart.get("items"):
-        await query.edit_message_text("🛒 السلة فارغة.")
+        await edit_query_message(query, "🛒 السلة فارغة.")
         return
     rows = []
     for item in cart["items"]:
@@ -2790,24 +2790,24 @@ async def _cart_view(query, context):
             oid = int(item["offer_id"])
             rows.append([InlineKeyboardButton(f"➖ {offer['name']}", callback_data=f"cart_dec:{oid}"), InlineKeyboardButton(f"{item['quantity']} ×", callback_data="cart_view"), InlineKeyboardButton("➕", callback_data=f"cart_inc:{oid}"), InlineKeyboardButton("🗑️", callback_data=f"cart_del:{oid}")])
     rows += [[InlineKeyboardButton("💳 متابعة للدفع", callback_data="cart_checkout")], [InlineKeyboardButton("🧹 إفراغ السلة", callback_data="cart_clear")]]
-    await query.edit_message_text(_cart_text(cart, query.from_user.id), reply_markup=InlineKeyboardMarkup(rows))
+    await edit_query_message(query, _cart_text(cart, query.from_user.id), reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def _cart_checkout(query, context):
     cart = context.user_data.get("cart")
     if not cart or not cart.get("items"):
-        await query.edit_message_text("🛒 السلة فارغة."); return
+        await edit_query_message(query, "🛒 السلة فارغة."); return
     buttons = [
         [InlineKeyboardButton(f"💰 الدفع من محفظة الدينار — {_cart_total(cart, 'balance', query.from_user.id)} DA", callback_data="cart_pay:balance")],
         [InlineKeyboardButton(f"💵 الدفع من محفظة الدولار — {_cart_total(cart, 'balance_usd', query.from_user.id):.2f} USD", callback_data="cart_pay:balance_usd")],
         [InlineKeyboardButton("🔙 رجوع للسلة", callback_data="cart_view")],
     ]
-    await query.edit_message_text("💳 اختر المحفظة التي تريد الدفع منها.\n⏳ عند اختيار الدفع تبدأ مهلة 15 دقيقة.", reply_markup=InlineKeyboardMarkup(buttons))
+    await edit_query_message(query, "💳 اختر المحفظة التي تريد الدفع منها.\n⏳ عند اختيار الدفع تبدأ مهلة 15 دقيقة.", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def _cart_start_payment(query, context, payment_type):
     cart = context.user_data.get("cart")
     if not cart or not cart.get("items"):
-        await query.edit_message_text("🛒 السلة فارغة."); return
+        await edit_query_message(query, "🛒 السلة فارغة."); return
     if payment_type not in ("baridi", "flexy", "balance", "balance_usd", "trader_wallet", "trader_wallet_usd"):
         await query.answer("طريقة الدفع غير مدعومة للسلة حاليًا.", show_alert=True); return
     game = get_game(cart["game_id"])
@@ -2821,7 +2821,7 @@ async def _cart_start_payment(query, context, payment_type):
         with db() as conn:
             row = conn.execute(f"SELECT {column} AS wallet_balance FROM users WHERE user_id=?", (query.from_user.id,)).fetchone()
         if not row or float(row["wallet_balance"] or 0) < float(total):
-            await query.edit_message_text(f"❌ رصيد محفظة {wallet_ccy} غير كافٍ. المجموع {total} {wallet_ccy}."); return
+            await edit_query_message(query, f"❌ رصيد محفظة {wallet_ccy} غير كافٍ. المجموع {total} {wallet_ccy}."); return
         method_name = f"محفظة {wallet_ccy}"
     else:
         method_name = "BaridiMob / CCP" if payment_type == "baridi" else "Flexy"
@@ -2844,7 +2844,7 @@ async def _cart_start_payment(query, context, payment_type):
     else:
         context.user_data["awaiting_player_id"] = True
         prompt = "🆔 أرسل Player ID الخاص بنفس اللاعب."
-    await query.edit_message_text(_cart_text(cart, query.from_user.id, payment_type) + f"\n\n💳 طريقة الدفع: {method_name}\n⏳ لديك 15 دقيقة لإتمام الطلب.\n\n{prompt}\nللإلغاء أرسل /cancel")
+    await edit_query_message(query, _cart_text(cart, query.from_user.id, payment_type) + f"\n\n💳 طريقة الدفع: {method_name}\n⏳ لديك 15 دقيقة لإتمام الطلب.\n\n{prompt}\nللإلغاء أرسل /cancel")
 
 
 # ====== اختيار طريقة الدفع ======
@@ -2868,7 +2868,7 @@ async def select_payment(
     )
 
     if not game or not offer:
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "❌ العرض لم يعد متاحاً."
         )
         return
@@ -2883,7 +2883,7 @@ async def select_payment(
         get_setting(f"payment_{method}_enabled", "1") != "1"
         or get_setting(f"offer_payment_{method}_{offer_id}", "1") != "1"
     ):
-        await query.edit_message_text("❌ طريقة الدفع هذه غير متاحة حالياً لهذا العرض. اختر طريقة أخرى.")
+        await edit_query_message(query, "❌ طريقة الدفع هذه غير متاحة حالياً لهذا العرض. اختر طريقة أخرى.")
         return
 
     if method == "trader_wallet":
@@ -2912,11 +2912,11 @@ async def select_payment(
     elif method == "credit":
         limit_amount, debt, term_days, due_at = get_trader_credit(query.from_user.id)
         if not is_trader(query.from_user.id) or limit_amount <= 0:
-            await query.edit_message_text("❌ القرض غير مفعّل لحسابك. تواصل مع الإدارة.")
+            await edit_query_message(query, "❌ القرض غير مفعّل لحسابك. تواصل مع الإدارة.")
             return
         price = offer_price(offer, "baridi", query.from_user.id)
         if debt + price > limit_amount:
-            await query.edit_message_text(f"❌ سقف القرض لا يكفي لهذا الطلب.\nسقف القرض: {limit_amount} DA\nالدين الحالي: {debt} DA\nالسعر: {price} DA\nالمتاح: {max(0, limit_amount-debt)} DA")
+            await edit_query_message(query, f"❌ سقف القرض لا يكفي لهذا الطلب.\nسقف القرض: {limit_amount} DA\nالدين الحالي: {debt} DA\nالسعر: {price} DA\nالمتاح: {max(0, limit_amount-debt)} DA")
             return
         method_name = "قرض التاجر"
         details = f"الدين الحالي: {debt} DA\nالمتاح من سقف القرض: {limit_amount-debt} DA\nأجل التسديد: {term_days} يومًا"
@@ -2924,20 +2924,20 @@ async def select_payment(
         try:
             custom_id = int(method.split("_", 1)[1])
         except (ValueError, IndexError):
-            await query.edit_message_text("❌ طريقة الدفع غير صحيحة.")
+            await edit_query_message(query, "❌ طريقة الدفع غير صحيحة.")
             return
         with db() as conn:
             custom_method = conn.execute("SELECT * FROM custom_payment_methods WHERE id=? AND enabled=1", (custom_id,)).fetchone()
             offer_method = conn.execute("SELECT enabled FROM offer_payment_methods WHERE offer_id=? AND method_id=?", (offer_id, custom_id)).fetchone()
         if not custom_method:
-            await query.edit_message_text("❌ طريقة الدفع هذه غير متاحة حالياً.")
+            await edit_query_message(query, "❌ طريقة الدفع هذه غير متاحة حالياً.")
             return
         currency = (custom_method["currency"] or "USD").upper()
         if currency == "USD" and get_setting("usd_payments_enabled", "0") != "1":
-            await query.edit_message_text("❌ طرق الدفع بالدولار متوقفة مؤقتًا.")
+            await edit_query_message(query, "❌ طرق الدفع بالدولار متوقفة مؤقتًا.")
             return
         if offer_method and not int(offer_method["enabled"] or 0):
-            await query.edit_message_text("❌ طريقة الدفع هذه متوقفة لهذا العرض.")
+            await edit_query_message(query, "❌ طريقة الدفع هذه متوقفة لهذا العرض.")
             return
         base_dzd = Decimal(offer_price(offer, "baridi", query.from_user.id))
         if currency == "USD":
@@ -2960,7 +2960,7 @@ async def select_payment(
         method_name = "رصيد المحفظة"
         details = "سيُخصم المبلغ من محفظتك عند تأكيد الطلب."
     else:
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "❌ طريقة الدفع غير صحيحة."
         )
         return
@@ -2971,7 +2971,7 @@ async def select_payment(
             row = conn.execute(f"SELECT {wallet_col} AS wallet_balance FROM users WHERE user_id=?", (query.from_user.id,)).fetchone()
         balance = float(row["wallet_balance"] or 0) if row else 0
         if balance < float(price):
-            await query.edit_message_text(f"❌ رصيد محفظة {currency} غير كافٍ.\nالسعر: {price} {currency}\nرصيدك: {balance} {currency}\nعبّئ محفظتك أو اختر طريقة أخرى.")
+            await edit_query_message(query, f"❌ رصيد محفظة {currency} غير كافٍ.\nالسعر: {price} {currency}\nرصيدك: {balance} {currency}\nعبّئ محفظتك أو اختر طريقة أخرى.")
             return
 
     # Loyalty points are not cash and must never be auto-deducted from a normal order.
@@ -3018,7 +3018,7 @@ async def select_payment(
         context.user_data["awaiting_player_id"] = True
         prompt = custom_prompt or "🆔 أرسل الآن معرف اللاعب (Player ID).\nإذا ما تحتاجش الخدمة معرف، أرسل: بدون"
 
-    await query.edit_message_text(
+    await edit_query_message(query, 
         "✅ اخترت العرض بنجاح!\n\n"
         f"🎮 اللعبة: {game['name']}\n"
         f"📦 العرض: {offer['name']}\n"
@@ -3584,7 +3584,7 @@ async def show_my_orders(update, context):
         text = "📦 ما عندك حتى طلب حاليا."
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]])
         if callback_query:
-            await callback_query.edit_message_text(text, reply_markup=markup)
+            await edit_query_message(callback_query, text, reply_markup=markup)
         else:
             await target_message.reply_text(text, reply_markup=main_keyboard(user_id))
         return
@@ -3608,7 +3608,7 @@ async def show_my_orders(update, context):
 
     lines.append("\nاستعمل القائمة الرئيسية للرجوع إلى المتجر.")
     if callback_query:
-        await callback_query.edit_message_text(
+        await edit_query_message(callback_query, 
             "\n".join(lines), parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]])
         )
@@ -3697,7 +3697,7 @@ async def admin_choose_offer_game(query, page=0):
     if nav: buttons.append(nav)
     buttons.append([InlineKeyboardButton("🔙 رجوع",callback_data="adm_home")])
 
-    await query.edit_message_text(
+    await edit_query_message(query, 
         "🎮 اختار اللعبة لي حاب تزيدلها عرض:",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
@@ -3726,7 +3726,7 @@ async def admin_games(query, page=0):
     buttons.append(nav)
     buttons.append([InlineKeyboardButton("🔄 تحديث", callback_data=f"adm_games_page:{page}")])
     buttons.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")])
-    await query.edit_message_text("🎮 <b>إدارة الألعاب والتطبيقات</b>\n\nاضغط على اسم أي لعبة أو تطبيق لفتح خيارات التحكم.\n🟢 مفعّل | 🔴 متوقف", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
+    await edit_query_message(query, "🎮 <b>إدارة الألعاب والتطبيقات</b>\n\nاضغط على اسم أي لعبة أو تطبيق لفتح خيارات التحكم.\n🟢 مفعّل | 🔴 متوقف", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def admin_game_manage(query, game_id):
@@ -3748,7 +3748,7 @@ async def admin_game_manage(query, game_id):
         [InlineKeyboardButton("🗑️ حذف التطبيق/اللعبة", callback_data=f"game_delete:{game_id}")],
         [InlineKeyboardButton("🔙 قائمة الألعاب والتطبيقات", callback_data="adm_games")],
     ]
-    await query.edit_message_text(f"⚙️ <b>إدارة {game_button_label(game)}</b>\n🆔 GAME_ID: <code>{game_id}</code>\nالحالة: {state}", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
+    await edit_query_message(query, f"⚙️ <b>إدارة {game_button_label(game)}</b>\n🆔 GAME_ID: <code>{game_id}</code>\nالحالة: {state}", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # =========================
@@ -3762,7 +3762,7 @@ async def admin_offers(query, game_id, page=0):
         total=int(conn.execute("SELECT COUNT(*) FROM offers WHERE game_id=?",(game_id,)).fetchone()[0])
         offers=conn.execute("SELECT id,name,active FROM offers WHERE game_id=? ORDER BY CASE WHEN COALESCE(sort_order,0)>0 THEN sort_order ELSE 1000000+id END,id LIMIT ? OFFSET ?",(game_id,per_page,page*per_page)).fetchall()
     if not game:
-        await query.edit_message_text("❌ اللعبة غير موجودة."); return
+        await edit_query_message(query, "❌ اللعبة غير موجودة."); return
     pages=max(1,(total+per_page-1)//per_page)
     if page>=pages: page=pages-1
     buttons=[]
@@ -3778,7 +3778,7 @@ async def admin_offers(query, game_id, page=0):
     buttons.append([InlineKeyboardButton("🔙 اختيار لعبة أخرى",callback_data="adm_offers")])
     text=f"{game['emoji']} <b>عروض {game['name']}</b>\n\nاختر العرض لفتح إعداداته أو أرسل قائمة أسعار اللعبة كاملة.\n🟢 مفعّل | 🔴 متوقف\nالعدد: {total}"
     if not total: text+="\n\nما كاين حتى عرض لهذه اللعبة حاليا."
-    await query.edit_message_text(text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(buttons))
+    await edit_query_message(query, text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def admin_offer_manage(query, offer_id):
@@ -3787,7 +3787,7 @@ async def admin_offer_manage(query, offer_id):
             r.title AS method_title FROM offers o LEFT JOIN games g ON g.id=o.game_id
             LEFT JOIN recharge_methods r ON r.id=o.recharge_method_id WHERE o.id=?""", (offer_id,)).fetchone()
     if not offer:
-        await query.edit_message_text("❌ العرض غير موجود.")
+        await edit_query_message(query, "❌ العرض غير موجود.")
         return
     state = "🟢 مفعّل" if offer['active'] else "🔴 متوقف"
     buttons = [
@@ -3798,7 +3798,7 @@ async def admin_offer_manage(query, offer_id):
         [InlineKeyboardButton("🗑️ حذف العرض", callback_data=f"offer_delete:{offer_id}")],
         [InlineKeyboardButton("🔙 قائمة العروض", callback_data=f"offers_game:{offer['game_id']}")],
     ]
-    await query.edit_message_text(
+    await edit_query_message(query, 
         f"📦 <b>إدارة العرض</b>\n\n{offer['game_emoji']} {offer['game_name']}\nالعرض: <b>{offer['name']}</b>\nطريقة الشحن: {offer['method_title'] or 'طريقة قديمة'}\nالحالة: {state}\n\nاختر الإجراء المطلوب:",
         parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -3822,7 +3822,7 @@ async def admin_choose_manage_game(query, page=0):
     if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️",callback_data=f"adm_offers_page:{page+1}"))
     buttons.append(nav)
     buttons.append([InlineKeyboardButton("🔙 رجوع",callback_data="adm_home")])
-    await query.edit_message_text("📦 اختار اللعبة باش تشوف عروضها وتتحكم فيها:",reply_markup=InlineKeyboardMarkup(buttons))
+    await edit_query_message(query, "📦 اختار اللعبة باش تشوف عروضها وتتحكم فيها:",reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # =========================
@@ -3850,7 +3850,7 @@ async def admin_all_orders(query, page=0):
         total_orders = int(conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0])
 
     if not orders:
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "📦 ما كاين حتى طلب في المتجر حاليا.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")]
@@ -3879,7 +3879,7 @@ async def admin_all_orders(query, page=0):
         InlineKeyboardButton("🔙 رجوع", callback_data="adm_home"),
     ])
 
-    await query.edit_message_text(
+    await edit_query_message(query, 
         f"📋 <b>طلبات المتجر — {total_orders} طلب</b>\n\n"
         "اختار طلب باش تشوف التفاصيل وتبدل حالته.",
         parse_mode="HTML",
@@ -3906,7 +3906,7 @@ async def admin_order_details(query, order_id):
         ).fetchone()
 
     if not order:
-        await query.edit_message_text("❌ الطلب غير موجود.")
+        await edit_query_message(query, "❌ الطلب غير موجود.")
         return
 
     text = (
@@ -3946,7 +3946,7 @@ async def admin_order_details(query, order_id):
         ],
     ]
 
-    await query.edit_message_text(
+    await edit_query_message(query, 
         text,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -3959,13 +3959,13 @@ async def admin_customer_orders(query, target_id):
         orders = conn.execute("SELECT o.id, o.price, o.status, o.created_at, o.payment_method, o.player_id, g.name AS game_name, f.name AS offer_name FROM orders o LEFT JOIN games g ON g.id=o.game_id LEFT JOIN offers f ON f.id=o.offer_id WHERE o.user_id = ? ORDER BY o.id DESC LIMIT 50", (target_id,)).fetchall()
         totals = conn.execute("SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN status != 'rejected' THEN price ELSE 0 END),0) AS all_total, COALESCE(SUM(CASE WHEN status='completed' THEN price ELSE 0 END),0) AS completed_total, COALESCE(SUM(CASE WHEN status IN ('pending','processing') THEN price ELSE 0 END),0) AS active_total FROM orders WHERE user_id = ?", (target_id,)).fetchone()
     if not user:
-        await query.edit_message_text("❌ الزبون غير موجود.")
+        await edit_query_message(query, "❌ الزبون غير موجود.")
         return
     lines = [f"👤 <b>{user['full_name'] or user['username'] or target_id}</b>", f"🆔 ID: <code>{target_id}</code>", f"🏷️ نوع الحساب: {'تاجر' if user['account_type']=='trader' else 'زبون عادي'}", f"🧾 عدد الطلبات: {totals['n']}", f"💰 مجموع الطلبات غير المرفوضة: {totals['all_total']} DA", f"✅ مجموع المكتمل: {totals['completed_total']} DA", f"⏳ مجموع المعلّق/قيد التنفيذ: {totals['active_total']} DA"]
     lines.append("\n<b>آخر الطلبات:</b>")
     for order in orders:
         lines.append(f"\n🧾 #{order['id']} — {order['game_name'] or 'خدمة محذوفة'} / {order['offer_name'] or 'عرض محذوف'}\n💰 {format_order_amount(order['price'], order['currency'])} | {status_label(order['status'])}\n💳 {order['payment_method'] or 'غير محدد'} | {order['created_at'] or ''}")
-    await query.edit_message_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 قائمة الزبائن", callback_data="adm_customers")]]))
+    await edit_query_message(query, "\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 قائمة الزبائن", callback_data="adm_customers")]]))
 
 
 # =========================
@@ -4019,7 +4019,7 @@ async def show_archived_stats(query):
     with db() as conn:
         rows = conn.execute("SELECT * FROM monthly_stats_archive ORDER BY month DESC LIMIT 2").fetchall()
     if not rows:
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "📊 ما كاين حتى إحصائيات محفوظة للشهرين الأخيرين.\n\nالإحصائيات المحفوظة هي ملخصات شهرية فقط، ماشي تفاصيل طلبات أو حسابات.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="adm_stats")]])
         )
@@ -4034,7 +4034,7 @@ async def show_archived_stats(query):
             f"✅ مكتملة: {r['completed_orders']} | ❌ مرفوضة: {r['rejected_orders']}\n"
             f"💰 قيمة الطلبات المكتملة: {r['completed_revenue']} DA"
         )
-    await query.edit_message_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="adm_stats")]]))
+    await edit_query_message(query, "\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="adm_stats")]]))
 
 
 async def show_stats(query):
@@ -4092,7 +4092,7 @@ async def show_stats(query):
         f"💰 قيمة الطلبات المكتملة: {completed_revenue} DA"
     )
 
-    await query.edit_message_text(
+    await edit_query_message(query, 
         text,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
@@ -4153,7 +4153,7 @@ async def admin_payment_settings(query):
             callback_data=f"custom_pay_info:{method['id']}"
         ), InlineKeyboardButton("✏️ تعليمات", callback_data=f"custom_pay_edit:{method['id']}")])
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
-    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
+    await edit_query_message(query, text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def show_pending_deposits(target, page=0, edit=False):
@@ -4203,6 +4203,36 @@ async def show_pending_deposits(target, page=0, edit=False):
 # معالجة أزرار لوحة التحكم
 # =========================
 
+async def edit_query_message(query, text, **kwargs):
+    """Edit callback source safely whether it is text or a media/GIF message."""
+    # Acknowledge callbacks even on branches that only edit/reply and otherwise
+    # leave Telegram's loading spinner running.
+    try:
+        await query.answer()
+    except Exception:
+        pass
+    message = getattr(query, "message", None)
+    has_media = bool(message and (
+        getattr(message, "animation", None)
+        or getattr(message, "photo", None)
+        or getattr(message, "video", None)
+        or getattr(message, "document", None)
+        or getattr(message, "audio", None)
+        or getattr(message, "voice", None)
+    ))
+    if has_media:
+        try:
+            return await query.edit_message_caption(caption=text, **kwargs)
+        except Exception:
+            # Captions are limited to 1024 chars; long pages must become text messages.
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            return await query.message.reply_text(text, **kwargs)
+    return await edit_query_message(query, text=text, **kwargs)
+
+
 async def callback_handler(update, context):
     query = update.callback_query
     data = query.data or ""
@@ -4213,7 +4243,7 @@ async def callback_handler(update, context):
 
     if data == "language_menu":
         await query.answer()
-        await query.edit_message_text(tr(user_id, "choose_language"), reply_markup=InlineKeyboardMarkup([
+        await edit_query_message(query, tr(user_id, "choose_language"), reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🇩🇿 العربية", callback_data="language_set:ar")],
             [InlineKeyboardButton("🇬🇧 English", callback_data="language_set:en")],
             [InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")],
@@ -4227,7 +4257,7 @@ async def callback_handler(update, context):
         with db() as conn:
             conn.execute("UPDATE users SET language=? WHERE user_id=?", (lang, user_id))
         await query.answer(LANGUAGE_TEXTS[lang]["language_saved"])
-        await query.edit_message_text(LANGUAGE_TEXTS[lang]["welcome"].format(store=STORE_NAME), reply_markup=customer_inline_menu(user_id))
+        await edit_query_message(query, LANGUAGE_TEXTS[lang]["welcome"].format(store=STORE_NAME), reply_markup=customer_inline_menu(user_id))
         return
 
     # Main customer navigation: edit the current menu message instead of
@@ -4240,7 +4270,7 @@ async def callback_handler(update, context):
             if not is_admin(user_id):
                 await query.answer("هذا القسم خاص بالإدارة.", show_alert=True)
                 return
-            await query.edit_message_text("👑 لوحة تحكم SERADJ STORE")
+            await edit_query_message(query, "👑 لوحة تحكم SERADJ STORE")
             admin_menu_msg = await query.message.reply_text("اختر من لوحة الإدارة:", reply_markup=admin_keyboard())
             context.user_data["reply_keyboard_message_id"] = admin_menu_msg.message_id
             # The edited heading is a transient navigation window; remove it.
@@ -4250,7 +4280,7 @@ async def callback_handler(update, context):
                 pass
             return
         if action == "store":
-            await query.edit_message_text(tr(user_id, "store_choose"), reply_markup=InlineKeyboardMarkup([
+            await edit_query_message(query, tr(user_id, "store_choose"), reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(tr(user_id, "games"), callback_data="store_category:game")],
                 [InlineKeyboardButton(tr(user_id, "apps"), callback_data="store_category:app")],
                 [InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")],
@@ -4260,27 +4290,23 @@ async def callback_handler(update, context):
             welcome = tr(user_id, "welcome", store=STORE_NAME)
             if user_language(user_id) == "ar":
                 welcome = get_setting("welcome_message", welcome)
-            await query.edit_message_text(welcome, reply_markup=customer_inline_menu(user_id))
+            await edit_query_message(query, welcome, reply_markup=customer_inline_menu(user_id))
             return
         if action == "benefits":
-            await query.edit_message_text(tr(user_id, "benefits_text"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]]))
+            await edit_query_message(query, tr(user_id, "benefits_text"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]]))
             return
         if action == "account":
             # Use the same account renderer as the persistent reply-keyboard
             # button, so the personalized GIF is shown from either entry point.
-            try:
-                await query.message.delete()
-            except Exception:
-                logger.debug("Could not delete previous account navigation message", exc_info=True)
             await show_account(query.message, user_id)
             return
         if action == "request":
             context.user_data["awaiting_game_request"] = True
-            await query.edit_message_text(tr(user_id, "request_prompt"))
+            await edit_query_message(query, tr(user_id, "request_prompt"))
             return
         if action == "referral":
             if not points_enabled(user_id):
-                await query.edit_message_text(tr(user_id, "referral_unavailable"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]])); return
+                await edit_query_message(query, tr(user_id, "referral_unavailable"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]])); return
             bot_username = get_setting("bot_username", "").strip()
             if not bot_username:
                 try:
@@ -4288,23 +4314,23 @@ async def callback_handler(update, context):
                     if bot_username: set_setting("bot_username", bot_username)
                 except Exception: bot_username = ""
             row = get_user_row(user_id)
-            float(row["points_da"] or 0) if row else 0
+            da = float(row["points_da"] or 0) if row else 0.0
             usd = float(row["points_usd"] or 0) if row else 0.0
             link = f"https://t.me/{bot_username}?start=ref_{user_id}" if bot_username else tr(user_id, "referral_link_unavailable")
-            await query.edit_message_text(f"{tr(user_id, 'referral_title')}\n\n{tr(user_id, 'referral_link')}: {link}\n\n{tr(user_id, 'points_da')}: {da:,} | {tr(user_id, 'points_usd')}: {usd:.3f}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]]))
+            await edit_query_message(query, f"{tr(user_id, 'referral_title')}\n\n{tr(user_id, 'referral_link')}: {link}\n\n{tr(user_id, 'points_da')}: {da:,} | {tr(user_id, 'points_usd')}: {usd:.3f}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]]))
             return
         if action == "orders":
-            await query.edit_message_text(tr(user_id, "orders_prompt"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "view_orders"), callback_data="account_orders")], [InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]]))
+            await edit_query_message(query, tr(user_id, "orders_prompt"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "view_orders"), callback_data="account_orders")], [InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]]))
             return
         if action == "deposit":
-            await query.edit_message_text(tr(user_id, "deposit_choose"), reply_markup=InlineKeyboardMarkup([
+            await edit_query_message(query, tr(user_id, "deposit_choose"), reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(tr(user_id, "deposit_da"), callback_data="deposit_currency:DA")],
                 [InlineKeyboardButton(tr(user_id, "deposit_usd"), callback_data="deposit_currency:USD")],
                 [InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")],
             ]))
             return
         if action == "upgrade":
-            await query.edit_message_text(
+            await edit_query_message(query, 
                 tr(user_id, "upgrade_prompt"),
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]])
             )
@@ -4424,7 +4450,7 @@ async def callback_handler(update, context):
         await query.answer("تمت إضافة الرصيد.")
         # Do not send a private bot notification to the subscriber.
         # Publish the credited amount and resulting balance in the Flexy output channel post.
-        await query.edit_message_text(
+        await edit_query_message(query, 
             f"✅ تمت إضافة التعبئة إلى محفظة المشترك {slot}\n\n"
             f"💰 المبلغ الأصلي: {event['gross_amount']:g} DA\n"
             f"📉 نسبة الاقتطاع: {pct}%\n"
@@ -4478,11 +4504,11 @@ async def callback_handler(update, context):
         await _cart_checkout(query, context); return
     if data == "cart_clear":
         context.user_data.pop("cart", None)
-        await query.edit_message_text("🧹 تم إفراغ السلة."); return
+        await edit_query_message(query, "🧹 تم إفراغ السلة."); return
     if data.startswith(("cart_inc:", "cart_dec:", "cart_del:")):
         cart = context.user_data.get("cart")
         if not cart:
-            await query.edit_message_text("🛒 السلة فارغة."); return
+            await edit_query_message(query, "🛒 السلة فارغة."); return
         action, oid_text = data.split(":", 1); oid = int(oid_text)
         item = next((x for x in cart["items"] if int(x["offer_id"]) == oid), None)
         if item:
@@ -4490,7 +4516,7 @@ async def callback_handler(update, context):
             elif action == "cart_dec": item["quantity"] = int(item["quantity"]) - 1
             else: item["quantity"] = 0
             if item["quantity"] <= 0: cart["items"].remove(item)
-        if not cart["items"]: context.user_data.pop("cart", None); await query.edit_message_text("🛒 السلة فارغة."); return
+        if not cart["items"]: context.user_data.pop("cart", None); await edit_query_message(query, "🛒 السلة فارغة."); return
         await _cart_view(query, context); return
     if data.startswith("cart_pay:"):
         await _cart_start_payment(query, context, data.split(":", 1)[1]); return
@@ -4508,7 +4534,7 @@ async def callback_handler(update, context):
             return
         enabled = data.split(":", 1)[1] == "1"
         set_setting("order_channel_enabled", "1" if enabled else "0")
-        await query.edit_message_text("✅ تم تفعيل نشر الطلبات في القناة." if enabled else "⏸️ تم إيقاف النشر في القناة.")
+        await edit_query_message(query, "✅ تم تفعيل نشر الطلبات في القناة." if enabled else "⏸️ تم إيقاف النشر في القناة.")
         return
     if data == "order_channel_clear:1":
         if not is_admin(user_id):
@@ -4517,18 +4543,18 @@ async def callback_handler(update, context):
         set_setting("order_channel_id", "")
         set_setting("order_channel_enabled", "0")
         context.user_data.pop("awaiting_order_channel_id", None)
-        await query.edit_message_text("🗑️ تم حذف القناة وإيقاف النشر.")
+        await edit_query_message(query, "🗑️ تم حذف القناة وإيقاف النشر.")
         return
 
     # Safe demo orders: no charge, no real fulfillment, clearly labeled as test.
     if data == "test_order_abort":
-        await query.edit_message_text("تم إلغاء الطلب التجريبي.")
+        await edit_query_message(query, "تم إلغاء الطلب التجريبي.")
         return
     if data.startswith("test_order_game:"):
         try:
             test_game_id = int(data.split(":", 1)[1])
         except (ValueError, IndexError):
-            await query.edit_message_text("اختيار لعبة غير صالح.")
+            await edit_query_message(query, "اختيار لعبة غير صالح.")
             return
         if not is_admin(user_id):
             await query.answer("الطلب التجريبي متاح لمالك المتجر فقط.", show_alert=True)
@@ -4536,14 +4562,14 @@ async def callback_handler(update, context):
         with db() as conn:
             game = conn.execute("SELECT id,name FROM games WHERE id=? AND active=1", (test_game_id,)).fetchone()
             if not game:
-                await query.edit_message_text("اللعبة غير موجودة أو غير مفعّلة.")
+                await edit_query_message(query, "اللعبة غير موجودة أو غير مفعّلة.")
                 return
             cur = conn.execute("INSERT INTO orders (user_id, game_id, offer_id, player_id, payment_method, price, status, created_at, points_awarded, points_used, platform, credit_charged, credit_refunded) VALUES (?, ?, NULL, ?, ?, 0, 'pending', ?, 0, 0, '', 0, 0)", (user_id, test_game_id, '[طلب تجريبي - لا يوجد شحن حقيقي]', 'طلب تجريبي (بدون دفع)', now_text()))
             test_order_id = cur.lastrowid
         demo_user = query.from_user
         draft = {"game_id": test_game_id, "game_name": game["name"], "offer_name": "طلب تجريبي", "platform": "تجريبي"}
         await dispatch_order_to_group(context, test_order_id, demo_user, draft, "طلب تجريبي - لا تشحن", "طلب تجريبي (بدون دفع)", 0, 0)
-        await query.edit_message_text(f"🧪 تم إنشاء الطلب التجريبي #{test_order_id} للعبة {game['name']}، بلا خصم رصيد وبلا شحن حقيقي.")
+        await edit_query_message(query, f"🧪 تم إنشاء الطلب التجريبي #{test_order_id} للعبة {game['name']}، بلا خصم رصيد وبلا شحن حقيقي.")
         return
 
     # Receipt is optional in private admin chat. In work groups, the claimant
@@ -4800,12 +4826,12 @@ async def callback_handler(update, context):
             game = conn.execute("SELECT name FROM games WHERE id=?", (game_id,)).fetchone()
             offers = conn.execute("SELECT name FROM offers WHERE game_id=? ORDER BY CASE WHEN COALESCE(sort_order,0)>0 THEN sort_order ELSE 1000000+id END,id", (game_id,)).fetchall()
         if not game or not offers:
-            await query.edit_message_text("لا توجد عروض لهذه اللعبة حتى الآن.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"offers_game:{game_id}")]]))
+            await edit_query_message(query, "لا توجد عروض لهذه اللعبة حتى الآن.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"offers_game:{game_id}")]]))
             return
         context.user_data["admin_step"] = "bulk_game_prices"
         context.user_data["bulk_price_game_id"] = game_id
         names = "\n".join(f"• {r['name']}" for r in offers)
-        await query.edit_message_text(
+        await edit_query_message(query, 
             f"📝 تحديث أسعار {game['name']} دفعة واحدة\n\n"
             "أرسل كل عرض في سطر بهذا الترتيب:\n"
             "اسم العرض | زبون DA | تاجر DA | زبون USD | تاجر USD\n\n"
@@ -4820,16 +4846,16 @@ async def callback_handler(update, context):
 
     if data == "price_menu_offers":
         if not is_admin(user_id):
-            await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
+            await edit_query_message(query, "⛔ هذه الخاصية للإدارة فقط.")
             return
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "💰 اختار اللعبة التي تريد تعديل عروضها:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("اختيار اللعبة", callback_data="adm_offers")], [InlineKeyboardButton("🔙 تعديل الأسعار", callback_data="price_menu_back")]])
         )
         return
     if data == "price_menu_tiktok":
         if not is_admin(user_id):
-            await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
+            await edit_query_message(query, "⛔ هذه الخاصية للإدارة فقط.")
             return
         values = {
             "retail_baridi": get_setting("tiktok_coin_price_retail_baridi", get_setting("tiktok_coin_price", "غير محدد")) or "غير محدد",
@@ -4837,7 +4863,7 @@ async def callback_handler(update, context):
             "trader_baridi": get_setting("tiktok_coin_price_trader_baridi", "غير محدد") or "غير محدد",
             "trader_flexy": get_setting("tiktok_coin_price_trader_flexy", "غير محدد") or "غير محدد",
         }
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "🎵 إعداد أسعار عملة TikTok\n\n"
             f"👤 زبون عادي — BaridiMob / CCP: {values['retail_baridi']} DA/كوين\n"
             f"👤 زبون عادي — Flexy: {values['retail_flexy']} DA/كوين\n"
@@ -4854,20 +4880,20 @@ async def callback_handler(update, context):
         return
     if data == "price_menu_tiktok_limits":
         if not is_admin(user_id):
-            await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
+            await edit_query_message(query, "⛔ هذه الخاصية للإدارة فقط.")
             return
         current_min, current_max = tiktok_quantity_limits()
         context.user_data["admin_step"] = "tiktok_min_quantity"
         context.user_data.pop("pending_tiktok_min_quantity", None)
-        await query.edit_message_text(
+        await edit_query_message(query, 
             f"📏 حدود كمية TikTok الحالية:\nالحد الأدنى: {current_min:,} كوينز\nالحد الأقصى: {current_max:,} كوينز\n\nأرسل الحد الأدنى الجديد كعدد صحيح. بعدها سيطلب منك البوت الحد الأقصى.\nللإلغاء أرسل /cancel."
         )
         return
     if data == "price_menu_back":
         if not is_admin(user_id):
-            await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
+            await edit_query_message(query, "⛔ هذه الخاصية للإدارة فقط.")
             return
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "💰 تعديل الأسعار\n\nاختار نوع الأسعار التي تريد تعديلها:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🎮 أسعار الألعاب والتطبيقات / العروض", callback_data="price_menu_offers")],
@@ -4879,7 +4905,7 @@ async def callback_handler(update, context):
 
     if data.startswith("tiktok_price_set:"):
         if not is_admin(user_id):
-            await query.edit_message_text("⛔ هذه الخاصية للإدارة فقط.")
+            await edit_query_message(query, "⛔ هذه الخاصية للإدارة فقط.")
             return
         parts = data.split(":")
         if len(parts) != 3 or parts[1] not in ("retail", "trader") or parts[2] not in ("baridi", "flexy"):
@@ -4893,7 +4919,7 @@ async def callback_handler(update, context):
         context.user_data["admin_step"] = step
         tier_label = "التجزئة (الزبائن)" if tier == "retail" else "الجملة (التجار)"
         method_label = "BaridiMob / CCP" if method == "baridi" else "Flexy"
-        await query.edit_message_text(
+        await edit_query_message(query, 
             f"🎵 سعر كوين TikTok — {tier_label} / {method_label}\n"
             f"السعر الحالي: {current or 'غير محدد'} DA للكوين الواحد.\n\n"
             "أرسل السعر الجديد للكوين الواحد بالدينار، مثال: 0.15 أو 0,15.\n"
@@ -4990,7 +5016,7 @@ async def callback_handler(update, context):
                     f"📅 تاريخ الطلب: {row['created_at'] or 'غير متوفر'}\n"
                     f"📅 تاريخ التسجيل: {row['user_created_at'] or 'غير متوفر'}\n"
                     f"📌 الحالة: {status_names.get(row['status'], row['status'])}")
-        await query.edit_message_text(text_out, reply_markup=keyboard)
+        await edit_query_message(query, text_out, reply_markup=keyboard)
         return
 
     if data.startswith("game_requests_list"):
@@ -5005,7 +5031,7 @@ async def callback_handler(update, context):
             total=int(conn.execute("SELECT COUNT(*) FROM game_requests").fetchone()[0])
             rows = conn.execute("SELECT * FROM game_requests ORDER BY id DESC LIMIT ? OFFSET ?", (per_page,page*per_page)).fetchall()
         if not rows:
-            await query.edit_message_text("📬 لا توجد طلبات ألعاب أو تطبيقات."); return
+            await edit_query_message(query, "📬 لا توجد طلبات ألعاب أو تطبيقات."); return
         pages=(total+per_page-1)//per_page
         buttons = [[InlineKeyboardButton(f"#{r['id']} {r['request_text'][:32]} ({r['status']})", callback_data=f"game_request_view:{r['id']}")] for r in rows]
         nav=[]
@@ -5013,7 +5039,7 @@ async def callback_handler(update, context):
         nav.append(InlineKeyboardButton(f"{page+1}/{pages}",callback_data="game_requests_list:noop"))
         if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️",callback_data=f"game_requests_list:{page+1}"))
         buttons.append(nav); buttons.append([InlineKeyboardButton("🔙 لوحة الإدارة",callback_data="adm_home")])
-        await query.edit_message_text(f"📬 اختر طلبًا لعرض التفاصيل — {total} طلب:", reply_markup=InlineKeyboardMarkup(buttons))
+        await edit_query_message(query, f"📬 اختر طلبًا لعرض التفاصيل — {total} طلب:", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
     if data.startswith("game_request_status:"):
@@ -5045,7 +5071,7 @@ async def callback_handler(update, context):
             [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"game_request_status:{req_id}:rejected")],
             [InlineKeyboardButton("📬 رجوع إلى طلبات الألعاب", callback_data="game_requests_list")],
         ])
-        await query.edit_message_text(details, reply_markup=keyboard)
+        await edit_query_message(query, details, reply_markup=keyboard)
         customer_status = {"reviewed":"طلبك قيد المراجعة 👀", "added":"خبر مفرح! تمت إضافة اللعبة/التطبيق الذي اقترحته ✅🎮", "rejected":"نعتذر، لم نتمكن من قبول اقتراح اللعبة/التطبيق حاليًا ❌"}
         try:
             await context.bot.send_message(int(req["user_id"]), f"📬 تحديث طلبك #{req_id}\n🎮 {req['request_text']}\n{customer_status[status]}")
@@ -5159,7 +5185,7 @@ async def callback_handler(update, context):
         context.user_data["pending_offer_id"] = offer_id
         context.user_data["pending_offer_usd_column"] = column
         who = "الزبون" if column == "price_usd" else "التاجر"
-        await query.edit_message_text(f"💵 سعر الدولار للـ{who} في {offer['name']} حاليًا: {offer['current_price']} USD\nأرسل السعر الجديد بالدولار (0 لإلغاء السعر بالدولار).\nعند عرض السعر بالدينار يُضرب في سعر بيع الدولار.")
+        await edit_query_message(query, f"💵 سعر الدولار للـ{who} في {offer['name']} حاليًا: {offer['current_price']} USD\nأرسل السعر الجديد بالدولار (0 لإلغاء السعر بالدولار).\nعند عرض السعر بالدينار يُضرب في سعر بيع الدولار.")
         return
 
     if data.startswith("offer_price_one:"):
@@ -5177,17 +5203,17 @@ async def callback_handler(update, context):
         context.user_data["pending_offer_id"] = offer_id
         context.user_data["pending_offer_price_column"] = column
         labels = {"price_baridi":"سعر الزبون عبر BaridiMob/CCP", "price_baridi_trader":"سعر التاجر عبر BaridiMob/CCP"}
-        await query.edit_message_text(f"✏️ {offer['name']}\n{labels[column]} الحالي: {offer['current_price']} DA\nأرسل السعر الجديد فقط. سيُعاد حساب سعر Flexy المقابل تلقائيًا (+18%).\nللإلغاء أرسل /cancel.")
+        await edit_query_message(query, f"✏️ {offer['name']}\n{labels[column]} الحالي: {offer['current_price']} DA\nأرسل السعر الجديد فقط. سيُعاد حساب سعر Flexy المقابل تلقائيًا (+18%).\nللإلغاء أرسل /cancel.")
         return
     if data.startswith("offer_price_all:"):
         offer_id = int(data.split(":", 1)[1])
         context.user_data["admin_step"] = "edit_price_data"
         context.user_data["pending_offer_id"] = offer_id
-        await query.edit_message_text("أرسل السعرين بهذا الترتيب:\nسعر الزبون BaridiMob | سعر التاجر BaridiMob\nمثال: 750 | 650\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
+        await edit_query_message(query, "أرسل السعرين بهذا الترتيب:\nسعر الزبون BaridiMob | سعر التاجر BaridiMob\nمثال: 750 | 650\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
         return
 
     if data == "orders_delete_all":
-        await query.edit_message_text("⚠️ هل أنت متأكد من حذف جميع الطلبات؟ سيتم حذف سجلات الطلبات فقط، ولن تتغير حسابات المستخدمين أو الأرصدة أو الألعاب والعروض. لا يمكن التراجع عن العملية.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ نعم، احذف جميع الطلبات", callback_data="orders_delete_confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="adm_home")]]))
+        await edit_query_message(query, "⚠️ هل أنت متأكد من حذف جميع الطلبات؟ سيتم حذف سجلات الطلبات فقط، ولن تتغير حسابات المستخدمين أو الأرصدة أو الألعاب والعروض. لا يمكن التراجع عن العملية.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ نعم، احذف جميع الطلبات", callback_data="orders_delete_confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="adm_home")]]))
         return
     if data == "orders_delete_confirm":
         with db() as conn:
@@ -5198,7 +5224,7 @@ async def callback_handler(update, context):
                 conn.execute("DELETE FROM sqlite_sequence WHERE name='orders'")
             except sqlite3.OperationalError:
                 pass
-        await query.edit_message_text(f"✅ تم حذف جميع الطلبات ({count} طلب). الحسابات والأرصدة والألعاب والعروض لم تتغير.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]]))
+        await edit_query_message(query, f"✅ تم حذف جميع الطلبات ({count} طلب). الحسابات والأرصدة والألعاب والعروض لم تتغير.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]]))
         return
 
     if data.startswith("wallet_rank:"):
@@ -5329,7 +5355,7 @@ async def callback_handler(update, context):
         return
     if data.startswith("person_delete_confirm:"):
         target = int(data.split(":")[1])
-        await query.edit_message_text(f"⚠️ هل أنت متأكد من حذف حساب {target}؟ هذا لا يحذف الطلبات أو سجلات الدفع.",
+        await edit_query_message(query, f"⚠️ هل أنت متأكد من حذف حساب {target}؟ هذا لا يحذف الطلبات أو سجلات الدفع.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ تأكيد حذف الحساب", callback_data=f"person_delete:{target}")],
                                                [InlineKeyboardButton("إلغاء", callback_data=f"person_view:{target}")]]))
         return
@@ -5337,7 +5363,7 @@ async def callback_handler(update, context):
         target = int(data.split(":")[1])
         with db() as conn:
             conn.execute("DELETE FROM users WHERE user_id=?", (target,))
-        await query.edit_message_text(f"تم حذف سجل الحساب {target}. سجلات الطلبات والمدفوعات لم تُحذف.")
+        await edit_query_message(query, f"تم حذف سجل الحساب {target}. سجلات الطلبات والمدفوعات لم تُحذف.")
         return
 
     if data.startswith("account_type_set:"):
@@ -5360,7 +5386,7 @@ async def callback_handler(update, context):
             await context.bot.send_message(target_id, f"ℹ️ تم تغيير نوع حسابك في {STORE_NAME} إلى: {label}.")
         except Exception:
             logger.exception("تعذر إشعار المستخدم بتغيير نوع الحساب")
-        await query.edit_message_text(f"✅ تم تغيير نوع الحساب إلى {label}.\nID: {target_id}\n" + ("يمكن للإدارة منح سلفية لهذا التاجر من بطاقة حسابه." if new_type == "trader" else "تم إيقاف صلاحيات التاجر. أي دين قائم يجب تسويته قبل التحويل."))
+        await edit_query_message(query, f"✅ تم تغيير نوع الحساب إلى {label}.\nID: {target_id}\n" + ("يمكن للإدارة منح سلفية لهذا التاجر من بطاقة حسابه." if new_type == "trader" else "تم إيقاف صلاحيات التاجر. أي دين قائم يجب تسويته قبل التحويل."))
         return
 
     if data.startswith("loanreq_approve:") or data.startswith("loanreq_reject:"):
@@ -5396,7 +5422,7 @@ async def callback_handler(update, context):
             await context.bot.send_message(target_id, f"{'✅ تمت الموافقة على' if approve else '❌ تم رفض'} طلب السلفية #{request_id}.\nالمبلغ: {amount} DA" + ("\nتمت إضافة المبلغ إلى دينك." if approve else ""), reply_markup=main_keyboard(target_id))
         except Exception:
             logger.exception("تعذر إشعار التاجر بنتيجة طلب السلفية")
-        await query.edit_message_text(f"{'✅ تمت الموافقة على' if approve else '❌ تم رفض'} طلب السلفية #{request_id}\nالتاجر: {target_id}\nالمبلغ: {amount} DA")
+        await edit_query_message(query, f"{'✅ تمت الموافقة على' if approve else '❌ تم رفض'} طلب السلفية #{request_id}\nالتاجر: {target_id}\nالمبلغ: {amount} DA")
         return
 
     if data.startswith("loan_manage:"):
@@ -5404,7 +5430,7 @@ async def callback_handler(update, context):
         with db() as conn:
             trader = conn.execute("SELECT user_id, username, full_name, credit_limit, credit_debt, credit_term_days, credit_due_at FROM users WHERE user_id = ? AND account_type = 'trader'", (target_id,)).fetchone()
         if not trader:
-            await query.edit_message_text("❌ التاجر غير موجود أو حسابه غير معتمد.")
+            await edit_query_message(query, "❌ التاجر غير موجود أو حسابه غير معتمد.")
             return
         context.user_data["admin_step"] = "loan_config"
         context.user_data["loan_target_id"] = target_id
@@ -5471,7 +5497,7 @@ async def callback_handler(update, context):
         with db() as conn:
             pending_dep = conn.execute("SELECT id FROM wallet_deposits WHERE user_id=? AND status='pending' LIMIT 1", (user_id,)).fetchone()
         if pending_dep:
-            await query.edit_message_text(
+            await edit_query_message(query, 
                 f"⏳ لديك طلب تعبئة قيد المراجعة #{pending_dep['id']}، لا يمكنك إرسال طلب آخر حتى تتم معالجته.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")]])
             )
@@ -5479,7 +5505,7 @@ async def callback_handler(update, context):
             return
         for k in ("awaiting_deposit_amount", "awaiting_deposit_amount_usd", "deposit_amount", "deposit_amount_usd", "deposit_method", "deposit_currency", "awaiting_deposit_receipt"):
             context.user_data.pop(k, None)
-        await query.edit_message_text("💰 اختر المحفظة التي تريد تعبئتها:", reply_markup=InlineKeyboardMarkup([
+        await edit_query_message(query, "💰 اختر المحفظة التي تريد تعبئتها:", reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🇩🇿 محفظة الدينار DA", callback_data="deposit_currency:DA")],
             [InlineKeyboardButton("💵 محفظة الدولار USD", callback_data="deposit_currency:USD")],
             [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="home:main")],
@@ -5518,11 +5544,11 @@ async def callback_handler(update, context):
         if currency == "DA":
             context.user_data["deposit_currency"] = "DA"
             context.user_data["awaiting_deposit_amount"] = True
-            await query.edit_message_text("🇩🇿 محفظة الدينار\nأرسل مبلغ التعبئة بالدينار الجزائري (مثال: 1000 DA).\nالحد الأدنى 100 DA.\nللإلغاء أرسل /cancel")
+            await edit_query_message(query, "🇩🇿 محفظة الدينار\nأرسل مبلغ التعبئة بالدينار الجزائري (مثال: 1000 DA).\nالحد الأدنى 100 DA.\nللإلغاء أرسل /cancel")
         elif currency == "USD":
             context.user_data["deposit_currency"] = "USD"
             context.user_data["awaiting_deposit_amount_usd"] = True
-            await query.edit_message_text("💵 محفظة الدولار USD\nأرسل المبلغ بالدولار، مثال: 10 أو 12.50 USD.\nيُضاف الرصيد إلى محفظة الدولار فقط بعد موافقة الإدارة.\nلا يوجد تحويل تلقائي إلى الدينار؛ للتحويل تواصل مع الإدارة مباشرة.\nللإلغاء أرسل /cancel")
+            await edit_query_message(query, "💵 محفظة الدولار USD\nأرسل المبلغ بالدولار، مثال: 10 أو 12.50 USD.\nيُضاف الرصيد إلى محفظة الدولار فقط بعد موافقة الإدارة.\nلا يوجد تحويل تلقائي إلى الدينار؛ للتحويل تواصل مع الإدارة مباشرة.\nللإلغاء أرسل /cancel")
         return
 
     if data.startswith("deposit_usd_method:"):
@@ -5532,14 +5558,14 @@ async def callback_handler(update, context):
         with db() as conn:
             method_row = conn.execute("SELECT * FROM custom_payment_methods WHERE id=? AND enabled=1 AND upper(currency)='USD'", (method_id,)).fetchone()
         if not method_row or get_setting("usd_payments_enabled", "0") != "1":
-            await query.edit_message_text("❌ طريقة الدفع بالدولار غير متاحة حاليًا. تواصل مع الإدارة."); return
+            await edit_query_message(query, "❌ طريقة الدفع بالدولار غير متاحة حاليًا. تواصل مع الإدارة."); return
         if amount_usd <= 0:
-            await query.edit_message_text("❌ مبلغ الدولار غير صحيح. ابدأ التعبئة من جديد."); return
+            await edit_query_message(query, "❌ مبلغ الدولار غير صحيح. ابدأ التعبئة من جديد."); return
         context.user_data["deposit_method"] = f"{method_row['emoji']} {method_row['name']}"
         context.user_data["deposit_currency"] = "USD"
         context.user_data["awaiting_deposit_receipt"] = True
         details = method_row["instructions"] or "تواصل مع الإدارة لمعرفة تعليمات الدفع."
-        await query.edit_message_text(f"💵 تعبئة محفظة الدولار\nالمبلغ: {amount_usd:.2f} USD\nطريقة الدفع: {method_row['name']}\n\n{details}\n\n📸 بعد الدفع، أرسل صورة أو فيديو وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
+        await edit_query_message(query, f"💵 تعبئة محفظة الدولار\nالمبلغ: {amount_usd:.2f} USD\nطريقة الدفع: {method_row['name']}\n\n{details}\n\n📸 بعد الدفع، أرسل صورة أو فيديو وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
         return
 
     if data.startswith("deposit_method:"):
@@ -5551,7 +5577,7 @@ async def callback_handler(update, context):
         minimum, maximum = deposit_limits(account_type, "flexy" if method == "flexy" else "baridi")
         if amount < minimum or amount > maximum:
             context.user_data.pop("deposit_amount", None)
-            await query.edit_message_text(
+            await edit_query_message(query, 
                 f"❌ مبلغ التعبئة خارج الحدود المسموحة لحسابك عبر {'Flexy' if method == 'flexy' else 'BaridiMob / CCP'}.\n"
                 f"الحد الأدنى: {minimum} DA\nالحد الأقصى: {maximum} DA\nابدأ التعبئة من جديد بالمبلغ المناسب."
             )
@@ -5560,7 +5586,7 @@ async def callback_handler(update, context):
         context.user_data["deposit_method"] = method_names[method]
         context.user_data["deposit_currency"] = "DA"
         if method == "flexy":
-            await query.edit_message_text(
+            await edit_query_message(query, 
                 f"🟠 اختر طريقة احتساب Flexy لتعبئة {amount} دج:\n\n"
                 f"1️⃣ تدفع {int(round(amount * 1.18))} دج وتُضاف {amount} دج كاملة إلى محفظتك.\n"
                 f"2️⃣ تدفع {amount} دج وتُخصم نسبة 15%، فيُضاف {int(round(amount * 0.85))} دج إلى محفظتك.\n\nاختر الطريقة:",
@@ -5574,7 +5600,7 @@ async def callback_handler(update, context):
         context.user_data["deposit_paid_amount"] = amount
         details_key = "ccp_details" if method == "ccp" else "baridi_details"
         details = get_setting(details_key, get_setting("baridi_details", "تواصل مع الإدارة لمعرفة معلومات الدفع."))
-        await query.edit_message_text(f"💳 تعبئة محفظة الدينار\nالمبلغ الذي سيضاف للمحفظة: {amount} DA\nالمبلغ المطلوب دفعه عبر {method_names[method]}: {amount} DA\n\n{details}\n\n📸 بعد الدفع، أرسل صورة أو فيديو وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
+        await edit_query_message(query, f"💳 تعبئة محفظة الدينار\nالمبلغ الذي سيضاف للمحفظة: {amount} DA\nالمبلغ المطلوب دفعه عبر {method_names[method]}: {amount} DA\n\n{details}\n\n📸 بعد الدفع، أرسل صورة أو فيديو وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة.")
         return
 
     if data.startswith("deposit_flexy_mode:"):
@@ -5592,7 +5618,7 @@ async def callback_handler(update, context):
         context.user_data["deposit_flexy_mode"] = mode
         context.user_data["awaiting_deposit_receipt"] = True
         details = get_setting("flexy_details", "تواصل مع الإدارة لمعرفة معلومات Flexy.")
-        await query.edit_message_text(
+        await edit_query_message(query, 
             f"🟠 تعبئة محفظة Flexy\nالمبلغ المدفوع: {paid_amount} DA\n"
             f"المبلغ الذي سيضاف إلى محفظتك بعد الموافقة: {credit_amount} DA\n\n"
             f"{details}\n\n📸 أرسل صورة أو فيديو وصل الدفع هنا. لا يُضاف الرصيد إلا بعد موافقة الإدارة."
@@ -5785,7 +5811,7 @@ async def callback_handler(update, context):
         nav.append(InlineKeyboardButton(f"{page+1}/{pages}",callback_data="trader_requests_page:noop"))
         if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️",callback_data=f"trader_requests_page:{page+1}"))
         buttons.append(nav); buttons.append([InlineKeyboardButton("🔙 رجوع",callback_data="adm_home")])
-        await query.edit_message_text(f"🏪 طلبات حسابات التجار المعلّقة — {total}",reply_markup=InlineKeyboardMarkup(buttons))
+        await edit_query_message(query, f"🏪 طلبات حسابات التجار المعلّقة — {total}",reply_markup=InlineKeyboardMarkup(buttons))
         return
 
     if data.startswith("trader_approve:") or data.startswith("trader_reject:"):
@@ -5800,7 +5826,7 @@ async def callback_handler(update, context):
             await context.bot.send_message(target_id, "✅ تمت الموافقة على حسابك كتاجر. ستظهر لك أسعار التجار." if approved else "❌ لم تتم الموافقة على طلب حساب التاجر حالياً.")
         except Exception:
             logger.exception("تعذر إشعار صاحب طلب التاجر")
-        await query.edit_message_text("✅ تم تفعيل حساب التاجر." if approved else "تم رفض طلب التاجر.")
+        await edit_query_message(query, "✅ تم تفعيل حساب التاجر." if approved else "تم رفض طلب التاجر.")
         return
 
     # عرض إحصائيات الشهرين المحفوظة
@@ -5810,7 +5836,7 @@ async def callback_handler(update, context):
 
     # تصفير البيانات مع تأكيد مزدوج
     if data == "reset_data":
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "⚠️ <b>تأكيد تصفير البيانات</b>\n\nسيتم حذف حسابات الزبائن والتجار، الطلبات، الأرصدة، نقاط الولاء، الديون، وصولات تعبئة الرصيد وتسديد الديون.\n\nستبقى الألعاب والعروض والأسعار وإعدادات البوت. سيتم حفظ ملخص إحصائي شهري للشهر الحالي والشهر السابق فقط، دون أسماء أو تفاصيل الطلبات.\n\nهل تريد المتابعة؟",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
@@ -5825,9 +5851,9 @@ async def callback_handler(update, context):
             reset_customer_data_preserving_stats()
         except Exception:
             logger.exception("فشل تصفير بيانات المتجر")
-            await query.edit_message_text("❌ فشل تصفير البيانات. لم نؤكد نجاح العملية؛ راجع سجل السيرفر وقاعدة البيانات.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")]]))
+            await edit_query_message(query, "❌ فشل تصفير البيانات. لم نؤكد نجاح العملية؛ راجع سجل السيرفر وقاعدة البيانات.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")]]))
             return
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "✅ تم تصفير حسابات الزبائن والتجار والطلبات والأرصدة والديون ووصولات الدفع.\n\n🎮 الألعاب والعروض والأسعار والإعدادات بقيت كما هي.\n🗂️ تم حفظ ملخصات إحصائية للشهر الحالي والشهر السابق إذا كانت هناك طلبات ضمن هذه الفترة.\n\nخذ نسخة احتياطية من قاعدة البيانات قبل أي تعديل إضافي.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📊 عرض الإحصائيات المحفوظة", callback_data="adm_archived_stats")], [InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]])
         )
@@ -5864,7 +5890,7 @@ async def callback_handler(update, context):
         nav.append(InlineKeyboardButton(f"{page+1}/{pages}",callback_data="adm_customers_page:noop"))
         if page+1<pages: nav.append(InlineKeyboardButton("التالي ➡️",callback_data=f"adm_customers_page:{page+1}"))
         buttons.append(nav); buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_home")])
-        await query.edit_message_text(f"👤 اختر زبونًا — {total} زبون:", reply_markup=InlineKeyboardMarkup(buttons))
+        await edit_query_message(query, f"👤 اختر زبونًا — {total} زبون:", reply_markup=InlineKeyboardMarkup(buttons))
 
     # الإحصائيات
     elif data == "adm_stats":
@@ -5889,7 +5915,7 @@ async def callback_handler(update, context):
             buttons.append([InlineKeyboardButton("⏯️ تفعيل / إيقاف", callback_data=f"premium_toggle:{game_id}")])
             buttons.append([InlineKeyboardButton("🗑️ حذف الإيموجي", callback_data=f"premium_delete:{game_id}")])
         buttons.append([InlineKeyboardButton("🔙 قائمة الإيموجيات", callback_data="premium_manage")])
-        await query.edit_message_text(f"✨ إيموجي Premium — {game['name']}{status}\n\nتقدر تتحكم في الإيموجي من هنا.", reply_markup=InlineKeyboardMarkup(buttons))
+        await edit_query_message(query, f"✨ إيموجي Premium — {game['name']}{status}\n\nتقدر تتحكم في الإيموجي من هنا.", reply_markup=InlineKeyboardMarkup(buttons))
 
     elif data == "premium_manage":
         with db() as conn:
@@ -5901,7 +5927,7 @@ async def callback_handler(update, context):
             status = "🟢" if custom_id and enabled else ("⏸️" if custom_id else "⚪")
             buttons.append([InlineKeyboardButton(f"{status} {game_button_label(game)}", callback_data=f"premium_game:{game['id']}", **premium_button_kwargs(game['id']))])
         buttons.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")])
-        await query.edit_message_text("✨ إدارة إيموجيات Premium\n🟢 مفعّل | ⏸️ متوقف | ⚪ غير مضاف", reply_markup=InlineKeyboardMarkup(buttons))
+        await edit_query_message(query, "✨ إدارة إيموجيات Premium\n🟢 مفعّل | ⏸️ متوقف | ⚪ غير مضاف", reply_markup=InlineKeyboardMarkup(buttons))
 
     elif data.startswith("premium_set:"):
         game_id = int(data.split(":", 1)[1])
@@ -5920,7 +5946,7 @@ async def callback_handler(update, context):
         enabled = get_setting(f"premium_emoji_enabled_{game_id}", "1") == "1"
         state = "مفعّل 🟢" if enabled else "متوقف ⏸️"
         buttons = [[InlineKeyboardButton("➕ تغيير الإيموجي", callback_data=f"premium_set:{game_id}")], [InlineKeyboardButton("⏯️ تفعيل / إيقاف", callback_data=f"premium_toggle:{game_id}")], [InlineKeyboardButton("🗑️ حذف الإيموجي", callback_data=f"premium_delete:{game_id}")], [InlineKeyboardButton("🔙 قائمة الإيموجيات", callback_data="premium_manage")]]
-        await query.edit_message_text(f"✨ إيموجي Premium — {game['name']}\nالإيموجي ID: {custom_id}\nالحالة: {state}", reply_markup=InlineKeyboardMarkup(buttons))
+        await edit_query_message(query, f"✨ إيموجي Premium — {game['name']}\nالإيموجي ID: {custom_id}\nالحالة: {state}", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
     elif data.startswith("premium_delete:"):
@@ -5931,7 +5957,7 @@ async def callback_handler(update, context):
         with db() as conn:
             game = conn.execute("SELECT id, name FROM games WHERE id=?", (game_id,)).fetchone()
         buttons = [[InlineKeyboardButton("➕ إضافة إيموجي", callback_data=f"premium_set:{game_id}")], [InlineKeyboardButton("🔙 قائمة الإيموجيات", callback_data="premium_manage")]]
-        await query.edit_message_text(f"✨ إيموجي Premium — {game['name']}\nمازال ما ضفت حتى إيموجي لهذه اللعبة.", reply_markup=InlineKeyboardMarkup(buttons))
+        await edit_query_message(query, f"✨ إيموجي Premium — {game['name']}\nمازال ما ضفت حتى إيموجي لهذه اللعبة.", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
     # إدارة طرق الشحن لكل لعبة أو تطبيق
@@ -5941,7 +5967,7 @@ async def callback_handler(update, context):
             game = conn.execute("SELECT name FROM games WHERE id=?", (game_id,)).fetchone()
             methods = conn.execute("SELECT * FROM recharge_methods WHERE game_id=? ORDER BY id", (game_id,)).fetchall()
         if not game:
-            await query.edit_message_text("الخدمة غير موجودة."); return
+            await edit_query_message(query, "الخدمة غير موجودة."); return
         buttons = []
         for m in methods:
             method_label = ("🟢 " if m["active"] else "🔴 ") + m["title"] + f" ({ {'id':'ID','login':'تسجيل دخول','none':'بدون معلومات'}.get(m['method_type'],'ID') })"
@@ -5951,7 +5977,7 @@ async def callback_handler(update, context):
             ])
         buttons.append([InlineKeyboardButton("➕ إضافة طريقة شحن", callback_data=f"recharge_method_add:{game_id}")])
         buttons.append([InlineKeyboardButton("🔙 إدارة الألعاب", callback_data="adm_games")])
-        await query.edit_message_text(f"🔀 طرق الشحن لـ {game['name']}\nاختر طريقة لتفعيلها/إيقافها أو أضف طريقة جديدة. كل طريقة لها عروض وأسعار مستقلة.", reply_markup=InlineKeyboardMarkup(buttons))
+        await edit_query_message(query, f"🔀 طرق الشحن لـ {game['name']}\nاختر طريقة لتفعيلها/إيقافها أو أضف طريقة جديدة. كل طريقة لها عروض وأسعار مستقلة.", reply_markup=InlineKeyboardMarkup(buttons))
 
     elif data.startswith("recharge_method_add:"):
         game_id = int(data.split(":", 1)[1])
@@ -5985,7 +6011,7 @@ async def callback_handler(update, context):
         context.user_data["admin_step"] = "add_offer_data"
         context.user_data["pending_game_id"] = int(game_id)
         context.user_data["pending_recharge_method_id"] = int(method_id)
-        await query.edit_message_text("➕ أرسل بيانات العرض والأسعار لهذه الطريقة فقط:\nاسم العرض | سعر الزبون BaridiMob/CCP | سعر التاجر BaridiMob/CCP\n\nمثال: 100 Coins | 250 | 220\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
+        await edit_query_message(query, "➕ أرسل بيانات العرض والأسعار لهذه الطريقة فقط:\nاسم العرض | سعر الزبون BaridiMob/CCP | سعر التاجر BaridiMob/CCP\n\nمثال: 100 Coins | 250 | 220\nسيُحسب سعر Flexy تلقائيًا بإضافة 18%. أرسل /cancel للإلغاء.")
 
     # إدارة الألعاب
     elif data == "adm_games":
@@ -6313,7 +6339,7 @@ async def callback_handler(update, context):
         if row:
             await admin_offer_manage(query, offer_id)
         else:
-            await query.edit_message_text("❌ العرض غير موجود.")
+            await edit_query_message(query, "❌ العرض غير موجود.")
 
     # حذف عرض
     elif data.startswith("offer_delete:"):
@@ -6341,7 +6367,7 @@ async def callback_handler(update, context):
         if row:
             await admin_offers(query, game_id)
         else:
-            await query.edit_message_text(
+            await edit_query_message(query, 
                 "❌ العرض غير موجود."
             )
 
@@ -6362,7 +6388,7 @@ async def callback_handler(update, context):
             return
         buttons = [[InlineKeyboardButton(m["title"], callback_data=f"add_offer_method:{game_id}:{m['id']}")] for m in methods]
         buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_add_offer")])
-        await query.edit_message_text("اختر طريقة الشحن التي سيخصّص لها هذا العرض وأسعاره:", reply_markup=InlineKeyboardMarkup(buttons))
+        await edit_query_message(query, "اختر طريقة الشحن التي سيخصّص لها هذا العرض وأسعاره:", reply_markup=InlineKeyboardMarkup(buttons))
 
     # اختيار عرض لتعديل أسعاره
     elif data.startswith("edit_offer:"):
@@ -6381,7 +6407,7 @@ async def callback_handler(update, context):
             ).fetchone()
 
         if not offer:
-            await query.edit_message_text(
+            await edit_query_message(query, 
                 "❌ العرض غير موجود."
             )
             return
@@ -6405,7 +6431,7 @@ async def callback_handler(update, context):
             for cm in custom_methods:
                 is_on = offer_method_states.get(int(cm["id"]), 1)
                 price_buttons.append([InlineKeyboardButton(f"{'✅' if is_on else '🚫'} {cm['emoji']} {cm['name']} — {'إيقاف لهذا العرض' if is_on else 'تفعيل لهذا العرض'}", callback_data=f"offer_pay_toggle:{offer_id}:{cm['id']}")])
-        await query.edit_message_text(
+        await edit_query_message(query, 
             f"💰 تعديل سعر العرض: {offer['name']}\n\n"
             f"الأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\n"
             f"تاجر DA {price_row['price_baridi_trader']} DA | تاجر USD {price_row['price_usd_trader']} USD\n\n"
@@ -6453,7 +6479,7 @@ async def callback_handler(update, context):
             is_on = offer_method_states.get(int(cm["id"]), 1)
             price_buttons.append([InlineKeyboardButton(f"{'✅' if is_on else '🚫'} {cm['emoji']} {cm['name']} — {'إيقاف لهذا العرض' if is_on else 'تفعيل لهذا العرض'}", callback_data=f"offer_pay_toggle:{offer_id}:{cm['id']}")])
         price_buttons.append([InlineKeyboardButton("🔙 إدارة العرض", callback_data=f"offer_manage:{offer_id}")])
-        await query.edit_message_text(f"💰 تعديل سعر العرض: {offer['name']}\n\nالأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\nتاجر Baridi {price_row['price_baridi_trader']} DA | Flexy {price_row['price_flexy_trader']} DA\n\nيمكنك تفعيل أو إيقاف طرق الدفع لهذا العرض فقط.", reply_markup=InlineKeyboardMarkup(price_buttons))
+        await edit_query_message(query, f"💰 تعديل سعر العرض: {offer['name']}\n\nالأسعار الحالية: زبون Baridi {price_row['price_baridi']} DA | زبون Flexy {price_row['price_flexy']} DA\nتاجر Baridi {price_row['price_baridi_trader']} DA | Flexy {price_row['price_flexy_trader']} DA\n\nيمكنك تفعيل أو إيقاف طرق الدفع لهذا العرض فقط.", reply_markup=InlineKeyboardMarkup(price_buttons))
 
     elif data.startswith("offer_pay_toggle:"):
         if not is_admin(user_id):
@@ -6665,7 +6691,7 @@ async def callback_handler(update, context):
             ).fetchone()
 
             if not order:
-                await query.edit_message_text(
+                await edit_query_message(query, 
                     "❌ الطلب غير موجود."
                 )
                 return
@@ -6860,7 +6886,7 @@ async def callback_handler(update, context):
 
         if group_order_terminal_action:
             try:
-                await query.edit_message_text(
+                await edit_query_message(query, 
                     f"{'✅ الطلب مكتمل' if new_status == 'completed' else '❌ الطلب ملغي'} — الطلب #{order_id}"
                 )
             except Exception:
@@ -6929,7 +6955,7 @@ async def callback_handler(update, context):
             return
         game = get_game(game_id)
         if not game or (game["name"] or "").strip().lower() != "tiktok":
-            await query.edit_message_text("❌ هذا الخيار متاح لشحن TikTok فقط.")
+            await edit_query_message(query, "❌ هذا الخيار متاح لشحن TikTok فقط.")
             return
         context.user_data["tiktok_custom_request"] = {
             "game_id": game_id,
@@ -6938,7 +6964,7 @@ async def callback_handler(update, context):
         }
         context.user_data["awaiting_tiktok_custom_amount"] = True
         tiktok_min, tiktok_max = tiktok_quantity_limits()
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "✏️ اختيار كمية TikTok مخصصة\n\n"
             f"أرسل عدد الكوينز اللي حاب تشحنهم، من {tiktok_min:,} حتى {tiktok_max:,}.\n"
             "بعد إدخال الكمية، يظهر السعر وطرق الدفع تلقائيًا.\n\n"
@@ -6955,13 +6981,13 @@ async def callback_handler(update, context):
         minimum, maximum = tiktok_quantity_limits()
         if not game or (game["name"] or "").strip().lower() != "tiktok" or not minimum <= amount <= maximum:
             context.user_data.pop("tiktok_custom_request", None)
-            await query.edit_message_text("❌ انتهت جلسة الطلب. ارجع للمتجر وابدأ من جديد.")
+            await edit_query_message(query, "❌ انتهت جلسة الطلب. ارجع للمتجر وابدأ من جديد.")
             return
         rate_method = "flexy" if method == "flexy" else "baridi"
         price_per_coin = tiktok_coin_price(rate_method, query.from_user.id)
         total = (price_per_coin * Decimal(amount)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
         if price_per_coin <= 0 or total <= 0:
-            await query.edit_message_text("❌ سعر TikTok لهذه الفئة وطريقة الدفع غير مضبوط. تواصل مع الإدارة.")
+            await edit_query_message(query, "❌ سعر TikTok لهذه الفئة وطريقة الدفع غير مضبوط. تواصل مع الإدارة.")
             return
         price = int(total)
         if method == "baridi":
@@ -6975,7 +7001,7 @@ async def callback_handler(update, context):
                 balance_row = conn.execute("SELECT balance FROM users WHERE user_id=?", (query.from_user.id,)).fetchone()
             balance = int(balance_row["balance"] or 0) if balance_row else 0
             if balance < price:
-                await query.edit_message_text(f"❌ رصيد محفظتك غير كافٍ.\nالسعر: {price} DA\nرصيدك: {balance} DA\n\nاختر BaridiMob / CCP أو Flexy، أو عبّئ محفظتك.")
+                await edit_query_message(query, f"❌ رصيد محفظتك غير كافٍ.\nالسعر: {price} DA\nرصيدك: {balance} DA\n\nاختر BaridiMob / CCP أو Flexy، أو عبّئ محفظتك.")
                 return
             method_name = "رصيد المحفظة"
             details = "سيُخصم المبلغ من محفظتك عند تأكيد الطلب. (يُطبّق سعر BaridiMob / CCP لفئتك.)"
@@ -6995,7 +7021,7 @@ async def callback_handler(update, context):
         }
         context.user_data.pop("awaiting_tiktok_custom_amount", None)
         context.user_data["awaiting_login_email"] = True
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "✅ تم حساب طلب TikTok\n\n"
             f"🎵 الكمية: {amount:,} كوينز\n"
             f"💵 سعر الكوين الواحد: {format(price_per_coin.normalize(), 'f')} DA\n"
@@ -7031,7 +7057,7 @@ async def callback_handler(update, context):
         context.user_data["credit_repay_method"] = "BaridiMob / CCP" if method == "baridi" else "Flexy"
         context.user_data["awaiting_credit_receipt"] = True
         details = get_setting("baridi_details" if method == "baridi" else "flexy_details", "تواصل مع الإدارة لمعرفة معلومات الدفع.")
-        await query.edit_message_text(f"💳 معلومات الدفع لتسديد القرض:\n{details}\n\nالمبلغ: {context.user_data.get('credit_repay_amount', 0)} DA\n📸 أرسل صورة وصل الدفع. لن ينقص الدين حتى توافق الإدارة.")
+        await edit_query_message(query, f"💳 معلومات الدفع لتسديد القرض:\n{details}\n\nالمبلغ: {context.user_data.get('credit_repay_amount', 0)} DA\n📸 أرسل صورة وصل الدفع. لن ينقص الدين حتى توافق الإدارة.")
 
     # اختيار طريقة الدفع
     elif data.startswith("pay:"):
@@ -7093,7 +7119,7 @@ async def callback_handler(update, context):
         with db() as conn:
             conn.execute("INSERT INTO scheduled_broadcasts(message,entities_json,due_at,created_at) VALUES(?,?,?,?)", (body, entities_json, due, now_text()))
         context.user_data.pop("pending_scheduled_text", None); context.user_data.pop("pending_scheduled_entities", None); context.user_data.pop("pending_scheduled_due", None); context.user_data.pop("admin_step", None)
-        await query.edit_message_text(f"✅ تمت جدولة الإشعار بنجاح.\n📅 الموعد: {due}\nسيُرسل مرة واحدة تلقائيًا.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]]))
+        await edit_query_message(query, f"✅ تمت جدولة الإشعار بنجاح.\n📅 الموعد: {due}\nسيُرسل مرة واحدة تلقائيًا.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]]))
         return
     if data.startswith("feedback_approve:") or data.startswith("feedback_reject:"):
         if not is_admin(user_id):
@@ -7109,7 +7135,7 @@ async def callback_handler(update, context):
             for uid in users:
                 try: await context.bot.send_message(chat_id=uid, text="💬 رأي أحد زبائن SERADJ STORE (بدون معلومات شخصية):\n\n" + row['comment'])
                 except Exception: pass
-        await query.edit_message_text("✅ تم نشر التعليق بشكل مجهول." if approve else "🗑️ تم رفض التعليق.")
+        await edit_query_message(query, "✅ تم نشر التعليق بشكل مجهول." if approve else "🗑️ تم رفض التعليق.")
         return
     if data == "feedback_begin":
         context.user_data["feedback_waiting"] = True
@@ -7120,7 +7146,7 @@ async def callback_handler(update, context):
         with db() as conn:
             rows = conn.execute("SELECT id,comment,created_at FROM feedback_comments WHERE approved=0 ORDER BY id DESC LIMIT 30").fetchall()
         if not rows:
-            await query.edit_message_text("لا توجد تعليقات تنتظر المراجعة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]])); return
+            await edit_query_message(query, "لا توجد تعليقات تنتظر المراجعة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]])); return
         for row in rows:
             await query.message.reply_text("💬 تعليق للمراجعة (مجهول):\n\n" + row['comment'] + "\n\n" + str(row['created_at']), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ موافقة ونشر مجهول", callback_data=f"feedback_approve:{row['id']}"), InlineKeyboardButton("❌ رفض", callback_data=f"feedback_reject:{row['id']}")]]))
         return
@@ -7260,7 +7286,7 @@ async def callback_handler(update, context):
             )
             if len(failure_details) > 15:
                 summary += f"\n... وهناك {len(failure_details) - 15} حالات أخرى. راجع سجلات FadeHost للتفاصيل."
-        await query.edit_message_text(
+        await edit_query_message(query, 
             summary,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="adm_home")]])
         )
@@ -7286,7 +7312,7 @@ async def callback_handler(update, context):
                 text=notify_text,
             )
 
-            await query.edit_message_text(
+            await edit_query_message(query, 
                 "✅ تم إرسال الإشعار إلى الزبون بنجاح."
             )
 
@@ -7295,7 +7321,7 @@ async def callback_handler(update, context):
                 "فشل إرسال إشعار الزبون"
             )
 
-            await query.edit_message_text(
+            await edit_query_message(query, 
                 "❌ تعذر إرسال الإشعار. تأكد من Telegram ID "
                 "وأن الزبون يستطيع استقبال رسائل البوت."
             )
@@ -7318,7 +7344,7 @@ async def callback_handler(update, context):
         )
         context.user_data.pop("admin_step", None)
 
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "❌ تم إلغاء إرسال الإشعار."
         )
 
@@ -7340,7 +7366,7 @@ async def callback_handler(update, context):
             total = int(conn.execute(f"SELECT COUNT(*) FROM games WHERE active=1 AND {where}").fetchone()[0])
             rows = conn.execute(f"SELECT * FROM games WHERE active=1 AND {where} ORDER BY id LIMIT ? OFFSET ?", (per_page, page*per_page)).fetchall()
         if not rows:
-            await query.edit_message_text("😕 لا توجد خدمات في هذا القسم حالياً.")
+            await edit_query_message(query, "😕 لا توجد خدمات في هذا القسم حالياً.")
             return
         pages = max(1, (total + per_page - 1)//per_page)
         if page >= pages: page = pages - 1
@@ -7352,7 +7378,7 @@ async def callback_handler(update, context):
         if nav: buttons.append(nav)
         buttons.append([InlineKeyboardButton("🔙 الأقسام", callback_data="back_main")])
         title = "🎮 قائمة الألعاب" if category == "game" else "📱 قائمة التطبيقات"
-        await query.edit_message_text(f"{title} — {total} خدمة", reply_markup=InlineKeyboardMarkup(buttons))
+        await edit_query_message(query, f"{title} — {total} خدمة", reply_markup=InlineKeyboardMarkup(buttons))
     elif data.startswith("game_back:"):
         parts = data.split(":")
         if len(parts) != 3:
@@ -7365,9 +7391,9 @@ async def callback_handler(update, context):
         await open_game(query, game_id, platform)
     # المتجر للزبائن
     elif data == "store":
-        await query.edit_message_text("اختر من القائمة الرئيسية: الألعاب أو التطبيقات.")
+        await edit_query_message(query, "اختر من القائمة الرئيسية: الألعاب أو التطبيقات.")
     elif data == "back_main":
-        await query.edit_message_text("القائمة الرئيسية:", reply_markup=main_keyboard(user_id))
+        await edit_query_message(query, "القائمة الرئيسية:", reply_markup=main_keyboard(user_id))
 
     # إلغاء أو رجوع عام
     elif data == "cancel":
@@ -7378,7 +7404,7 @@ async def callback_handler(update, context):
             "pending_payment_method", None
         )
 
-        await query.edit_message_text(
+        await edit_query_message(query, 
             "تم إلغاء العملية."
         )
 
