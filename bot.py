@@ -1014,6 +1014,9 @@ def main_keyboard(user_id):
     }
     contact_label, policy_label = labels.get(lang, labels["ar"])
     keyboard = [["/start"], [contact_label], [policy_label]]
+    # Keep the administrator entry visible at the very bottom of the persistent keyboard.
+    if is_admin(user_id):
+        keyboard.append(["🛠️ لوحة التحكم"])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 
@@ -1027,9 +1030,9 @@ def customer_inline_menu(user_id):
     ]
     if not is_trader(user_id):
         rows.append([InlineKeyboardButton(tr(user_id, "upgrade"), callback_data="home:upgrade")])
-    # Control/admin panels are deliberately kept as the final menu entries.
-    rows.append([InlineKeyboardButton(tr(user_id, "dashboard"), callback_data="home:account")])
+    # Admin-only panels are deliberately kept as the final menu entries.
     if is_admin(user_id):
+        rows.append([InlineKeyboardButton(tr(user_id, "dashboard"), callback_data="home:admin")])
         rows.append([InlineKeyboardButton(tr(user_id, "admin"), callback_data="home:admin")])
     return InlineKeyboardMarkup(rows)
 
@@ -2318,6 +2321,7 @@ async def show_store(message, user_id, category=None, context=None, query=None):
 def generate_account_gif(full_name, balance_da, balance_usd, total_orders, language="ar"):
     """Create a small personalized animated account card in memory."""
     if not PIL_AVAILABLE:
+        logging.error("Account GIF unavailable: Pillow is not installed. Install it with: pip install Pillow")
         return None
 
     W, H = 960, 540
