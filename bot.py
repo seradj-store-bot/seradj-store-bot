@@ -21,6 +21,7 @@ from telegram import (
     KeyboardButton,
     ForceReply,
     InputMediaPhoto,
+    InputMediaAnimation,
 )
 
 from telegram.request import HTTPXRequest
@@ -2341,7 +2342,14 @@ async def show_store(message, user_id, category=None, context=None, query=None):
         # and remove the default emoji from the button text to avoid showing both.
         button_text = g["name"] if custom_id else f"{g['emoji']} {g['name']}"
         buttons.append([InlineKeyboardButton(button_text, callback_data=f"game:{g['id']}", **premium_button_kwargs(g['id']))])
-    buttons.append([InlineKeyboardButton("🔙 الأقسام", callback_data="back_main")])
+    # Always expose both category switches so customers can move between
+    # Games and Apps without returning to the main menu or opening a new message.
+    switch_row = [
+        InlineKeyboardButton("🎮 الألعاب" if category != "game" else "✓ 🎮 الألعاب", callback_data="store_category:game"),
+        InlineKeyboardButton("📱 التطبيقات" if category != "app" else "✓ 📱 التطبيقات", callback_data="store_category:app"),
+    ]
+    buttons.append(switch_row)
+    buttons.append([InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")])
     title = "🎮 قائمة الألعاب:" if category == "game" else "📱 قائمة التطبيقات:"
     lines = [title, ""]
     for g in games:
@@ -2423,6 +2431,18 @@ def generate_account_gif(full_name, balance_da, balance_usd, total_orders, langu
                anchor="mm", stroke_width=1, stroke_fill=(2, 18, 48, 230))
     d.text((555, 198), username_text, font=username_font, fill=(248, 252, 255, 255),
            anchor="mm", stroke_width=1, stroke_fill=(0, 20, 55, 210))
+
+    # The supplied artwork has Arabic labels baked into the background.
+    # For English users, cover only those label areas and redraw equivalent labels.
+    if language == "en":
+        label_font = load_font(font_latin_bold, 22)
+        small_label_font = load_font(font_latin_bold, 20)
+        d.rounded_rectangle((285, 300, 575, 335), radius=10, fill=(2, 16, 39, 235), outline=(0, 150, 255, 150), width=1)
+        d.rounded_rectangle((285, 445, 575, 478), radius=10, fill=(2, 16, 39, 235), outline=(0, 150, 255, 150), width=1)
+        d.rounded_rectangle((680, 365, 945, 425), radius=10, fill=(2, 16, 39, 235), outline=(0, 150, 255, 150), width=1)
+        d.text((430, 318), "DZD WALLET BALANCE", font=small_label_font, fill=(245, 250, 255, 255), anchor="mm")
+        d.text((430, 462), "USD WALLET BALANCE", font=small_label_font, fill=(245, 250, 255, 255), anchor="mm")
+        d.text((812, 395), "TOTAL ORDERS", font=label_font, fill=(245, 250, 255, 255), anchor="mm")
 
     # Compact value panels cover only the template's zero placeholders; all labels and artwork stay untouched.
     def value_panel(draw, box, value, suffix, font_size=47):
@@ -4298,7 +4318,30 @@ async def callback_handler(update, context):
         with db() as conn:
             conn.execute("UPDATE users SET language=? WHERE user_id=?", (lang, user_id))
         await query.answer(LANGUAGE_TEXTS[lang]["language_saved"])
-        await edit_query_message(query, LANGUAGE_TEXTS[lang]["welcome"].format(store=STORE_NAME), reply_markup=customer_inline_menu(user_id))
+        welcome_text = LANGUAGE_TEXTS[lang]["welcome"].format(store=STORE_NAME)
+        # If the current navigation card is an animation, regenerate it for the
+        # newly selected language and replace it in-place (no extra chat message).
+        account_row = get_user_row(user_id)
+        if account_row and getattr(query.message, "animation", None):
+            try:
+                with db() as conn:
+                    order_count = conn.execute(
+                        "SELECT COUNT(*) FROM orders WHERE user_id=?", (user_id,)
+                    ).fetchone()[0]
+                animation = generate_account_gif(
+                    account_row["full_name"], account_row["balance"],
+                    account_row["balance_usd"], order_count, lang,
+                    username=account_row["username"],
+                )
+                if animation:
+                    await query.edit_message_media(
+                        media=InputMediaAnimation(media=animation, caption=welcome_text),
+                        reply_markup=customer_inline_menu(user_id),
+                    )
+                    return
+            except Exception:
+                logger.exception("Could not refresh account GIF after language change")
+        await edit_query_message(query, welcome_text, reply_markup=customer_inline_menu(user_id))
         return
 
     # Main customer navigation: edit the current menu message instead of
@@ -7444,7 +7487,11 @@ async def callback_handler(update, context):
         nav.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="store_list_page:noop:0"))
         if page+1 < pages: nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"store_list_page:{category}:{page+1}"))
         if nav: buttons.append(nav)
-        buttons.append([InlineKeyboardButton("🔙 الأقسام", callback_data="back_main")])
+        buttons.append([
+            InlineKeyboardButton("🎮 الألعاب" if category != "game" else "✓ 🎮 الألعاب", callback_data="store_category:game"),
+            InlineKeyboardButton("📱 التطبيقات" if category != "app" else "✓ 📱 التطبيقات", callback_data="store_category:app"),
+        ])
+        buttons.append([InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")])
         title = "🎮 قائمة الألعاب" if category == "game" else "📱 قائمة التطبيقات"
         await edit_query_message(query, f"{title} — {total} خدمة", reply_markup=InlineKeyboardMarkup(buttons))
     elif data.startswith("game_back:"):
@@ -7461,7 +7508,14 @@ async def callback_handler(update, context):
     elif data == "store":
         await edit_query_message(query, "اختر من القائمة الرئيسية: الألعاب أو التطبيقات.")
     elif data == "back_main":
-        await edit_query_message(query, "القائمة الرئيسية:", reply_markup=main_keyboard(user_id))
+        await edit_query_message(
+            query, tr(user_id, "store_choose"),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(tr(user_id, "games"), callback_data="store_category:game")],
+                [InlineKeyboardButton(tr(user_id, "apps"), callback_data="store_category:app")],
+                [InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")],
+            ]),
+        )
 
     # إلغاء أو رجوع عام
     elif data == "cancel":
@@ -9498,7 +9552,20 @@ async def text_handler(update, context):
         if ADMIN_ID:
             try: await context.bot.send_message(ADMIN_ID,f"➕ طلب لعبة/تطبيق جديد #{request_id}\nمن: {message.from_user.full_name}\nID: {user_id}\nالطلب: {text}",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👀 قيد المراجعة",callback_data=f"game_request_status:{request_id}:reviewed"),InlineKeyboardButton("✅ تمت الإضافة",callback_data=f"game_request_status:{request_id}:added"),InlineKeyboardButton("❌ مرفوض",callback_data=f"game_request_status:{request_id}:rejected")]]))
             except Exception: logger.exception("Could not send game request")
-        await message.reply_text(f"✅ تم إرسال اقتراحك للإدارة برقم #{request_id}.",reply_markup=main_keyboard(user_id)); return
+        confirmation = f"✅ تم إرسال اقتراحك للإدارة برقم #{request_id}."
+        nav_id = context.user_data.get("navigation_message_id")
+        if nav_id:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id, message_id=int(nav_id),
+                    text=confirmation,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]]),
+                )
+            except Exception:
+                await message.reply_text(confirmation, reply_markup=main_keyboard(user_id))
+        else:
+            await message.reply_text(confirmation, reply_markup=main_keyboard(user_id))
+        return
 
     if text == "📦 طلباتي":
         await show_my_orders(update, context)
