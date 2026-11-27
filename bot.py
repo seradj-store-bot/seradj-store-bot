@@ -2441,8 +2441,11 @@ async def show_account(message, user_id):
             return
     except Exception:
         logging.exception("Failed to generate or send customer account GIF")
+        # If Telegram rejects the animation after it was generated, allow the
+        # normal text account view to be sent as a fallback.
+        animation = None
 
-    if not animation:
+    if animation is None:
         username = f"@{user['username']}" if user["username"] else "غير متوفر"
         lang = user_language(user_id)
         type_label = tr(user_id, "trader") if user["account_type"] == "trader" else tr(user_id, "customer")
@@ -4198,23 +4201,13 @@ async def callback_handler(update, context):
             await query.edit_message_text(tr(user_id, "benefits_text"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")]]))
             return
         if action == "account":
-            with db() as conn:
-                u = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
-                total = conn.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (user_id,)).fetchone()[0]
-            if not u:
-                body = "أرسل /start لتسجيل حسابك."
-            else:
-                body = (f"{tr(user_id, 'account_title')}\n\n"
-                    f"{tr(user_id, 'id')}: {user_id}\n{tr(user_id, 'name')}: {u['full_name']}\n"
-                    f"{tr(user_id, 'type')}: {tr(user_id, 'trader') if u['account_type']=='trader' else tr(user_id, 'customer')}\n"
-                    f"{tr(user_id, 'order_count')}: {total}\n{tr(user_id, 'wallet_da')}: {int(u['balance'] or 0)} DA\n"
-                    f"{tr(user_id, 'wallet_usd')}: {float(u['balance_usd'] or 0):.2f} USD\n"
-                    f"{tr(user_id, 'points')}: {float(u['points_da'] or 0):g} DA | {float(u['points_usd'] or 0):.3f} USD")
-            await query.edit_message_text(body, reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(tr(user_id, "account_orders"), callback_data="account_orders"), InlineKeyboardButton(tr(user_id, "account_deposit"), callback_data="account_deposit")],
-                [InlineKeyboardButton(tr(user_id, "wallet_history"), callback_data="wallet_history")],
-                [InlineKeyboardButton(tr(user_id, "back"), callback_data="home:main")],
-            ]))
+            # Use the same account renderer as the persistent reply-keyboard
+            # button, so the personalized GIF is shown from either entry point.
+            try:
+                await query.message.delete()
+            except Exception:
+                logger.debug("Could not delete previous account navigation message", exc_info=True)
+            await show_account(query.message, user_id)
             return
         if action == "request":
             context.user_data["awaiting_game_request"] = True
